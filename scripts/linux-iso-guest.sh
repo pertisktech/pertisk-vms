@@ -100,8 +100,8 @@ created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 51
 echo "$created"
 id="$(echo "$created" | awk '{print $1}')"
 [[ -n "$id" && -n "$vol_id" ]] || die "create returned no id"
-"$pertisk" --url "$URL" vm disk attach --vm "$id" --volume "$vol_id"
-"$pertisk" --url "$URL" vm cdrom attach --vm "$id" --iso "$ISO_NAME"
+"$pertisk" --url "$URL" vm disk attach --volume "$vol_id" "$id"
+"$pertisk" --url "$URL" vm cdrom attach --iso "$ISO_NAME" "$id"
 "$pertisk" --url "$URL" vm start "$id"
 echo "guest $NAME ($id) started from ISO. serial (Ctrl-C detaches):"
 trap - EXIT

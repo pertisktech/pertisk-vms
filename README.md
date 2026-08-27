@@ -65,7 +65,7 @@ That downloads `hypervisor-fw` and an Alpine virt ISO, creates a disk, attaches 
 
 ```bash
 pertisk iso cloud-init --name web-1 --hostname web-1 --user ubuntu --password ubuntu
-pertisk vm cdrom attach --vm <id> --iso web-1-cidata.iso
+pertisk vm cdrom attach --iso web-1-cidata.iso <id>
 ```
 
 Attach that seed last; firmware boots an installer ISO or the OS disk, not the cidata volume.
