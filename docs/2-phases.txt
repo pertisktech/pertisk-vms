@@ -11,10 +11,10 @@ Goal:  decisions and repo so later work does not thrash
 Demo:  workspace builds; /dev/kvm works; VMM binary runs a manual VM
 Skip:  API, Ceph, cluster protocol
 
-  [ ] Confirm /dev/kvm, CPU virt flags, nested virt
-  [ ] Pick VMM: Cloud Hypervisor (Linux) or QEMU (Windows/PCI)
-  [ ] Cargo workspace: types, vmm, storage, net, daemon, api, cli
-  [ ] VM/disk/net IDs, spec structs, host config file
+  [x] Confirm /dev/kvm, CPU virt flags, nested virt
+  [x] Pick VMM: Cloud Hypervisor (Linux) or QEMU (Windows/PCI)
+  [x] Cargo workspace: types, vmm, storage, net, daemon, api, cli
+  [x] VM/disk/net IDs, spec structs, host config file
   [ ] Install VMM and boot one manual test VM
 
 
@@ -24,11 +24,11 @@ Goal:  create / start / stop / destroy on one node
 Demo:  CLI boots Alpine; list shows running; stop is clean
 Skip:  UI, cluster, snapshots, SDN
 
-  [ ] VmmDriver trait: create, start, stop, destroy, status
-  [ ] Cloud Hypervisor adapter (unix-socket HTTP) or QEMU QMP
-  [ ] VM spec: vCPU, RAM, kernel or disk, serial log
-  [ ] Persist VM records (JSON/SQLite) with socket/pid paths
-  [ ] CLI: pertisk vm create | start | stop | rm | list | show
+  [x] VmmDriver trait: create, start, stop, destroy, status
+  [x] Cloud Hypervisor adapter (unix-socket HTTP); QEMU QMP later
+  [x] VM spec: vCPU, RAM, kernel or disk, serial log
+  [x] Persist VM records (JSON/SQLite) with socket/pid paths
+  [x] CLI: pertisk vm create | start | stop | rm | list | show
   [ ] Integration test: boot, serial output, shutdown
 
 
@@ -38,11 +38,11 @@ Goal:  volumes operators expect
 Demo:  clone a template, attach ISO, boot installer
 Skip:  Ceph / vSAN / custom distributed FS
 
-  [ ] Local directory volume store (raw + qcow2)
-  [ ] Create / resize / delete; attach virtio-block
-  [ ] ISO library + CD-ROM attach
-  [ ] qcow2 snapshot + restore
-  [ ] Linked clone from template
+  [x] Local directory volume store (raw + qcow2)
+  [x] Create / resize / delete; attach virtio-block
+  [x] ISO library + CD-ROM attach
+  [x] qcow2 snapshot + restore
+  [x] Linked clone from template
   [ ] Optional ZFS dataset backend
 
 

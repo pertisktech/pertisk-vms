@@ -1,0 +1,9 @@
+[package]
+name = "pertisk-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Linux bridge, TAP, and guest networking (phase 3)"
+
+[dependencies]
+pertisk-types.workspace = true

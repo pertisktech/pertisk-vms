@@ -1,0 +1,15 @@
+# Generated on first pertiskd start at $PERTISK_HOME/config.toml (~/.pertisk).
+
+[daemon]
+listen = "127.0.0.1:7480"
+
+[vmm]
+# mock | cloud-hypervisor
+# macOS defaults to mock (no /dev/kvm). Linux defaults to cloud-hypervisor.
+driver = "mock"
+run_dir = "/tmp/pertisk-run"
+# cloud_hypervisor = "/usr/bin/cloud-hypervisor"
+
+[storage]
+root = "storage"
+# qemu_img = "/usr/local/bin/qemu-img"

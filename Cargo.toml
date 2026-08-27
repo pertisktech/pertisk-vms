@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pertisk-types",
+    "crates/pertisk-vmm",
+    "crates/pertisk-storage",
+    "crates/pertisk-net",
+    "crates/pertisk-daemon",
+    "crates/pertisk-api",
+    "crates/pertisk-cli",
+]
+default-members = ["crates/pertisk-cli", "crates/pertisk-daemon"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+pertisk-types = { path = "crates/pertisk-types" }
+pertisk-vmm = { path = "crates/pertisk-vmm" }
+pertisk-storage = { path = "crates/pertisk-storage" }
+pertisk-net = { path = "crates/pertisk-net" }
+pertisk-daemon = { path = "crates/pertisk-daemon" }
+
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+toml = { version = "0.8", features = ["parse", "display", "preserve_order"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+tempfile = "3"

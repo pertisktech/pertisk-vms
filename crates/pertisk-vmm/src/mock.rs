@@ -1,0 +1,114 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use pertisk_types::{VmId, VmRecord, VmState, VmSpec};
+
+use crate::{CreateResult, Result, StartResult, VmmError};
+
+#[derive(Debug)]
+struct MockVm {
+    state: VmState,
+}
+
+#[derive(Debug, Default)]
+pub struct MockDriver {
+    vms: Mutex<HashMap<VmId, MockVm>>,
+}
+
+impl MockDriver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn create(&self, id: VmId, _spec: &VmSpec) -> Result<CreateResult> {
+        let mut vms = self.vms.lock().expect("mock vmm lock");
+        vms.insert(id, MockVm { state: VmState::Created });
+        Ok(CreateResult {
+            api_socket: None,
+            pid: None,
+            serial_log: None,
+        })
+    }
+
+    pub async fn start(&self, record: &VmRecord) -> Result<StartResult> {
+        let mut vms = self.vms.lock().expect("mock vmm lock");
+        let vm = vms
+            .get_mut(&record.id)
+            .ok_or(VmmError::NotFound(record.id))?;
+        match vm.state {
+            VmState::Created | VmState::Stopped => {
+                vm.state = VmState::Running;
+                Ok(StartResult { pid: Some(0) })
+            }
+            state => Err(VmmError::InvalidState {
+                state,
+                op: "start",
+            }),
+        }
+    }
+
+    pub async fn stop(&self, record: &VmRecord) -> Result<()> {
+        let mut vms = self.vms.lock().expect("mock vmm lock");
+        let vm = vms
+            .get_mut(&record.id)
+            .ok_or(VmmError::NotFound(record.id))?;
+        if vm.state != VmState::Running {
+            return Err(VmmError::InvalidState {
+                state: vm.state,
+                op: "stop",
+            });
+        }
+        vm.state = VmState::Stopped;
+        Ok(())
+    }
+
+    pub async fn destroy(&self, record: &VmRecord) -> Result<()> {
+        let mut vms = self.vms.lock().expect("mock vmm lock");
+        vms.remove(&record.id).ok_or(VmmError::NotFound(record.id))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pertisk_types::VmSpec;
+
+    fn spec() -> VmSpec {
+        VmSpec {
+            name: "demo".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            disks: vec![],
+            nets: vec![],
+            serial_log: None,
+        }
+    }
+
+    fn record(id: VmId, spec: VmSpec) -> VmRecord {
+        VmRecord {
+            id,
+            spec,
+            state: VmState::Created,
+            pid: None,
+            api_socket: None,
+            serial_log: None,
+            last_error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle() {
+        let driver = MockDriver::new();
+        let id = VmId::new();
+        let spec = spec();
+        driver.create(id, &spec).await.unwrap();
+        let rec = record(id, spec);
+        driver.start(&rec).await.unwrap();
+        driver.stop(&rec).await.unwrap();
+        driver.destroy(&rec).await.unwrap();
+    }
+}
