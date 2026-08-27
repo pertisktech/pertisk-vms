@@ -11,6 +11,8 @@ CACHE="$HOME_DIR/images"
 ALPINE_VER="${ALPINE_VER:-v3.21}"
 ALPINE_REL="${ALPINE_REL:-3.21.3}"
 URL="${PERTISK_URL:-http://127.0.0.1:7480}"
+# Bind all interfaces so a reverse proxy or LAN client can reach the UI/API.
+LISTEN="${PERTISK_LISTEN:-0.0.0.0:7480}"
 NAME="${GUEST_NAME:-alpine-$$}"
 ISO_NAME="${ISO_NAME:-alpine-virt.iso}"
 
@@ -34,9 +36,6 @@ case "$arch" in
   arm64) arch=aarch64 ;;
   *) die "unsupported arch $arch (need x86_64 or aarch64)" ;;
 esac
-
-listen="${URL#http://}"
-listen="${listen#https://}"
 
 iso_url="${ALPINE_ISO_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VER}/releases/${arch}/alpine-virt-${ALPINE_REL}-${arch}.iso}"
 mkdir -p "$CACHE"
@@ -74,9 +73,9 @@ if curl -fsS "$URL/v1/health" >/dev/null 2>&1; then
 fi
 
 started_daemon=0
-echo "starting pertiskd on $URL"
+echo "starting pertiskd listen=$LISTEN cli=$URL"
 PERTISK_ADMIN_PASSWORD="${PERTISK_ADMIN_PASSWORD:-admin}" \
-  "$pertiskd" --listen "$listen" --driver cloud-hypervisor &
+  "$pertiskd" --listen "$LISTEN" --driver cloud-hypervisor &
 started_daemon=1
 trap 'if [[ "$started_daemon" -eq 1 ]]; then kill %1 2>/dev/null || true; fi' EXIT
 ready=0

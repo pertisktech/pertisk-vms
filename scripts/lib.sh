@@ -25,6 +25,7 @@ explain_cli() {
   echo "CLI is $pertisk (not on PATH). After this script:"
   echo "  export PATH=\"$(dirname "$pertisk"):\$PATH\""
   echo "  pertisk --url $URL vm list"
+  echo "UI/API bound on ${LISTEN:-0.0.0.0:7480} (local $URL ; LAN http://<this-host>:7480/)"
 }
 
 show_capacity() {
