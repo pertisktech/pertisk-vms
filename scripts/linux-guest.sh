@@ -9,8 +9,10 @@ cd "$ROOT"
 HOME_DIR="${PERTISK_HOME:-$HOME/.pertisk}"
 CACHE="$HOME_DIR/images"
 ALPINE_VER="${ALPINE_VER:-v3.21}"
+ALPINE_REL="${ALPINE_REL:-3.21.3}"
 URL="${PERTISK_URL:-http://127.0.0.1:7480}"
 NAME="${GUEST_NAME:-alpine-$$}"
+ISO_NAME="${ISO_NAME:-alpine-virt.iso}"
 
 die() { echo "linux-guest: $*" >&2; exit 1; }
 
@@ -37,9 +39,11 @@ listen="${URL#http://}"
 listen="${listen#https://}"
 
 base="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VER}/releases/${arch}/netboot"
+iso_url="${ALPINE_ISO_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VER}/releases/${arch}/alpine-virt-${ALPINE_REL}-${arch}.iso}"
 mkdir -p "$CACHE"
 kernel="$CACHE/vmlinuz-virt"
 initramfs="$CACHE/initramfs-virt"
+iso="$CACHE/$ISO_NAME"
 if [[ ! -s "$kernel" ]]; then
   echo "fetching $base/vmlinuz-virt"
   curl -fsSL -o "$kernel" "$base/vmlinuz-virt"
@@ -47,6 +51,10 @@ fi
 if [[ ! -s "$initramfs" ]]; then
   echo "fetching $base/initramfs-virt"
   curl -fsSL -o "$initramfs" "$base/initramfs-virt"
+fi
+if [[ ! -s "$iso" ]]; then
+  echo "fetching $iso_url"
+  curl -fsSL -o "$iso" "$iso_url"
 fi
 
 echo "building pertiskd and pertisk"
@@ -78,13 +86,19 @@ echo "$host"
 echo "$host" | grep -q 'kvm[[:space:]]*true' || die "daemon reports kvm=false"
 echo "$host" | grep -q 'driver[[:space:]]*cloud-hypervisor' || die "daemon is not using cloud-hypervisor"
 
-created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 256 \
+if ! "$pertisk" --url "$URL" iso list | grep -q "^${ISO_NAME}[[:space:]]"; then
+  "$pertisk" --url "$URL" iso import "$iso" --name "$ISO_NAME"
+fi
+
+created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 \
   --kernel "$kernel" --initramfs "$initramfs" \
-  --cmdline "console=ttyS0 reboot=k panic=1")"
+  --cmdline "console=ttyS0,115200 modules=loop,squashfs,virtio_blk,overlay")"
 echo "$created"
 id="$(echo "$created" | awk '{print $1}')"
 [[ -n "$id" ]] || die "vm create returned no id"
+"$pertisk" --url "$URL" vm cdrom attach --vm "$id" --iso "$ISO_NAME"
 "$pertisk" --url "$URL" vm start "$id"
 echo "guest $NAME ($id) started. serial (Ctrl-C detaches, guest keeps running):"
+echo "Alpine live login is root with an empty password."
 trap - EXIT
 exec "$pertisk" --url "$URL" vm console "$id" --attach
