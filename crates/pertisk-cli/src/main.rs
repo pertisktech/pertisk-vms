@@ -7,7 +7,8 @@ use pertisk_api::{
     AuditEvent, CreateUserRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
 };
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterStatus,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
+    ClusterStatus,
     ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
     ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
     ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec, VolumeFormat,
@@ -296,6 +297,21 @@ enum IsoCommand {
         path: PathBuf,
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Cloud-init NoCloud seed ISO (cidata). Attach as CD-ROM next to a cloud disk image.
+    CloudInit {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(long = "ssh-key")]
+        ssh_key: Vec<String>,
+        #[arg(long)]
+        userdata: Option<String>,
     },
     List,
     #[command(name = "rm")]
@@ -807,6 +823,30 @@ async fn run() -> Result<()> {
                     &cli.url,
                     "/v1/isos",
                     &ImportIsoRequest { path, name },
+                )
+                .await?;
+                println!("{} {}", iso.name, format_size(iso.size_bytes));
+            }
+            IsoCommand::CloudInit {
+                name,
+                hostname,
+                user,
+                password,
+                ssh_key,
+                userdata,
+            } => {
+                let iso: IsoRecord = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/isos/cloud-init",
+                    &CloudInitIsoRequest {
+                        name,
+                        hostname,
+                        user,
+                        password,
+                        ssh_authorized_keys: ssh_key,
+                        userdata,
+                    },
                 )
                 .await?;
                 println!("{} {}", iso.name, format_size(iso.size_bytes));

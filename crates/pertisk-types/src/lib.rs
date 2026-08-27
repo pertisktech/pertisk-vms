@@ -494,6 +494,23 @@ pub struct ImportIsoRequest {
     pub name: Option<String>,
 }
 
+/// Build a NoCloud (`cidata`) ISO for cloud-init. Works with Linux cloud images on Cloud Hypervisor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CloudInitIsoRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_authorized_keys: Vec<String>,
+    /// Raw `#cloud-config` body. When set, hostname/user/password/keys are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userdata: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DriverKind {

@@ -21,6 +21,7 @@ export default function Storage() {
   const [isoPath, setIsoPath] = useState('')
   const [isoFile, setIsoFile] = useState(null)
   const [isoMode, setIsoMode] = useState('file')
+  const [ci, setCi] = useState({ name: 'cidata.iso', hostname: '', user: 'ubuntu', password: '', sshKey: '' })
   const [busy, setBusy] = useState(false)
   const [action, setAction] = useState(null)
   const [actionName, setActionName] = useState('')
@@ -63,12 +64,27 @@ export default function Storage() {
             headers: { 'content-type': 'application/octet-stream' },
             body: isoFile,
           })
+        } else if (isoMode === 'cloudinit') {
+          await api('/v1/isos/cloud-init', {
+            method: 'POST',
+            body: {
+              name: ci.name.trim() || `${ci.hostname.trim() || 'guest'}-cidata.iso`,
+              hostname: ci.hostname.trim() || undefined,
+              user: ci.user.trim() || undefined,
+              password: ci.password || undefined,
+              ssh_authorized_keys: ci.sshKey
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            },
+          })
         } else {
           await api('/v1/isos', { method: 'POST', body: { path: isoPath.trim() } })
         }
       })
       setIsoPath('')
       setIsoFile(null)
+      setCi({ name: 'cidata.iso', hostname: '', user: 'ubuntu', password: '', sshKey: '' })
       setIsoOpen(false)
     } catch {
       /* inventory error */
@@ -418,7 +434,7 @@ export default function Storage() {
       {isoOpen && (
         <Modal
           title="Import ISO"
-          hint="Upload from this browser, or import a file already on the node."
+          hint="Upload an installer, import a host path, or build a cloud-init seed ISO."
           onClose={() => setIsoOpen(false)}
           footer={
             <>
@@ -428,7 +444,14 @@ export default function Storage() {
               <button
                 type="submit"
                 form="import-iso"
-                disabled={busy || (isoMode === 'file' ? !isoFile : !isoPath.trim())}
+                disabled={
+                  busy ||
+                  (isoMode === 'file'
+                    ? !isoFile
+                    : isoMode === 'path'
+                      ? !isoPath.trim()
+                      : !(ci.hostname.trim() || ci.password || ci.sshKey.trim()))
+                }
               >
                 {busy ? 'Importing…' : 'Import'}
               </button>
@@ -439,6 +462,7 @@ export default function Storage() {
             <div className="role-pills" style={{ marginBottom: '1rem' }}>
               {[
                 ['file', 'Upload file'],
+                ['cloudinit', 'Cloud-init'],
                 ['path', 'Host path'],
               ].map(([id, label]) => (
                 <button
@@ -462,6 +486,60 @@ export default function Storage() {
                 />
                 {isoFile && <p className="muted">{isoFile.name}</p>}
               </div>
+            ) : isoMode === 'cloudinit' ? (
+              <>
+                <p className="muted" style={{ marginTop: 0 }}>
+                  NoCloud seed for Ubuntu/Alpine cloud disks. Not a Proxmox/ESXi installer.
+                </p>
+                <div className="form-grid">
+                  <div className="field">
+                    <label htmlFor="ci-name">ISO name</label>
+                    <input
+                      id="ci-name"
+                      value={ci.name}
+                      onChange={(e) => setCi({ ...ci, name: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="ci-host">Hostname</label>
+                    <input
+                      id="ci-host"
+                      value={ci.hostname}
+                      onChange={(e) => setCi({ ...ci, hostname: e.target.value })}
+                      placeholder="web-1"
+                    />
+                  </div>
+                </div>
+                <div className="form-grid">
+                  <div className="field">
+                    <label htmlFor="ci-user">User</label>
+                    <input
+                      id="ci-user"
+                      value={ci.user}
+                      onChange={(e) => setCi({ ...ci, user: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="ci-pass">Password</label>
+                    <input
+                      id="ci-pass"
+                      type="password"
+                      value={ci.password}
+                      onChange={(e) => setCi({ ...ci, password: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="ci-ssh">SSH authorized keys</label>
+                  <textarea
+                    id="ci-ssh"
+                    rows={3}
+                    value={ci.sshKey}
+                    onChange={(e) => setCi({ ...ci, sshKey: e.target.value })}
+                    placeholder="ssh-ed25519 AAAA… (one per line)"
+                  />
+                </div>
+              </>
             ) : (
               <div className="field">
                 <label htmlFor="iso-path">Host path</label>

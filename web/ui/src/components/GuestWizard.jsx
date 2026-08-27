@@ -20,6 +20,10 @@ const EMPTY = {
   diskSize: '8G',
   volumeId: '',
   iso: '',
+  cloudInit: false,
+  ciUser: 'ubuntu',
+  ciPassword: '',
+  ciSshKey: '',
   networkId: '',
   nicIp: '',
   start: true,
@@ -104,6 +108,26 @@ export default function GuestWizard({ volumes, isos, networks, host, onClose, on
           api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso: form.iso } }),
         )
       }
+      if (form.cloudInit) {
+        const seed = await run('Cloud-init ISO', () =>
+          api('/v1/isos/cloud-init', {
+            method: 'POST',
+            body: {
+              name: `${form.name.trim()}-cidata.iso`,
+              hostname: form.name.trim(),
+              user: form.ciUser.trim() || 'ubuntu',
+              password: form.ciPassword || undefined,
+              ssh_authorized_keys: form.ciSshKey
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            },
+          }),
+        )
+        await run('Attach cloud-init', () =>
+          api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso: seed.name } }),
+        )
+      }
       if (form.networkId) {
         await run('Attach NIC', () =>
           api(`/v1/vms/${vm.id}/nics`, {
@@ -129,7 +153,8 @@ export default function GuestWizard({ volumes, isos, networks, host, onClose, on
       : form.diskMode === 'new'
         ? `New ${(form.diskName || `${form.name}-disk`).trim()} (${form.diskSize})`
         : volumes.find((v) => v.id === form.volumeId)?.name || 'Existing volume'
-  const isoLabel = form.iso || 'None'
+  const isoLabel =
+    [form.iso || null, form.cloudInit ? 'cloud-init seed' : null].filter(Boolean).join(' + ') || 'None'
   const netLabel = networks.find((n) => n.id === form.networkId)?.name || 'None'
 
   return (
@@ -307,6 +332,48 @@ export default function GuestWizard({ volumes, isos, networks, host, onClose, on
                 </p>
               )}
             </div>
+            <label className="chk" style={{ marginTop: '1rem' }}>
+              <input
+                type="checkbox"
+                checked={form.cloudInit}
+                onChange={(e) => set({ cloudInit: e.target.checked })}
+              />
+              <span className="chk-box" />
+              <span className="chk-label">Cloud-init seed (NoCloud ISO for a cloud disk image)</span>
+            </label>
+            {form.cloudInit && (
+              <>
+                <div className="form-grid" style={{ marginTop: '1rem' }}>
+                  <div className="field">
+                    <label htmlFor="ci-user">User</label>
+                    <input
+                      id="ci-user"
+                      value={form.ciUser}
+                      onChange={(e) => set({ ciUser: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="ci-pass">Password</label>
+                    <input
+                      id="ci-pass"
+                      type="password"
+                      value={form.ciPassword}
+                      onChange={(e) => set({ ciPassword: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="ci-ssh">SSH authorized keys</label>
+                  <textarea
+                    id="ci-ssh"
+                    rows={3}
+                    value={form.ciSshKey}
+                    onChange={(e) => set({ ciSshKey: e.target.value })}
+                    placeholder="ssh-ed25519 AAAA… (one per line)"
+                  />
+                </div>
+              </>
+            )}
           </>
         )}
 

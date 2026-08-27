@@ -611,6 +611,13 @@ impl Service {
         Ok(self.volumes.import_iso(&req.path, req.name)?)
     }
 
+    pub fn create_cloudinit_iso(
+        &self,
+        req: pertisk_types::CloudInitIsoRequest,
+    ) -> Result<IsoRecord, DaemonError> {
+        Ok(self.volumes.create_cloudinit_iso(req)?)
+    }
+
     pub fn delete_iso(&self, name: &str) -> Result<(), DaemonError> {
         if !self.iso_users(name)?.is_empty() {
             return Err(DaemonError::IsoBusy(name.to_string()));

@@ -1,5 +1,6 @@
 //! Local directory volumes, file snapshots, ISO library, optional qemu-img, optional Ceph RBD.
 
+mod iso9660;
 mod qemu;
 mod rbd;
 
@@ -10,11 +11,12 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pertisk_types::{
-    CloneVolumeRequest, CreateVolumeRequest, IsoRecord, ResizeVolumeRequest, SnapshotRequest,
-    StorageBackend, VolumeFormat, VolumeId, VolumeRecord, VolumeSnapshot,
+    CloneVolumeRequest, CloudInitIsoRequest, CreateVolumeRequest, IsoRecord, ResizeVolumeRequest,
+    SnapshotRequest, StorageBackend, VolumeFormat, VolumeId, VolumeRecord, VolumeSnapshot,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::iso9660::cidata_iso;
 use crate::qemu::QemuImg;
 pub use rbd::Rbd;
 
@@ -418,6 +420,49 @@ impl VolumePool {
         Ok(record)
     }
 
+    pub fn create_cloudinit_iso(&self, req: CloudInitIsoRequest) -> Result<IsoRecord> {
+        let mut name = req.name.trim().to_string();
+        if name.is_empty() {
+            name = "cidata.iso".into();
+        }
+        if !name.to_ascii_lowercase().ends_with(".iso") {
+            name.push_str(".iso");
+        }
+        if !name.to_ascii_lowercase().contains("cidata") {
+            let stem = name.trim_end_matches(".iso").trim_end_matches(".ISO");
+            name = format!("{stem}-cidata.iso");
+        }
+        let name = iso_name(Path::new(&name), Some(name.clone()))?;
+        {
+            let inner = self.inner.lock().expect("storage lock");
+            if inner.isos.contains_key(&name) {
+                return Err(StorageError::IsoExists(name));
+            }
+        }
+        let user_data = cloudinit_user_data(&req);
+        let hostname = req
+            .hostname
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("pertisk");
+        let meta_data = format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\n");
+        let bytes = cidata_iso(user_data.as_bytes(), meta_data.as_bytes());
+        let dest = self.root.join("iso").join(&name);
+        std::fs::write(&dest, &bytes)?;
+        let record = IsoRecord {
+            name: name.clone(),
+            path: dest,
+            size_bytes: bytes.len() as u64,
+        };
+        {
+            let mut inner = self.inner.lock().expect("storage lock");
+            inner.isos.insert(name, record.clone());
+        }
+        self.flush()?;
+        Ok(record)
+    }
+
     pub fn delete_iso(&self, name: &str) -> Result<()> {
         let record = {
             let mut inner = self.inner.lock().expect("storage lock");
@@ -460,6 +505,49 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
+    if let Some(raw) = req.userdata.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return raw.to_string();
+    }
+    let user = req
+        .user
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ubuntu");
+    let hostname = req
+        .hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("pertisk");
+    let mut yaml = format!(
+        "#cloud-config\nhostname: {hostname}\nmanage_etc_hosts: true\nusers:\n  - name: {user}\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    groups: sudo\n    shell: /bin/bash\n    lock_passwd: false\n"
+    );
+    let keys: Vec<&str> = req
+        .ssh_authorized_keys
+        .iter()
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty())
+        .collect();
+    if !keys.is_empty() {
+        yaml.push_str("    ssh_authorized_keys:\n");
+        for key in keys {
+            yaml.push_str("      - ");
+            yaml.push_str(key);
+            yaml.push('\n');
+        }
+    }
+    if let Some(password) = req.password.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        yaml.push_str("chpasswd:\n  expire: false\n  list: |\n    ");
+        yaml.push_str(user);
+        yaml.push(':');
+        yaml.push_str(password);
+        yaml.push_str("\nssh_pwauth: true\n");
+    }
+    yaml
 }
 
 fn iso_name(source: &Path, explicit: Option<String>) -> Result<String> {
@@ -573,5 +661,28 @@ mod tests {
         assert_eq!(iso.size_bytes, 9);
         pool.delete_iso("installer.iso").unwrap();
         assert!(pool.list_isos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cloudinit_iso_is_cidata() {
+        let (pool, _dir) = pool();
+        let iso = pool
+            .create_cloudinit_iso(CloudInitIsoRequest {
+                name: "web-1".into(),
+                hostname: Some("web-1".into()),
+                user: Some("ubuntu".into()),
+                password: Some("ubuntu".into()),
+                ssh_authorized_keys: vec![],
+                userdata: None,
+            })
+            .unwrap();
+        assert_eq!(iso.name, "web-1-cidata.iso");
+        let bytes = std::fs::read(&iso.path).unwrap();
+        assert!(bytes.len() >= 25 * 2048);
+        let vol = std::str::from_utf8(&bytes[32768 + 40..32768 + 46]).unwrap();
+        assert_eq!(vol, "CIDATA");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("hostname: web-1"));
+        assert!(text.contains("ubuntu:ubuntu"));
     }
 }

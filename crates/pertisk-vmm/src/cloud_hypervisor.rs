@@ -261,16 +261,15 @@ impl ChVmConfig {
         } else {
             None
         };
-        let mut disks: Vec<ChDisk> = spec
-            .disks
-            .iter()
+        let mut ordered: Vec<&pertisk_types::DiskSpec> = spec.disks.iter().collect();
+        ordered.sort_by_key(|disk| boot_rank(disk));
+        let disks: Vec<ChDisk> = ordered
+            .into_iter()
             .map(|disk| ChDisk {
                 path: disk.path.display().to_string(),
                 readonly: disk.readonly || disk.cdrom,
             })
             .collect();
-        // Present the installer ISO first so rust-hypervisor-firmware finds El Torito.
-        disks.sort_by_key(|disk| !disk.readonly);
         let disks = if disks.is_empty() { None } else { Some(disks) };
         let net = if spec.nets.is_empty() {
             None
@@ -304,6 +303,31 @@ impl ChVmConfig {
     }
 }
 
+fn is_cidata(disk: &pertisk_types::DiskSpec) -> bool {
+    disk.iso_name
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains("cidata")
+        || disk
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("cidata")
+}
+
+fn boot_rank(disk: &pertisk_types::DiskSpec) -> u8 {
+    if disk.cdrom && !is_cidata(disk) {
+        0
+    } else if !disk.cdrom {
+        1
+    } else {
+        2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +358,13 @@ mod tests {
                     volume_id: None,
                     iso_name: Some("os.iso".into()),
                 },
+                DiskSpec {
+                    path: PathBuf::from("/var/seed-cidata.iso"),
+                    readonly: true,
+                    cdrom: true,
+                    volume_id: None,
+                    iso_name: Some("web-cidata.iso".into()),
+                },
             ],
             nets: vec![],
             serial_log: None,
@@ -355,5 +386,6 @@ mod tests {
         assert_eq!(disks[0]["path"], "/var/os.iso");
         assert_eq!(disks[0]["readonly"], true);
         assert_eq!(disks[1]["path"], "/var/disk.raw");
+        assert_eq!(disks[2]["path"], "/var/seed-cidata.iso");
     }
 }

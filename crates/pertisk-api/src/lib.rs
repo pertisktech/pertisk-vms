@@ -196,6 +196,7 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/networks": { "get": { "summary": "List networks" }, "post": { "summary": "Create network" } },
             "/v1/isos": { "get": { "summary": "List ISOs" }, "post": { "summary": "Import ISO from a host path" } },
             "/v1/isos/upload": { "post": { "summary": "Upload an ISO from the browser" } },
+            "/v1/isos/cloud-init": { "post": { "summary": "Create a cloud-init NoCloud (cidata) ISO" } },
             "/v1/tasks": { "get": { "summary": "Task log" } },
             "/v1/audit": { "get": { "summary": "Audit events" } },
             "/v1/users": { "get": { "summary": "List users (admin)" }, "post": { "summary": "Create user (admin)" } },

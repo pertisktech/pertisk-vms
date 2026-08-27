@@ -14,7 +14,7 @@ use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterSnapshot,
     ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
-    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
+    CloudInitIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
     UpdateVmRequest, VmId,
     VmRecord, VmSpec, VolumeId, VolumeRecord,
 };
@@ -62,6 +62,7 @@ pub fn router(service: Service) -> Router {
             post(restore_volume),
         )
         .route("/v1/isos", get(list_isos).post(import_iso))
+        .route("/v1/isos/cloud-init", post(create_cloudinit_iso))
         .route("/v1/isos/{name}", axum::routing::delete(delete_iso))
         .route("/v1/networks", get(list_networks).post(create_network))
         .route(
@@ -512,6 +513,27 @@ async fn upload_iso(
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     Ok((StatusCode::CREATED, Json(result?)))
+}
+
+async fn create_cloudinit_iso(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<CloudInitIsoRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let target = req.name.clone();
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(
+                &service,
+                &user,
+                "iso.cloud-init",
+                target,
+                async { service.create_cloudinit_iso(req) },
+            )
+            .await?,
+        ),
+    ))
 }
 
 async fn delete_iso(
@@ -1075,6 +1097,38 @@ mod tests {
                 .any(|t| t["kind"] == "iso.import"),
             "missing iso.import task: {tasks}"
         );
+    }
+
+    #[tokio::test]
+    async fn cloudinit_iso_via_http() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, iso) = send(
+            &app,
+            Method::POST,
+            "/v1/isos/cloud-init",
+            Some(token),
+            Some(json!({
+                "name": "web",
+                "hostname": "web-1",
+                "user": "ubuntu",
+                "password": "ubuntu"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(iso["name"], "web-cidata.iso");
+        assert!(iso["size_bytes"].as_u64().unwrap() > 2048);
     }
 
     #[tokio::test]

@@ -20,8 +20,11 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   die "run this on Linux with KVM. This host is $(uname -s) (mock driver only)."
 fi
 [[ -e /dev/kvm ]] || die "/dev/kvm is missing (enable virtualization / nested KVM)."
-command -v cloud-hypervisor >/dev/null || die "cloud-hypervisor not in PATH"
 command -v curl >/dev/null || die "curl not in PATH"
+command -v cargo >/dev/null || die "cargo not in PATH (install rustup: https://rustup.rs)"
+
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
 
 arch="$(uname -m)"
 case "$arch" in
@@ -40,6 +43,7 @@ esac
 listen="${URL#http://}"
 listen="${listen#https://}"
 mkdir -p "$CACHE"
+ensure_cloud_hypervisor
 
 fw="$CACHE/hypervisor-fw"
 if [[ ! -s "$fw" ]]; then
