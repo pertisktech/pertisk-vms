@@ -1,18 +1,31 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../api'
+import { api, netsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
 import { useInventory } from '../useInventory'
 
+const EMPTY = {
+  name: '',
+  cidr: '10.90.0.0/24',
+  gateway: '',
+  bridge: '',
+  dhcp: true,
+  isolate: true,
+}
+
 export default function Networks() {
   const { canWrite } = useOutletContext()
-  const { networks, error, setError, mutate } = useInventory()
+  const { networks, vms, error, setError, mutate } = useInventory()
   const confirm = useConfirm()
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', cidr: '10.90.0.0/24' })
+  const [form, setForm] = useState(EMPTY)
   const [busy, setBusy] = useState(false)
+
+  function guestsOn(netId) {
+    return vms.filter((vm) => netsOf(vm).some((n) => n.network_id === netId)).length
+  }
 
   async function createNet(e) {
     e.preventDefault()
@@ -21,10 +34,17 @@ export default function Networks() {
       await mutate(() =>
         api('/v1/networks', {
           method: 'POST',
-          body: { name: form.name.trim(), cidr: form.cidr.trim() },
+          body: {
+            name: form.name.trim(),
+            cidr: form.cidr.trim(),
+            gateway: form.gateway.trim() || undefined,
+            bridge: form.bridge.trim() || undefined,
+            dhcp: form.dhcp,
+            isolate: form.isolate,
+          },
         }),
       )
-      setForm({ name: '', cidr: '10.90.0.0/24' })
+      setForm(EMPTY)
       setOpen(false)
     } catch {
       /* inventory */
@@ -67,7 +87,11 @@ export default function Networks() {
                 <tr>
                   <th>Name</th>
                   <th>CIDR</th>
+                  <th>Gateway</th>
                   <th>Bridge</th>
+                  <th>DHCP</th>
+                  <th>Isolate</th>
+                  <th>Guests</th>
                   {canWrite && <th />}
                 </tr>
               </thead>
@@ -76,7 +100,19 @@ export default function Networks() {
                   <tr key={n.id}>
                     <td>{n.name}</td>
                     <td className="mono-inline">{n.cidr}</td>
+                    <td className="mono-inline">{n.gateway || '—'}</td>
                     <td className="mono-inline">{n.bridge || '—'}</td>
+                    <td>
+                      <span className={`badge ${n.dhcp !== false ? 'ready' : 'unknown'}`}>
+                        {n.dhcp !== false ? 'on' : 'off'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge ${n.isolate !== false ? 'pending' : 'unknown'}`}>
+                        {n.isolate !== false ? 'yes' : 'no'}
+                      </span>
+                    </td>
+                    <td>{guestsOn(n.id)}</td>
                     {canWrite && (
                       <td className="col-actions">
                         <Btn
@@ -106,6 +142,7 @@ export default function Networks() {
       {open && (
         <Modal
           title="Create network"
+          hint="DHCP assigns addresses from the CIDR. Isolation keeps guests from seeing each other on the bridge."
           onClose={() => setOpen(false)}
           footer={
             <>
@@ -128,15 +165,53 @@ export default function Networks() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
             </div>
+            <div className="form-grid">
+              <div className="field">
+                <label htmlFor="net-cidr">CIDR</label>
+                <input
+                  id="net-cidr"
+                  required
+                  value={form.cidr}
+                  onChange={(e) => setForm({ ...form, cidr: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="net-gw">Gateway</label>
+                <input
+                  id="net-gw"
+                  value={form.gateway}
+                  onChange={(e) => setForm({ ...form, gateway: e.target.value })}
+                  placeholder="optional"
+                />
+              </div>
+            </div>
             <div className="field">
-              <label htmlFor="net-cidr">CIDR</label>
+              <label htmlFor="net-bridge">Bridge</label>
               <input
-                id="net-cidr"
-                required
-                value={form.cidr}
-                onChange={(e) => setForm({ ...form, cidr: e.target.value })}
+                id="net-bridge"
+                value={form.bridge}
+                onChange={(e) => setForm({ ...form, bridge: e.target.value })}
+                placeholder="vmbr0 (optional)"
               />
             </div>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.dhcp}
+                onChange={(e) => setForm({ ...form, dhcp: e.target.checked })}
+              />
+              <span className="chk-box" />
+              <span className="chk-label">DHCP pool from this CIDR</span>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.isolate}
+                onChange={(e) => setForm({ ...form, isolate: e.target.checked })}
+              />
+              <span className="chk-box" />
+              <span className="chk-label">Isolate guests on this bridge</span>
+            </label>
           </form>
         </Modal>
       )}

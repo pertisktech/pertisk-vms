@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::extract::{
     DefaultBodyLimit, Path, Query, State,
@@ -18,8 +18,10 @@ use pertisk_types::{
     UpdateVmRequest, VmId,
     VmRecord, VmSpec, VolumeId, VolumeRecord,
 };
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::io::AsyncWriteExt;
 
 use crate::control::AuthUser;
 use crate::static_files::static_handler;
@@ -96,11 +98,20 @@ pub fn router(service: Service) -> Router {
         ))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
+    let iso_upload = Router::new()
+        .route("/v1/isos/upload", post(upload_iso))
+        .route_layer(middleware::from_fn_with_state(
+            service.clone(),
+            auth_middleware,
+        ))
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024));
+
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/login", post(login))
         .route("/v1/openapi.json", get(openapi))
         .merge(protected)
+        .merge(iso_upload)
         .fallback(static_handler)
         .with_state(service)
 }
@@ -337,9 +348,23 @@ async fn list_volumes(State(service): State<Service>) -> Result<impl IntoRespons
 
 async fn create_volume(
     State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<CreateVolumeRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok((StatusCode::CREATED, Json(service.create_volume(req).await?)))
+    let name = req.name.clone();
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(
+                &service,
+                &user,
+                "volume.create",
+                name,
+                service.create_volume(req),
+            )
+            .await?,
+        ),
+    ))
 }
 
 async fn show_volume(
@@ -408,9 +433,85 @@ async fn list_isos(State(service): State<Service>) -> Result<impl IntoResponse, 
 
 async fn import_iso(
     State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<ImportIsoRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok((StatusCode::CREATED, Json(service.import_iso(req)?)))
+    let target = req
+        .name
+        .clone()
+        .unwrap_or_else(|| req.path.display().to_string());
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(
+                &service,
+                &user,
+                "iso.import",
+                target,
+                async { service.import_iso(req) },
+            )
+            .await?,
+        ),
+    ))
+}
+
+#[derive(Deserialize)]
+struct IsoUploadQuery {
+    name: Option<String>,
+}
+
+async fn upload_iso(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Query(q): Query<IsoUploadQuery>,
+    body: Body,
+) -> Result<impl IntoResponse, DaemonError> {
+    let tmp = std::env::temp_dir().join(format!("pertisk-iso-{}.iso", uuid::Uuid::new_v4()));
+    let mut file = tokio::fs::File::create(&tmp).await?;
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    const MAX: u64 = 8 * 1024 * 1024 * 1024;
+    let write = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
+            written += chunk.len() as u64;
+            if written > MAX {
+                return Err(pertisk_storage::StorageError::Message(
+                    "iso larger than 8GiB".into(),
+                )
+                .into());
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok::<(), DaemonError>(())
+    }
+    .await;
+    if let Err(err) = write {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err);
+    }
+    drop(file);
+    if written == 0 {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(pertisk_storage::StorageError::Message("empty iso upload".into()).into());
+    }
+    let target = q.name.clone().unwrap_or_else(|| "upload.iso".into());
+    let result = tracked(
+        &service,
+        &user,
+        "iso.import",
+        target,
+        async {
+            service.import_iso(ImportIsoRequest {
+                path: tmp.clone(),
+                name: q.name.clone(),
+            })
+        },
+    )
+    .await;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Ok((StatusCode::CREATED, Json(result?)))
 }
 
 async fn delete_iso(
@@ -423,10 +524,20 @@ async fn delete_iso(
 
 async fn attach_disk(
     State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<VmId>,
     Json(req): Json<AttachDiskRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok(Json(service.attach_disk(id, req)?))
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.attach-disk",
+            id.to_string(),
+            async { service.attach_disk(id, req) },
+        )
+        .await?,
+    ))
 }
 
 async fn detach_disk(
@@ -438,10 +549,20 @@ async fn detach_disk(
 
 async fn attach_iso(
     State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<VmId>,
     Json(req): Json<AttachIsoRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok(Json(service.attach_iso(id, req)?))
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.attach-iso",
+            id.to_string(),
+            async { service.attach_iso(id, req) },
+        )
+        .await?,
+    ))
 }
 
 async fn detach_iso(
@@ -465,10 +586,20 @@ fn default_serial_max() -> u64 {
 
 async fn attach_nic(
     State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<VmId>,
     Json(req): Json<AttachNicRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok(Json(service.attach_nic(id, req)?))
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.attach-nic",
+            id.to_string(),
+            async { service.attach_nic(id, req) },
+        )
+        .await?,
+    ))
 }
 
 async fn detach_nic(
@@ -796,7 +927,7 @@ mod tests {
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
         let config = HostConfig::default_for(dir.path());
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run")).unwrap();
+        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         (
             Service::new(
                 vmm,
@@ -908,6 +1039,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn iso_upload_from_bytes() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/isos/upload?name=tiny.iso")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(&b"iso-bytes"[..]))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let (status, isos) = send(&app, Method::GET, "/v1/isos", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(isos[0]["name"], "tiny.iso");
+        assert_eq!(isos[0]["size_bytes"], 9);
+        let (status, tasks) = send(&app, Method::GET, "/v1/tasks", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["kind"] == "iso.import"),
+            "missing iso.import task: {tasks}"
+        );
+    }
+
+    #[tokio::test]
     async fn viewer_cannot_mutate() {
         let (svc, _dir) = service();
         svc.create_user(CreateUserRequest {
@@ -966,17 +1136,64 @@ mod tests {
             path: &str,
             body: Option<serde_json::Value>,
         ) -> serde_json::Value {
+            self.json_opt(method, path, body)
+                .await
+                .expect("cluster http")
+        }
+
+        async fn json_opt(
+            &self,
+            method: Method,
+            path: &str,
+            body: Option<serde_json::Value>,
+        ) -> Option<serde_json::Value> {
             let mut req = self.http().request(method, format!("{}{path}", self.url));
             req = req.header("authorization", format!("Bearer {}", self.token));
             if let Some(body) = body {
                 req = req.json(&body);
             }
-            req.send().await.unwrap().json().await.unwrap()
+            req.send().await.ok()?.json().await.ok()
         }
 
         fn http(&self) -> reqwest::Client {
-            reqwest::Client::new()
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
         }
+    }
+
+    async fn wait_members(nodes: &[&LiveNode], want: usize) {
+        for _ in 0..80 {
+            for node in nodes {
+                if let Some(cluster) = node.json_opt(Method::GET, "/v1/cluster", None).await
+                    && cluster["quorum"].as_bool() == Some(true)
+                    && cluster["members"].as_array().map(|m| m.len()).unwrap_or(0) >= want
+                {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn wait_running_elsewhere(nodes: &[&LiveNode], id: &str, owner: &str) -> Option<String> {
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            for node in nodes {
+                let Some(vms) = node.json_opt(Method::GET, "/v1/vms", None).await else {
+                    continue;
+                };
+                if let Some(vm) = vms.as_array().and_then(|list| {
+                    list.iter()
+                        .find(|vm| vm["id"] == id && vm["state"] == "running")
+                }) && vm["node_id"].as_str() != Some(owner)
+                {
+                    return vm["node_id"].as_str().map(str::to_string);
+                }
+            }
+        }
+        None
     }
 
     async fn spawn_node(name: &str) -> LiveNode {
@@ -991,7 +1208,7 @@ mod tests {
         let volumes = VolumePool::open(dir.path().join("storage"), None).unwrap();
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run")).unwrap();
+        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         let svc = Service::new(
             vmm,
             store,
@@ -1051,6 +1268,7 @@ mod tests {
                 })),
             )
             .await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let _ = c
             .json(
                 Method::POST,
@@ -1062,10 +1280,12 @@ mod tests {
                 })),
             )
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        wait_members(&[&a, &b, &c], 3).await;
         let cluster = a.json(Method::GET, "/v1/cluster", None).await;
-        assert!(cluster["quorum"].as_bool().unwrap());
-        assert!(cluster["members"].as_array().unwrap().len() >= 3);
+        assert!(
+            cluster["members"].as_array().map(|m| m.len()).unwrap_or(0) >= 3,
+            "cluster did not reach 3 members: {cluster}"
+        );
 
         let created = a
             .json(
@@ -1099,20 +1319,12 @@ mod tests {
             "b" => b.kill(),
             _ => c.kill(),
         }
-        let survivor = if owner_name == "a" { &b } else { &a };
-        let mut found = false;
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let vms = survivor.json(Method::GET, "/v1/vms", None).await;
-            if let Some(vm) = vms.as_array().and_then(|list| {
-                list.iter()
-                    .find(|vm| vm["id"] == id && vm["state"] == "running")
-            }) && vm["node_id"].as_str() != Some(owner.as_str())
-            {
-                found = true;
-                break;
-            }
-        }
+        let survivors: Vec<&LiveNode> = match owner_name.as_str() {
+            "a" => vec![&b, &c],
+            "b" => vec![&a, &c],
+            _ => vec![&a, &b],
+        };
+        let found = wait_running_elsewhere(&survivors, id, &owner).await.is_some();
         a.kill();
         b.kill();
         c.kill();
@@ -1135,6 +1347,7 @@ mod tests {
                 })),
             )
             .await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let _ = c
             .json(
                 Method::POST,
@@ -1146,15 +1359,7 @@ mod tests {
                 })),
             )
             .await;
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let cluster = a.json(Method::GET, "/v1/cluster", None).await;
-            if cluster["quorum"].as_bool() == Some(true)
-                && cluster["members"].as_array().map(|m| m.len()).unwrap_or(0) >= 3
-            {
-                break;
-            }
-        }
+        wait_members(&[&a, &b, &c], 3).await;
 
         let vol = a
             .json(
@@ -1162,7 +1367,7 @@ mod tests {
                 "/v1/volumes",
                 Some(json!({
                     "name": "shared",
-                    "size_bytes": 8_388_608,
+                    "size_bytes": 65536,
                     "replicas": 2
                 })),
             )
@@ -1230,20 +1435,12 @@ mod tests {
             "b" => b.kill(),
             _ => c.kill(),
         }
-        let survivor = if owner_name == "a" { &b } else { &a };
-        let mut dest = None;
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let vms = survivor.json(Method::GET, "/v1/vms", None).await;
-            if let Some(vm) = vms.as_array().and_then(|list| {
-                list.iter()
-                    .find(|vm| vm["id"] == id && vm["state"] == "running")
-            }) && vm["node_id"].as_str() != Some(owner.as_str())
-            {
-                dest = vm["node_id"].as_str().map(|s| s.to_string());
-                break;
-            }
-        }
+        let survivors: Vec<&LiveNode> = match owner_name.as_str() {
+            "a" => vec![&b, &c],
+            "b" => vec![&a, &c],
+            _ => vec![&a, &b],
+        };
+        let dest = wait_running_elsewhere(&survivors, id, &owner).await;
         a.kill();
         b.kill();
         c.kill();

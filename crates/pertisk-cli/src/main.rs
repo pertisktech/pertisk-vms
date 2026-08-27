@@ -115,6 +115,10 @@ enum VmCommand {
         #[arg(long)]
         kernel: Option<PathBuf>,
         #[arg(long)]
+        initramfs: Option<PathBuf>,
+        #[arg(long)]
+        firmware: Option<PathBuf>,
+        #[arg(long)]
         cmdline: Option<String>,
         #[arg(long)]
         disk: Vec<PathBuf>,
@@ -328,6 +332,13 @@ async fn run() -> Result<()> {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "not found".into())
             );
+            println!(
+                "firmware           {}",
+                info.firmware
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "not found (kernel boot only)".into())
+            );
             println!("listen             {}", info.listen);
             println!("data_dir           {}", info.data_dir.display());
             println!("storage            {}", info.storage_root.display());
@@ -507,6 +518,8 @@ async fn run() -> Result<()> {
                 cpus,
                 memory,
                 kernel,
+                initramfs,
+                firmware,
                 cmdline,
                 disk,
             } => {
@@ -516,7 +529,8 @@ async fn run() -> Result<()> {
                     memory_mib: memory,
                     kernel,
                     cmdline,
-                    initramfs: None,
+                    initramfs,
+                    firmware,
                     disks: disk
                         .into_iter()
                         .map(|path| DiskSpec {

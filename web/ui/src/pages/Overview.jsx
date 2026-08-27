@@ -26,7 +26,9 @@ export default function Overview() {
           </h1>
           <p className="dash-lead muted">
             {host
-              ? `${host.os}/${host.arch} · ${host.driver} · kvm ${host.kvm ? 'yes' : 'no'}`
+              ? `${host.os}/${host.arch} · ${host.driver} · kvm ${host.kvm ? 'yes' : 'no'}${
+                  host.firmware ? ' · firmware' : ''
+                }`
               : 'Loading host…'}
           </p>
         </div>

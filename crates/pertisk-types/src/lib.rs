@@ -598,6 +598,9 @@ pub struct VmSpec {
     pub cmdline: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initramfs: Option<PathBuf>,
+    /// Cloud Hypervisor firmware for disk/ISO boot when `kernel` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disks: Vec<DiskSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -694,6 +697,9 @@ pub struct VmmConfig {
     pub driver: DriverKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_hypervisor: Option<PathBuf>,
+    /// rust-hypervisor-firmware (`hypervisor-fw`) for disk/ISO boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<PathBuf>,
     pub run_dir: PathBuf,
 }
 
@@ -702,6 +708,7 @@ impl VmmConfig {
         Self {
             driver: DriverKind::default_for_platform(),
             cloud_hypervisor: find_in_path("cloud-hypervisor"),
+            firmware: find_firmware(),
             run_dir: home.join("run"),
         }
     }
@@ -797,6 +804,12 @@ impl HostConfig {
         if self.storage.qemu_img.is_none() {
             self.storage.qemu_img = find_in_path("qemu-img");
         }
+        if self.vmm.firmware.is_none() {
+            self.vmm.firmware = find_firmware();
+        }
+        if self.vmm.cloud_hypervisor.is_none() {
+            self.vmm.cloud_hypervisor = find_in_path("cloud-hypervisor");
+        }
     }
 }
 
@@ -808,6 +821,8 @@ pub struct HostInfo {
     pub driver: DriverKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud_hypervisor: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<PathBuf>,
     pub listen: String,
     pub data_dir: PathBuf,
     #[serde(default)]
@@ -849,6 +864,36 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// rust-hypervisor-firmware or Cloud Hypervisor UEFI images on PATH / distro paths.
+pub fn find_firmware() -> Option<PathBuf> {
+    const NAMES: &[&str] = &[
+        "hypervisor-fw",
+        "hypervisor-fw-aarch64",
+        "CLOUDHV.fd",
+        "CLOUDHV_EFI.fd",
+    ];
+    for name in NAMES {
+        if let Some(path) = find_in_path(name) {
+            return Some(path);
+        }
+    }
+    const DIRS: &[&str] = &[
+        "/usr/lib/cloud-hypervisor",
+        "/usr/libexec/cloud-hypervisor",
+        "/usr/share/cloud-hypervisor",
+        "/usr/share/cloud-hypervisor/firmware",
+    ];
+    for dir in DIRS {
+        for name in NAMES {
+            let candidate = PathBuf::from(dir).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
     HostInfo {
         os: std::env::consts::OS.to_string(),
@@ -860,6 +905,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
             .cloud_hypervisor
             .clone()
             .or_else(|| find_in_path("cloud-hypervisor")),
+        firmware: config.vmm.firmware.clone().or_else(find_firmware),
         listen: config.daemon.listen.clone(),
         data_dir,
         storage_root: config.storage.root.clone(),
@@ -945,6 +991,7 @@ mod tests {
             kernel: None,
             cmdline: None,
             initramfs: None,
+            firmware: None,
             disks: vec![],
             nets: vec![],
             serial_log: None,

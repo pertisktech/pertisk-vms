@@ -51,6 +51,7 @@ impl VmmBackend {
         kind: DriverKind,
         cloud_hypervisor: Option<PathBuf>,
         run_dir: PathBuf,
+        firmware: Option<PathBuf>,
     ) -> Result<Self> {
         match kind {
             DriverKind::Mock => Ok(Self::Mock(MockDriver::new())),
@@ -59,7 +60,9 @@ impl VmmBackend {
                     .or_else(|| pertisk_types::find_in_path("cloud-hypervisor"))
                     .ok_or(VmmError::BinaryMissing)?;
                 Ok(Self::CloudHypervisor(CloudHypervisorDriver::new(
-                    binary, run_dir,
+                    binary,
+                    run_dir,
+                    firmware.or_else(pertisk_types::find_firmware),
                 )))
             }
         }

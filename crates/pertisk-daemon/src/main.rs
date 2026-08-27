@@ -16,6 +16,9 @@ struct Args {
     /// Override VMM driver (mock | cloud-hypervisor).
     #[arg(long, env = "PERTISK_DRIVER")]
     driver: Option<pertisk_types::DriverKind>,
+    /// rust-hypervisor-firmware path for disk/ISO boot.
+    #[arg(long, env = "PERTISK_FIRMWARE")]
+    firmware: Option<PathBuf>,
     /// Listen address.
     #[arg(long, env = "PERTISK_LISTEN")]
     listen: Option<String>,
@@ -42,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(driver) = args.driver {
         config.vmm.driver = driver;
     }
+    if let Some(firmware) = args.firmware {
+        config.vmm.firmware = Some(firmware);
+    }
     if let Some(listen) = args.listen {
         config.daemon.listen = listen;
     }
@@ -63,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.vmm.driver,
         config.vmm.cloud_hypervisor.clone(),
         config.vmm.run_dir.clone(),
+        config.vmm.firmware.clone(),
     )?;
     let listen = config.daemon.listen.clone();
     let service = Service::new(vmm, store, volumes, networks, control, config, home);

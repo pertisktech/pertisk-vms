@@ -19,6 +19,8 @@ export default function Storage() {
   const [isoOpen, setIsoOpen] = useState(false)
   const [vol, setVol] = useState({ name: '', size: '8G', replicas: 2 })
   const [isoPath, setIsoPath] = useState('')
+  const [isoFile, setIsoFile] = useState(null)
+  const [isoMode, setIsoMode] = useState('file')
   const [busy, setBusy] = useState(false)
   const [action, setAction] = useState(null)
   const [actionName, setActionName] = useState('')
@@ -53,8 +55,20 @@ export default function Storage() {
     e.preventDefault()
     setBusy(true)
     try {
-      await mutate(() => api('/v1/isos', { method: 'POST', body: { path: isoPath.trim() } }))
+      await mutate(async () => {
+        if (isoMode === 'file') {
+          if (!isoFile) throw new Error('Choose an ISO file')
+          await api(`/v1/isos/upload?name=${encodeURIComponent(isoFile.name)}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream' },
+            body: isoFile,
+          })
+        } else {
+          await api('/v1/isos', { method: 'POST', body: { path: isoPath.trim() } })
+        }
+      })
       setIsoPath('')
+      setIsoFile(null)
       setIsoOpen(false)
     } catch {
       /* inventory error */
@@ -114,7 +128,7 @@ export default function Storage() {
             <Icon name="disk" size={20} />
             Storage
           </h1>
-          <p className="dash-lead muted">Volumes replicate across nodes. ISOs are imported from a host path.</p>
+          <p className="dash-lead muted">Volumes replicate across nodes. Upload an ISO here, then attach it in the guest wizard.</p>
         </div>
         {canWrite && (
           <div className="dash-resources-actions">
@@ -175,7 +189,7 @@ export default function Storage() {
                     </td>
                     {canWrite && (
                       <td className="col-actions">
-                        <div className="row-actions" style={{ marginTop: 0 }}>
+                        <div className="row-actions">
                           <Btn variant="secondary" onClick={() => openAction('resize', v)}>
                             Resize
                           </Btn>
@@ -404,30 +418,62 @@ export default function Storage() {
       {isoOpen && (
         <Modal
           title="Import ISO"
-          hint="Path must exist on this node."
+          hint="Upload from this browser, or import a file already on the node."
           onClose={() => setIsoOpen(false)}
           footer={
             <>
               <button type="button" className="secondary" onClick={() => setIsoOpen(false)}>
                 Cancel
               </button>
-              <button type="submit" form="import-iso" disabled={busy}>
-                Import
+              <button
+                type="submit"
+                form="import-iso"
+                disabled={busy || (isoMode === 'file' ? !isoFile : !isoPath.trim())}
+              >
+                {busy ? 'Importing…' : 'Import'}
               </button>
             </>
           }
         >
           <form id="import-iso" onSubmit={importIso}>
-            <div className="field">
-              <label htmlFor="iso-path">Host path</label>
-              <input
-                id="iso-path"
-                required
-                value={isoPath}
-                onChange={(e) => setIsoPath(e.target.value)}
-                placeholder="/path/to/os.iso"
-              />
+            <div className="role-pills" style={{ marginBottom: '1rem' }}>
+              {[
+                ['file', 'Upload file'],
+                ['path', 'Host path'],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`role-pill${isoMode === id ? ' active' : ''}`}
+                  onClick={() => setIsoMode(id)}
+                >
+                  <strong>{label}</strong>
+                </button>
+              ))}
             </div>
+            {isoMode === 'file' ? (
+              <div className="field">
+                <label htmlFor="iso-file">ISO file</label>
+                <input
+                  id="iso-file"
+                  type="file"
+                  accept=".iso,application/x-cd-image,application/octet-stream"
+                  onChange={(e) => setIsoFile(e.target.files?.[0] || null)}
+                />
+                {isoFile && <p className="muted">{isoFile.name}</p>}
+              </div>
+            ) : (
+              <div className="field">
+                <label htmlFor="iso-path">Host path</label>
+                <input
+                  id="iso-path"
+                  required={isoMode === 'path'}
+                  value={isoPath}
+                  onChange={(e) => setIsoPath(e.target.value)}
+                  placeholder="/path/to/os.iso"
+                />
+              </div>
+            )}
           </form>
         </Modal>
       )}

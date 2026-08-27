@@ -114,6 +114,7 @@ mod tests {
                     kernel: None,
                     cmdline: None,
                     initramfs: None,
+                    firmware: None,
                     disks: vec![],
                     nets: vec![],
                     serial_log: None,

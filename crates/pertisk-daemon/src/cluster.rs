@@ -320,6 +320,14 @@ impl Cluster {
             .collect()
     }
 
+    pub fn peer_urls_online_except_self(&self) -> Vec<(NodeId, String)> {
+        let online = self.online_ids();
+        self.peer_urls_except_self()
+            .into_iter()
+            .filter(|(id, _)| online.contains(id))
+            .collect()
+    }
+
     pub fn member_url(&self, id: NodeId) -> Option<String> {
         let inner = self.inner.lock().expect("cluster lock");
         inner.members.get(&id).map(|m| m.record.peer_url.clone())
@@ -556,6 +564,7 @@ mod tests {
             kernel: None,
             cmdline: None,
             initramfs: None,
+            firmware: None,
             disks: vec![],
             nets: vec![],
             serial_log: None,

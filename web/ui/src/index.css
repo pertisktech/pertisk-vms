@@ -467,6 +467,24 @@ th {
 }
 
 .row-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.85rem; }
+.col-actions {
+  width: 1%;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.col-actions .row-actions {
+  flex-wrap: nowrap;
+  margin-top: 0;
+  gap: 0.3rem;
+  align-items: center;
+}
+.col-actions .btn-icon,
+.col-actions button {
+  padding: 0.28rem 0.55rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .btn-icon { display: inline-flex; align-items: center; gap: 0.45rem; }
 a.btn-icon {
   background: var(--accent);
@@ -731,6 +749,7 @@ a.guest-card:hover { color: inherit; }
   align-items: center;
 }
 .inline-attach select { width: auto; min-width: 8rem; }
+.inline-attach input { width: 7.5rem; min-width: 0; padding: 0.35rem 0.5rem; font-size: 0.8rem; }
 .machine-edit {
   margin: 0.75rem 0 1.1rem;
   padding-top: 0.75rem;
@@ -769,7 +788,6 @@ a.guest-card:hover { color: inherit; }
 }
 .metric-tile-fill { height: 100%; border-radius: 999px; }
 .usage-bar-cpu { background: var(--color-blue-b1); }
-.col-actions { width: 1%; white-space: nowrap; }
 
 .modal-card.modal-wizard {
   width: min(720px, 100%);
@@ -833,6 +851,28 @@ a.guest-card:hover { color: inherit; }
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.wizard-progress {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.wizard-progress-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.wizard-progress-row.done { color: var(--success); }
+.wizard-progress-row.error { color: var(--danger); }
+.wizard-progress-row.running { color: var(--accent); }
+.wizard-task-log {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--mono);
 }
 .role-pills { display: flex; gap: 0.5rem; }
 .role-pill {

@@ -22,7 +22,7 @@ function nodeName(cluster, id) {
 export default function Guests() {
   const { canWrite } = useOutletContext()
   const [params, setParams] = useSearchParams()
-  const { vms, volumes, isos, networks, cluster, error, setError, mutate, refresh } = useInventory()
+  const { vms, volumes, isos, networks, cluster, host, error, setError, mutate, refresh } = useInventory()
   const confirm = useConfirm()
   const [openCreate, setOpenCreate] = useState(() => params.get('new') === '1')
   const [selected, setSelected] = useState(null)
@@ -30,6 +30,7 @@ export default function Guests() {
   const [iso, setIso] = useState('')
   const [volumeId, setVolumeId] = useState('')
   const [networkId, setNetworkId] = useState('')
+  const [nicIp, setNicIp] = useState('')
   const [migrateVm, setMigrateVm] = useState(null)
   const [migrateTarget, setMigrateTarget] = useState('')
   const [edit, setEdit] = useState({ name: '', vcpus: 1, memory_mib: 512, ha: true })
@@ -126,7 +127,7 @@ export default function Guests() {
     if (kind === 'rm') {
       const ok = await confirm({
         title: 'Destroy guest',
-        message: `Remove ${vm.spec?.name || vm.id}? This cannot be undone.`,
+        message: `Remove ${vm.spec?.name || vm.id} and disks that are not used by other guests? This cannot be undone.`,
         confirmLabel: 'Destroy',
       })
       if (!ok) return
@@ -420,10 +421,12 @@ export default function Guests() {
             <div>
               <p className="wizard-section-title">NICs</p>
               {netsOf(selectedVm).length === 0 && <p className="muted">No NICs.</p>}
-              {netsOf(selectedVm).map((n, i) => (
+              {netsOf(selectedVm).map((n, i) => {
+                const net = networks.find((item) => item.id === n.network_id)
+                return (
                 <div key={n.tap || n.mac || i} className="hw-row">
                   <span>
-                    {n.tap || n.mac || 'nic'}
+                    {net?.name || n.tap || n.mac || 'nic'}
                     {n.ip ? ` · ${n.ip}` : ''}
                   </span>
                   {canWrite && n.tap && (
@@ -442,18 +445,20 @@ export default function Guests() {
                     </Btn>
                   )}
                 </div>
-              ))}
+                )
+              })}
               {canWrite && networks.length > 0 && (
                 <form
                   className="inline-attach"
                   onSubmit={(e) => {
                     e.preventDefault()
+                    const ip = nicIp.trim()
                     mutate(() =>
                       api(`/v1/vms/${selectedVm.id}/nics`, {
                         method: 'POST',
-                        body: { network_id: networkId },
+                        body: { network_id: networkId, ip: ip || undefined },
                       }),
-                    )
+                    ).then(() => setNicIp(''))
                   }}
                 >
                   <select value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
@@ -463,6 +468,12 @@ export default function Guests() {
                       </option>
                     ))}
                   </select>
+                  <input
+                    value={nicIp}
+                    onChange={(e) => setNicIp(e.target.value)}
+                    placeholder="IP (optional)"
+                    aria-label="Static IP"
+                  />
                   <button type="submit" disabled={selectedVm.state === 'running'}>
                     Attach
                   </button>
@@ -552,6 +563,7 @@ export default function Guests() {
           volumes={volumes}
           isos={isos}
           networks={networks}
+          host={host}
           onClose={() => {
             setOpenCreate(false)
             if (params.get('new')) {

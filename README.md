@@ -44,3 +44,19 @@ Serial console is a websocket at `/v1/vms/{id}/console/ws?token=...`. The UI att
 Default bootstrap user is `admin`. Password is `PERTISK_ADMIN_PASSWORD` if set, otherwise `admin`. Restart `pertiskd` after upgrades.
 
 Home directory: `~/.pertisk`. On Linux, `apply_host_links = true` creates bridge/TAP devices with `ip`. qcow2 needs `qemu-img`.
+
+**Linux KVM guest (v0.1 gate):** install Cloud Hypervisor, then from the repo root:
+
+```bash
+PERTISK_ADMIN_PASSWORD=admin ./scripts/linux-guest.sh
+```
+
+That fetches Alpine virt netboot (`vmlinuz-virt` + `initramfs-virt`), creates the guest with `--kernel` / `--initramfs`, starts it, and attaches serial. This Mac cannot close that gate (`/dev/kvm` is absent; the daemon stays on `mock`).
+
+**Linux ISO guest (v1.0 gate):** same host, plus firmware. Storage → Import ISO (browser upload) then the guest wizard, or:
+
+```bash
+PERTISK_ADMIN_PASSWORD=admin ./scripts/linux-iso-guest.sh
+```
+
+That downloads `hypervisor-fw` and an Alpine virt ISO, creates a disk, attaches the ISO, and boots Cloud Hypervisor with firmware (no kernel).

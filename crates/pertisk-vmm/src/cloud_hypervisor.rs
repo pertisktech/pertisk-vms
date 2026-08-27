@@ -16,14 +16,16 @@ use crate::{CreateResult, Result, StartResult, VmmError};
 pub struct CloudHypervisorDriver {
     binary: PathBuf,
     run_dir: PathBuf,
+    firmware: Option<PathBuf>,
     children: Mutex<HashMap<pertisk_types::VmId, Child>>,
 }
 
 impl CloudHypervisorDriver {
-    pub fn new(binary: PathBuf, run_dir: PathBuf) -> Self {
+    pub fn new(binary: PathBuf, run_dir: PathBuf, firmware: Option<PathBuf>) -> Self {
         Self {
             binary,
             run_dir,
+            firmware,
             children: Mutex::new(HashMap::new()),
         }
     }
@@ -44,6 +46,11 @@ impl CloudHypervisorDriver {
         if spec.kernel.is_none() && spec.disks.is_empty() {
             return Err(VmmError::Message(
                 "cloud-hypervisor needs a kernel or at least one disk".into(),
+            ));
+        }
+        if spec.kernel.is_none() && spec.firmware.is_none() && self.firmware.is_none() {
+            return Err(VmmError::Message(
+                "disk/ISO boot needs firmware (set vmm.firmware or install hypervisor-fw)".into(),
             ));
         }
         tokio::fs::create_dir_all(&self.run_dir).await?;
@@ -77,7 +84,7 @@ impl CloudHypervisorDriver {
 
         wait_ready(&socket, Duration::from_secs(5)).await?;
 
-        let config = ChVmConfig::from_spec(spec, &console_socket);
+        let config = ChVmConfig::from_spec(spec, &console_socket, self.firmware.as_deref());
         let body = serde_json::to_vec(&config)?;
         let (status, resp) = put_json(&socket, "/api/v1/vm.create", Some(&body)).await?;
         expect_ok(status, &resp)?;
@@ -189,6 +196,8 @@ struct ChMemory {
 #[derive(Serialize)]
 struct ChPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
+    firmware: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     kernel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cmdline: Option<String>,
@@ -218,31 +227,51 @@ struct ChConsole {
 }
 
 impl ChVmConfig {
-    fn from_spec(spec: &VmSpec, console_socket: &std::path::Path) -> Self {
-        let payload = spec.kernel.as_ref().map(|kernel| ChPayload {
-            kernel: Some(kernel.display().to_string()),
-            cmdline: spec
-                .cmdline
-                .clone()
-                .or_else(|| Some("console=ttyS0 reboot=k panic=1".into())),
-            initramfs: spec
-                .initramfs
-                .as_ref()
-                .map(|path| path.display().to_string()),
-        });
-        let disks = if spec.disks.is_empty() {
-            None
+    fn from_spec(
+        spec: &VmSpec,
+        console_socket: &std::path::Path,
+        host_firmware: Option<&std::path::Path>,
+    ) -> Self {
+        let firmware = spec
+            .firmware
+            .as_ref()
+            .map(|p| p.as_path())
+            .or(host_firmware)
+            .map(|p| p.display().to_string());
+        let payload = if spec.kernel.is_some() {
+            Some(ChPayload {
+                firmware: None,
+                kernel: spec.kernel.as_ref().map(|p| p.display().to_string()),
+                cmdline: spec
+                    .cmdline
+                    .clone()
+                    .or_else(|| Some("console=ttyS0 reboot=k panic=1".into())),
+                initramfs: spec
+                    .initramfs
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            })
+        } else if firmware.is_some() {
+            Some(ChPayload {
+                firmware,
+                kernel: None,
+                cmdline: spec.cmdline.clone(),
+                initramfs: None,
+            })
         } else {
-            Some(
-                spec.disks
-                    .iter()
-                    .map(|disk| ChDisk {
-                        path: disk.path.display().to_string(),
-                        readonly: disk.readonly,
-                    })
-                    .collect(),
-            )
+            None
         };
+        let mut disks: Vec<ChDisk> = spec
+            .disks
+            .iter()
+            .map(|disk| ChDisk {
+                path: disk.path.display().to_string(),
+                readonly: disk.readonly || disk.cdrom,
+            })
+            .collect();
+        // Present the installer ISO first so rust-hypervisor-firmware finds El Torito.
+        disks.sort_by_key(|disk| !disk.readonly);
+        let disks = if disks.is_empty() { None } else { Some(disks) };
         let net = if spec.nets.is_empty() {
             None
         } else {
@@ -272,5 +301,59 @@ impl ChVmConfig {
                 socket: Some(console_socket.display().to_string()),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pertisk_types::{DiskSpec, VmSpec};
+    use std::path::PathBuf;
+
+    fn spec() -> VmSpec {
+        VmSpec {
+            name: "iso".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![
+                DiskSpec {
+                    path: PathBuf::from("/var/disk.raw"),
+                    readonly: false,
+                    cdrom: false,
+                    volume_id: None,
+                    iso_name: None,
+                },
+                DiskSpec {
+                    path: PathBuf::from("/var/os.iso"),
+                    readonly: true,
+                    cdrom: true,
+                    volume_id: None,
+                    iso_name: Some("os.iso".into()),
+                },
+            ],
+            nets: vec![],
+            serial_log: None,
+            ha: true,
+        }
+    }
+
+    #[test]
+    fn disk_boot_uses_host_firmware_and_iso_first() {
+        let cfg = ChVmConfig::from_spec(
+            &spec(),
+            PathBuf::from("/tmp/c.sock").as_path(),
+            Some(PathBuf::from("/usr/lib/hypervisor-fw").as_path()),
+        );
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["payload"]["firmware"], "/usr/lib/hypervisor-fw");
+        assert!(json["payload"].get("kernel").is_none());
+        let disks = json["disks"].as_array().unwrap();
+        assert_eq!(disks[0]["path"], "/var/os.iso");
+        assert_eq!(disks[0]["readonly"], true);
+        assert_eq!(disks[1]["path"], "/var/disk.raw");
     }
 }

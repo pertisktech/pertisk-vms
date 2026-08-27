@@ -69,6 +69,7 @@ pub struct Service {
     cluster: Arc<Cluster>,
     console: ConsoleHub,
     http: reqwest::Client,
+    rebuild: Arc<tokio::sync::Mutex<()>>,
     config: HostConfig,
     data_dir: std::path::PathBuf,
 }
@@ -94,7 +95,12 @@ impl Service {
             control: Arc::new(control),
             cluster: Arc::new(cluster),
             console: ConsoleHub::new(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_millis(250))
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            rebuild: Arc::new(tokio::sync::Mutex::new(())),
             config,
             data_dir,
         }
@@ -364,6 +370,12 @@ impl Service {
     pub async fn destroy(&self, id: VmId) -> Result<(), DaemonError> {
         self.require_quorum()?;
         let record = self.store.get(id)?;
+        let disks: Vec<VolumeId> = record
+            .spec
+            .disks
+            .iter()
+            .filter_map(|disk| disk.volume_id)
+            .collect();
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
@@ -380,6 +392,12 @@ impl Service {
             let _ = self.networks.release_nic(nic);
         }
         self.store.remove(id)?;
+        for volume_id in disks {
+            if !self.volume_users(volume_id)?.is_empty() || self.volume_is_backing(volume_id)? {
+                continue;
+            }
+            let _ = self.delete_volume(volume_id).await;
+        }
         self.cluster.bump()?;
         self.replicate().await;
         Ok(())
@@ -705,6 +723,14 @@ impl Service {
             .collect())
     }
 
+    fn volume_is_backing(&self, id: VolumeId) -> Result<bool, DaemonError> {
+        Ok(self
+            .volumes
+            .list_volumes()?
+            .iter()
+            .any(|vol| vol.backing_id == Some(id)))
+    }
+
     fn iso_users(&self, name: &str) -> Result<Vec<VmId>, DaemonError> {
         Ok(self
             .store
@@ -981,7 +1007,10 @@ impl Service {
             && let Some(leader) = self.cluster.leader_id()
             && leader != self.cluster.self_id()
         {
-            return self.peer_json(leader, "/v1/peer/accept", &node).await;
+            let snap: pertisk_types::ClusterSnapshot =
+                self.peer_json(leader, "/v1/peer/accept", &node).await?;
+            self.apply_snapshot(snap.clone())?;
+            return Ok(snap);
         }
         let snap = self.apply_accept(node)?;
         self.replicate().await;
@@ -1050,9 +1079,14 @@ impl Service {
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
         }
-        self.send_heartbeats().await;
-        if self.cluster.has_quorum() && self.cluster.is_leader() {
+        if quorum && self.cluster.is_leader() {
             self.recover_ha().await?;
+        }
+        self.send_heartbeats().await;
+        if self.cluster.has_quorum()
+            && self.cluster.is_leader()
+            && let Ok(_guard) = self.rebuild.try_lock()
+        {
             self.rebuild_volumes().await;
         }
         Ok(())
@@ -1129,11 +1163,12 @@ impl Service {
                     .unwrap_or_else(|_| self.cluster.membership_snapshot()),
             );
         }
-        for (_id, url) in self.cluster.peer_urls_except_self() {
+        for (_id, url) in self.cluster.peer_urls_online_except_self() {
             let url = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
             let _ = self
                 .http
                 .post(url)
+                .timeout(std::time::Duration::from_millis(400))
                 .header("x-pertisk-peer", self.cluster.secret())
                 .json(&msg)
                 .send()
@@ -1148,7 +1183,7 @@ impl Service {
         let Ok(snap) = self.snapshot() else {
             return;
         };
-        for (_id, url) in self.cluster.peer_urls_except_self() {
+        for (_id, url) in self.cluster.peer_urls_online_except_self() {
             let url = format!("{}/v1/peer/snapshot", url.trim_end_matches('/'));
             let _ = self
                 .http
@@ -1242,9 +1277,13 @@ impl Service {
     }
 
     async fn ensure_replicas(&self, record: &VolumeRecord) {
+        let online = self.cluster.online_ids();
         for replica in &record.replicas {
             if *replica == self.cluster.self_id() {
                 let _ = self.volumes.ensure_local(record);
+                continue;
+            }
+            if !online.contains(replica) {
                 continue;
             }
             let _ = self
@@ -1263,8 +1302,12 @@ impl Service {
         let Ok(bytes) = self.volumes.read_blob(record.id) else {
             return;
         };
+        let online = self.cluster.online_ids();
         for replica in &record.replicas {
             if *replica == self.cluster.self_id() {
+                continue;
+            }
+            if !online.contains(replica) {
                 continue;
             }
             let _ = self.peer_put_blob(*replica, record.id, &bytes).await;
@@ -1344,6 +1387,7 @@ impl Service {
             .header("x-pertisk-peer", self.cluster.secret())
             .header("content-type", "application/octet-stream")
             .body(bytes.to_vec())
+            .timeout(std::time::Duration::from_millis(600))
             .send()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
@@ -1373,6 +1417,7 @@ impl Service {
                 url.trim_end_matches('/')
             ))
             .header("x-pertisk-peer", self.cluster.secret())
+            .timeout(std::time::Duration::from_millis(600))
             .send()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
@@ -1430,7 +1475,7 @@ mod tests {
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
         let config = HostConfig::default_for(dir.path());
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run")).unwrap();
+        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         (
             Service::new(
                 vmm,
@@ -1453,6 +1498,7 @@ mod tests {
             kernel: None,
             cmdline: None,
             initramfs: None,
+            firmware: None,
             disks: vec![],
             nets: vec![],
             serial_log: None,
@@ -1581,6 +1627,42 @@ mod tests {
         assert!(svc.delete_volume(vol.id).await.is_err());
         svc.detach_disk(vm.id, vol.id).unwrap();
         svc.delete_volume(vol.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn destroy_deletes_exclusive_volume() {
+        let (svc, _dir) = service();
+        let vm = svc.create(spec("demo")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("8M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        svc.destroy(vm.id).await.unwrap();
+        assert!(svc.get_volume(vol.id).is_err());
+    }
+
+    #[tokio::test]
+    async fn destroy_leaves_unattached_volume() {
+        let (svc, _dir) = service();
+        let vm = svc.create(spec("demo")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "spare".into(),
+                size_bytes: parse_size("8M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+            })
+            .await
+            .unwrap();
+        svc.destroy(vm.id).await.unwrap();
+        assert!(svc.get_volume(vol.id).is_ok());
     }
 
     #[tokio::test]

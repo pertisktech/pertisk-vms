@@ -25,7 +25,11 @@ export async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) }
   const token = getToken()
   if (token) headers.authorization = `Bearer ${token}`
-  if (opts.body !== undefined && !(opts.body instanceof FormData)) {
+  const isRaw =
+    typeof FormData !== 'undefined' && opts.body instanceof FormData
+      ? true
+      : typeof Blob !== 'undefined' && opts.body instanceof Blob
+  if (opts.body !== undefined && !isRaw) {
     headers['content-type'] = 'application/json'
   }
   const res = await fetch(path, {
@@ -34,7 +38,7 @@ export async function api(path, opts = {}) {
     body:
       opts.body === undefined
         ? undefined
-        : typeof opts.body === 'string' || opts.body instanceof FormData
+        : typeof opts.body === 'string' || isRaw
           ? opts.body
           : JSON.stringify(opts.body),
   })

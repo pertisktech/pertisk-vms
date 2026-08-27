@@ -16,6 +16,8 @@ Skip:  API, Ceph, cluster protocol
   [x] Cargo workspace: types, vmm, storage, net, daemon, api, cli
   [x] VM/disk/net IDs, spec structs, host config file
   [ ] Install VMM and boot one manual test VM
+      procedure: scripts/linux-guest.sh (Alpine virt kernel + initramfs via CH)
+      blocked here: this checkout is macOS (mock only; no /dev/kvm)
 
 
 Phase 1 — VM lifecycle                         → v0.1 hypervisor node
@@ -113,6 +115,22 @@ pertisk-cli       operator CLI               phase 1 onward
 
 Release gates
 -------------
+Crate version today is 0.1.0. Gates below are product proofs, not cargo semver.
+
 v0.1  phases 0–1   CLI starts/stops a VM
-v1.0  phases 2–4   disks + net + console + API + UI  (one-node Proxmox)
-v2.0  phase 5      cluster + HA (+ phase 6 if HCI)
+      done:   mock/CH driver, persist, CLI create/start/stop/rm, integration test
+      open:   boot one real guest on Linux KVM (phase 0 last box)
+
+v1.0  phases 2–4   disks + net + console + API + UI  (one-node operator)
+      done:   volumes (create/resize/clone/snap), ISO, bridge/TAP/IPAM, serial WS,
+              REST + users/roles, React UI (wizard, hardware, storage, activity)
+      skip:   optional ZFS backend
+      open:   same Linux KVM boot as v0.1 (ISO install from the browser)
+              procedure: upload ISO in Storage, wizard create+start; or scripts/linux-iso-guest.sh
+              needs: hypervisor-fw (vmm.firmware) on the Linux node
+
+v2.0  phase 5      cluster + HA  (+ phase 6 HCI if replica/RBD is in play)
+      done:   join/leave, quorum/fence, migrate, replica volumes, storage-aware HA
+      proof:  HA restart tests (`three_node_ha_restarts_elsewhere`,
+              `replicated_volume_ha_prefers_replica_holder`)
+      open:   3-node demo on Linux (kill a box; guest restarts on a replica holder)

@@ -21,17 +21,38 @@ const EMPTY = {
   volumeId: '',
   iso: '',
   networkId: '',
+  nicIp: '',
   start: true,
 }
 
-export default function GuestWizard({ volumes, isos, networks, onClose, onCreated }) {
+export default function GuestWizard({ volumes, isos, networks, host, onClose, onCreated }) {
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(EMPTY)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [progress, setProgress] = useState([])
+  const [taskLog, setTaskLog] = useState([])
 
   function set(patch) {
     setForm((f) => ({ ...f, ...patch }))
+  }
+
+  async function run(label, fn) {
+    setProgress((p) => [...p.filter((x) => x.label !== label), { label, status: 'running' }])
+    try {
+      const result = await fn()
+      setProgress((p) => p.map((x) => (x.label === label ? { ...x, status: 'done' } : x)))
+      try {
+        const list = await api('/v1/tasks')
+        setTaskLog(Array.isArray(list) ? list.slice(0, 8) : [])
+      } catch {
+        /* ignore */
+      }
+      return result
+    } catch (err) {
+      setProgress((p) => p.map((x) => (x.label === label ? { ...x, status: 'error' } : x)))
+      throw err
+    }
   }
 
   function canNext() {
@@ -45,39 +66,54 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
     e.preventDefault()
     setBusy(true)
     setError('')
+    setProgress([])
+    setTaskLog([])
     try {
       let volumeId = form.diskMode === 'existing' ? form.volumeId : ''
       if (form.diskMode === 'new') {
-        const vol = await api('/v1/volumes', {
-          method: 'POST',
-          body: {
-            name: (form.diskName.trim() || `${form.name.trim()}-disk`),
-            size_bytes: parseSize(form.diskSize),
-            format: 'raw',
-          },
-        })
+        const vol = await run('Create volume', () =>
+          api('/v1/volumes', {
+            method: 'POST',
+            body: {
+              name: form.diskName.trim() || `${form.name.trim()}-disk`,
+              size_bytes: parseSize(form.diskSize),
+              format: 'raw',
+            },
+          }),
+        )
         volumeId = vol.id
       }
-      const vm = await api('/v1/vms', {
-        method: 'POST',
-        body: {
-          name: form.name.trim(),
-          vcpus: Number(form.vcpus),
-          memory_mib: Number(form.memory_mib),
-          ha: form.ha,
-        },
-      })
+      const vm = await run('Define guest', () =>
+        api('/v1/vms', {
+          method: 'POST',
+          body: {
+            name: form.name.trim(),
+            vcpus: Number(form.vcpus),
+            memory_mib: Number(form.memory_mib),
+            ha: form.ha,
+          },
+        }),
+      )
       if (volumeId) {
-        await api(`/v1/vms/${vm.id}/disks`, { method: 'POST', body: { volume_id: volumeId } })
+        await run('Attach disk', () =>
+          api(`/v1/vms/${vm.id}/disks`, { method: 'POST', body: { volume_id: volumeId } }),
+        )
       }
       if (form.iso) {
-        await api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso: form.iso } })
+        await run('Attach ISO', () =>
+          api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso: form.iso } }),
+        )
       }
       if (form.networkId) {
-        await api(`/v1/vms/${vm.id}/nics`, { method: 'POST', body: { network_id: form.networkId } })
+        await run('Attach NIC', () =>
+          api(`/v1/vms/${vm.id}/nics`, {
+            method: 'POST',
+            body: { network_id: form.networkId, ip: form.nicIp.trim() || undefined },
+          }),
+        )
       }
       if (form.start) {
-        await api(`/v1/vms/${vm.id}/start`, { method: 'POST' })
+        await run('Start guest', () => api(`/v1/vms/${vm.id}/start`, { method: 'POST' }))
       }
       await onCreated()
     } catch (err) {
@@ -265,6 +301,11 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
               {isos.length === 0 && (
                 <p className="muted">Import an ISO under Storage if you want to boot an installer.</p>
               )}
+              {form.iso && host?.driver === 'cloud-hypervisor' && !host?.firmware && (
+                <p className="muted">
+                  This node has no firmware (hypervisor-fw). Disk/ISO boot needs it; kernel boot still works.
+                </p>
+              )}
             </div>
           </>
         )}
@@ -287,6 +328,17 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
                 ))}
               </select>
             </div>
+            {form.networkId && (
+              <div className="field">
+                <label htmlFor="guest-ip">Static IP</label>
+                <input
+                  id="guest-ip"
+                  value={form.nicIp}
+                  onChange={(e) => set({ nicIp: e.target.value })}
+                  placeholder="leave empty for DHCP"
+                />
+              </div>
+            )}
           </>
         )}
 
@@ -318,7 +370,10 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
               </div>
               <div>
                 <dt>Network</dt>
-                <dd>{netLabel}</dd>
+                <dd>
+                  {netLabel}
+                  {form.networkId && form.nicIp.trim() ? ` · ${form.nicIp.trim()}` : ''}
+                </dd>
               </div>
             </dl>
             <label className="chk" style={{ marginTop: '1rem' }}>
@@ -326,6 +381,25 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
               <span className="chk-box" />
               <span className="chk-label">Start after create</span>
             </label>
+            {(progress.length > 0 || taskLog.length > 0) && (
+              <div className="wizard-progress">
+                {progress.map((item) => (
+                  <div key={item.label} className={`wizard-progress-row ${item.status}`}>
+                    <span>{item.label}</span>
+                    <span>{item.status === 'running' ? '…' : item.status === 'done' ? 'done' : 'failed'}</span>
+                  </div>
+                ))}
+                {taskLog.length > 0 && (
+                  <ul className="wizard-task-log">
+                    {taskLog.map((t) => (
+                      <li key={t.id || `${t.kind}-${t.created_unix}`}>
+                        {t.kind} · {t.status}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </>
         )}
       </form>
