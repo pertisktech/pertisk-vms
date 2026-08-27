@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pertisk-vm</title>
+  <style>
+    :root {
+      --bg: #111315;
+      --panel: #1a1d1f;
+      --line: #2a2f33;
+      --text: #e8eaed;
+      --muted: #8b939a;
+      --accent: #6ea8fe;
+      --danger: #e07a7a;
+      --ok: #7dcea0;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+    h1 { font-size: 15px; font-weight: 600; margin: 0; }
+    h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    main { padding: 20px; display: grid; gap: 20px; }
+    .row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    button, input, select { font: inherit; }
+    button { background: var(--accent); color: #0b1220; border: 0; padding: 6px 10px; cursor: pointer; }
+    button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    button.danger { background: var(--danger); color: #1a0f0f; }
+    input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line); padding: 6px 8px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .err { color: var(--danger); }
+    #login { max-width: 320px; margin: 12vh auto; display: grid; gap: 10px; }
+    #app { display: none; }
+    form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 12px; }
+    form.inline label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+    pre { background: #0c0e10; padding: 12px; min-height: 140px; overflow: auto; white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; }
+    .status { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <form id="login">
+    <h1>pertisk-vm</h1>
+    <p class="muted">Sign in to the control plane.</p>
+    <input id="user" placeholder="username" autocomplete="username" />
+    <input id="pass" type="password" placeholder="password" autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+    <p id="login-err" class="err"></p>
+  </form>
+
+  <div id="app">
+    <header>
+      <h1>pertisk-vm</h1>
+      <div>
+        <span id="who" class="muted"></span>
+        <button class="ghost" id="logout">Sign out</button>
+      </div>
+    </header>
+    <main>
+      <p id="host" class="muted"></p>
+      <p id="flash" class="err"></p>
+      <section>
+        <h2>Cluster</h2>
+        <div id="cluster"></div>
+      </section>
+      <section>
+        <h2>Create VM</h2>
+        <form class="inline" id="create-vm">
+          <label>Name <input name="name" required /></label>
+          <label>vCPU <input name="cpus" type="number" value="1" min="1" /></label>
+          <label>Memory MiB <input name="memory" type="number" value="512" min="64" /></label>
+          <button type="submit">Create</button>
+        </form>
+      </section>
+      <div class="row">
+        <section>
+          <h2>Virtual machines</h2>
+          <div id="vms"></div>
+        </section>
+        <section>
+          <h2>Serial console</h2>
+          <p id="console-meta" class="muted">Select a VM.</p>
+          <form class="inline" id="attach-iso">
+            <label>ISO <select name="iso" id="iso-select"></select></label>
+            <button type="submit">Attach ISO</button>
+          </form>
+          <pre id="console"></pre>
+        </section>
+      </div>
+      <div class="row">
+        <section>
+          <h2>Volumes</h2>
+          <form class="inline" id="create-vol">
+            <label>Name <input name="name" required /></label>
+            <label>Size <input name="size" value="8M" /></label>
+            <button type="submit">Create</button>
+          </form>
+          <div id="vols"></div>
+        </section>
+        <section>
+          <h2>ISOs</h2>
+          <form class="inline" id="import-iso">
+            <label>Host path <input name="path" required placeholder="/path/to/os.iso" /></label>
+            <button type="submit">Import</button>
+          </form>
+          <div id="isos"></div>
+        </section>
+      </div>
+      <div class="row">
+        <section>
+          <h2>Tasks</h2>
+          <div id="tasks"></div>
+        </section>
+        <section>
+          <h2>Audit</h2>
+          <div id="audit"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let token = localStorage.getItem("pertisk_token") || "";
+    let consoleVm = "";
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
+      if (token) headers.authorization = "Bearer " + token;
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      if (res.status === 204) return null;
+      const text = await res.text();
+      const body = text ? JSON.parse(text) : null;
+      if (!res.ok) throw new Error((body && body.error) || res.statusText);
+      return body;
+    }
+
+    function showApp(on) {
+      $("login").style.display = on ? "none" : "grid";
+      $("app").style.display = on ? "block" : "none";
+    }
+
+    $("login").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("login-err").textContent = "";
+      try {
+        const out = await api("/v1/login", {
+          method: "POST",
+          body: JSON.stringify({ username: $("user").value, password: $("pass").value }),
+        });
+        token = out.token;
+        localStorage.setItem("pertisk_token", token);
+        await boot();
+      } catch (err) {
+        $("login-err").textContent = err.message;
+      }
+    });
+
+    $("logout").addEventListener("click", () => {
+      token = "";
+      localStorage.removeItem("pertisk_token");
+      showApp(false);
+    });
+
+    function flash(err) {
+      $("flash").textContent = err ? err.message || String(err) : "";
+    }
+
+    async function mutate(fn) {
+      flash("");
+      try {
+        await fn();
+        await refresh();
+      } catch (err) {
+        flash(err);
+      }
+    }
+
+    $("create-vm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await mutate(async () => {
+        await api("/v1/vms", {
+          method: "POST",
+          body: JSON.stringify({
+            name: fd.get("name"),
+            vcpus: Number(fd.get("cpus")),
+            memory_mib: Number(fd.get("memory")),
+          }),
+        });
+        e.target.reset();
+      });
+    });
+
+    $("create-vol").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await mutate(async () => {
+        await api("/v1/volumes", {
+          method: "POST",
+          body: JSON.stringify({
+            name: fd.get("name"),
+            size_bytes: parseSize(fd.get("size")),
+            format: "raw",
+          }),
+        });
+        e.target.reset();
+      });
+    });
+
+    $("import-iso").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await mutate(async () => {
+        await api("/v1/isos", {
+          method: "POST",
+          body: JSON.stringify({ path: fd.get("path") }),
+        });
+        e.target.reset();
+      });
+    });
+
+    $("attach-iso").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!consoleVm) {
+        flash(new Error("select a VM with console first"));
+        return;
+      }
+      const iso = $("iso-select").value;
+      if (!iso) {
+        flash(new Error("import an ISO first"));
+        return;
+      }
+      await mutate(() => api("/v1/vms/" + consoleVm + "/cdrom", {
+        method: "POST",
+        body: JSON.stringify({ iso }),
+      }));
+    });
+
+    function parseSize(raw) {
+      const s = String(raw).trim().toUpperCase();
+      const m = /^(\d+)([KMGT])?I?B?$/.exec(s);
+      if (!m) throw new Error("size like 8M or 1G");
+      const n = Number(m[1]);
+      const mul = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[m[2]] || 1;
+      return n * mul;
+    }
+
+    async function boot() {
+      const session = await api("/v1/session");
+      $("who").textContent = session.username + " · " + session.role;
+      const host = await api("/v1/host");
+      $("host").textContent = host.os + "/" + host.arch + " · driver " + host.driver + " · kvm " + host.kvm;
+      showApp(true);
+      await refresh();
+    }
+
+    async function refresh() {
+      const [vms, vols, isos, tasks, audit, cluster] = await Promise.all([
+        api("/v1/vms"),
+        api("/v1/volumes"),
+        api("/v1/isos"),
+        api("/v1/tasks"),
+        api("/v1/audit"),
+        api("/v1/cluster"),
+      ]);
+      $("cluster").innerHTML =
+        `<p class="muted">${cluster.name} · gen ${cluster.generation} · quorum ${cluster.quorum} · fenced ${cluster.fenced}</p>` +
+        table(
+          ["Name", "Online", "CPU", "Mem", "URL"],
+          cluster.members.map((m) => [
+            m.name,
+            m.online ? "yes" : "no",
+            m.used_vcpus + "/" + m.cpus,
+            m.used_memory_mib + "/" + m.memory_mib,
+            m.peer_url,
+          ])
+        );
+      $("vms").innerHTML = table(
+        ["Name", "State", "CPU", "Mem", "Disks", ""],
+        vms.map((vm) => [
+          vm.spec.name,
+          vm.state,
+          vm.spec.vcpus,
+          vm.spec.memory_mib,
+          vm.spec.disks.length,
+          actions(vm),
+        ])
+      );
+      $("vms").querySelectorAll("button[data-act]").forEach((btn) => {
+        btn.addEventListener("click", () => act(btn.dataset.act, btn.dataset.id, btn.dataset.name));
+      });
+      $("vols").innerHTML = table(
+        ["Name", "Format", "Size", "Replicas"],
+        vols.map((v) => [v.name, v.format, v.size_bytes, (v.replicas && v.replicas.length) || v.replica_count || 1])
+      );
+      $("isos").innerHTML = table(
+        ["Name", "Size"],
+        isos.map((iso) => [iso.name, iso.size_bytes])
+      );
+      const select = $("iso-select");
+      const current = select.value;
+      select.innerHTML = isos.map((iso) => `<option value="${iso.name}">${iso.name}</option>`).join("");
+      if (current) select.value = current;
+      $("tasks").innerHTML = table(
+        ["Kind", "Status", "Actor", "Target"],
+        tasks.map((t) => [t.kind, t.status, t.actor, t.target || ""])
+      );
+      $("audit").innerHTML = table(
+        ["Actor", "Action", "Target"],
+        audit.map((a) => [a.actor, a.action, a.target || ""])
+      );
+      if (consoleVm) await loadConsole();
+    }
+
+    function actions(vm) {
+      return (
+        `<button class="ghost" data-act="console" data-id="${vm.id}" data-name="${vm.spec.name}">console</button> ` +
+        `<button class="ghost" data-act="start" data-id="${vm.id}">start</button> ` +
+        `<button class="ghost" data-act="stop" data-id="${vm.id}">stop</button> ` +
+        `<button class="danger" data-act="rm" data-id="${vm.id}">rm</button>`
+      );
+    }
+
+    async function act(kind, id, name) {
+      if (kind === "console") {
+        consoleVm = id;
+        $("console-meta").textContent = name + " · " + id;
+        await loadConsole();
+        return;
+      }
+      await mutate(async () => {
+        if (kind === "rm") await api("/v1/vms/" + id, { method: "DELETE" });
+        else await api("/v1/vms/" + id + "/" + kind, { method: "POST" });
+      });
+    }
+
+    async function loadConsole() {
+      const chunk = await api("/v1/vms/" + consoleVm + "/console/serial?from=0&max=16384");
+      $("console").textContent = chunk.text || "(empty)";
+    }
+
+    function table(headers, rows) {
+      if (!rows.length) return `<p class="muted">none</p>`;
+      return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows
+        .map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`)
+        .join("")}</tbody></table>`;
+    }
+
+    if (token) {
+      boot().catch(() => {
+        token = "";
+        localStorage.removeItem("pertisk_token");
+        showApp(false);
+      });
+    }
+    setInterval(() => { if (token) refresh().catch(() => {}); }, 4000);
+  </script>
+</body>
+</html>

@@ -22,8 +22,10 @@ pertisk-vmm = { path = "crates/pertisk-vmm" }
 pertisk-storage = { path = "crates/pertisk-storage" }
 pertisk-net = { path = "crates/pertisk-net" }
 pertisk-daemon = { path = "crates/pertisk-daemon" }
+pertisk-api = { path = "crates/pertisk-api" }
 
 anyhow = "1"
+argon2 = { version = "0.5", features = ["std"] }
 axum = "0.8"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -41,4 +43,6 @@ toml = { version = "0.8", features = ["parse", "display", "preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }

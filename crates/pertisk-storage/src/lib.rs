@@ -1,6 +1,7 @@
-//! Local directory volumes, file snapshots, ISO library, and optional qemu-img.
+//! Local directory volumes, file snapshots, ISO library, optional qemu-img, optional Ceph RBD.
 
 mod qemu;
+mod rbd;
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -10,11 +11,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pertisk_types::{
     CloneVolumeRequest, CreateVolumeRequest, IsoRecord, ResizeVolumeRequest, SnapshotRequest,
-    VolumeFormat, VolumeId, VolumeRecord, VolumeSnapshot,
+    StorageBackend, VolumeFormat, VolumeId, VolumeRecord, VolumeSnapshot,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::qemu::QemuImg;
+pub use rbd::Rbd;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -90,6 +92,97 @@ impl VolumePool {
         self.qemu.binary()
     }
 
+    pub fn local_path(&self, id: VolumeId, format: VolumeFormat) -> PathBuf {
+        self.root
+            .join("disks")
+            .join(format!("{id}.{}", format.extension()))
+    }
+
+    pub fn has_local(&self, id: VolumeId, format: VolumeFormat) -> bool {
+        self.local_path(id, format).is_file()
+    }
+
+    pub fn put_record(&self, mut record: VolumeRecord) -> Result<VolumeRecord> {
+        if record.backend != StorageBackend::Rbd {
+            record.path = self.local_path(record.id, record.format);
+        }
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    pub fn replace_records(&self, records: Vec<VolumeRecord>) -> Result<()> {
+        let rewritten: Vec<VolumeRecord> = records
+            .into_iter()
+            .map(|mut record| {
+                if record.backend != StorageBackend::Rbd {
+                    record.path = self.local_path(record.id, record.format);
+                }
+                record
+            })
+            .collect();
+        {
+            let mut inner = self.inner.lock().expect("storage lock");
+            inner.volumes.clear();
+            for record in rewritten {
+                inner.volumes.insert(record.id, record);
+            }
+        }
+        self.flush()
+    }
+
+    pub fn ensure_local(&self, record: &VolumeRecord) -> Result<VolumeRecord> {
+        if record.backend == StorageBackend::Rbd {
+            return self.put_record(record.clone());
+        }
+        let path = self.local_path(record.id, record.format);
+        if !path.exists() {
+            match record.format {
+                VolumeFormat::Raw => create_raw(&path, record.size_bytes)?,
+                VolumeFormat::Qcow2 => {
+                    if self.qemu.available() {
+                        self.qemu.create_qcow2(&path, record.size_bytes)?;
+                    } else {
+                        create_raw(&path, record.size_bytes)?;
+                    }
+                }
+            }
+        }
+        let mut stored = record.clone();
+        stored.path = path;
+        self.upsert_volume(stored.clone())?;
+        Ok(stored)
+    }
+
+    pub fn read_blob(&self, id: VolumeId) -> Result<Vec<u8>> {
+        let record = self.get_volume(id)?;
+        Ok(std::fs::read(&record.path)?)
+    }
+
+    pub fn write_blob(&self, id: VolumeId, bytes: &[u8]) -> Result<VolumeRecord> {
+        let mut record = self.get_volume(id)?;
+        if record.backend == StorageBackend::Rbd {
+            return Err(StorageError::Message(
+                "cannot write a blob to an rbd volume".into(),
+            ));
+        }
+        record.path = self.local_path(record.id, record.format);
+        if let Some(parent) = record.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&record.path, bytes)?;
+        record.size_bytes = record.size_bytes.max(bytes.len() as u64);
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    pub fn local_stat(&self, id: VolumeId) -> Result<(bool, u64)> {
+        let record = self.get_volume(id)?;
+        if !record.path.exists() {
+            return Ok((false, 0));
+        }
+        Ok((true, std::fs::metadata(&record.path)?.len()))
+    }
+
     pub fn list_volumes(&self) -> Result<Vec<VolumeRecord>> {
         let inner = self.inner.lock().expect("storage lock");
         Ok(inner.volumes.values().cloned().collect())
@@ -138,6 +231,9 @@ impl VolumePool {
             path,
             backing_id: None,
             snapshots: vec![],
+            replicas: vec![],
+            replica_count: 1,
+            backend: pertisk_types::StorageBackend::Replica,
         };
         self.upsert_volume(record.clone())?;
         Ok(record)
@@ -218,6 +314,9 @@ impl VolumePool {
             path,
             backing_id,
             snapshots: vec![],
+            replicas: vec![],
+            replica_count: source.replica_count.max(1),
+            backend: source.backend,
         };
         self.upsert_volume(record.clone())?;
         Ok(record)
@@ -400,6 +499,7 @@ mod tests {
                 name: "disk".into(),
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
+                replicas: None,
             })
             .unwrap();
         assert_eq!(vol.path.metadata().unwrap().len(), 8 * 1024 * 1024);
@@ -440,6 +540,25 @@ mod tests {
         pool.delete_volume(clone.id).unwrap();
         pool.delete_volume(vol.id).unwrap();
         assert!(pool.list_volumes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn replica_path_is_local_and_sparse() {
+        let (pool, _dir) = pool();
+        let vol = pool
+            .create_volume(CreateVolumeRequest {
+                name: "disk".into(),
+                size_bytes: parse_size("8M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+            })
+            .unwrap();
+        let ensured = pool.ensure_local(&vol).unwrap();
+        assert_eq!(ensured.path, pool.local_path(vol.id, vol.format));
+        assert!(pool.has_local(vol.id, vol.format));
+        pool.replace_records(vec![vol.clone()]).unwrap();
+        let got = pool.get_volume(vol.id).unwrap();
+        assert_eq!(got.path, pool.local_path(vol.id, vol.format));
     }
 
     #[test]

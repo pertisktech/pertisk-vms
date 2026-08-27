@@ -4,9 +4,14 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, CloneVolumeRequest, CreateVolumeRequest, DEFAULT_LISTEN,
-    DiskSpec, HostInfo, ImportIsoRequest, IsoRecord, ResizeVolumeRequest, SnapshotRequest, VmId,
-    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, format_size, parse_size,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterStatus,
+    ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
+    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
+    ResizeVolumeRequest, SerialChunk, SnapshotRequest, VmId, VmRecord, VmSpec, VolumeFormat,
+    VolumeId, VolumeRecord, default_home, format_size, parse_size,
+};
+use pertisk_api::{
+    AuditEvent, CreateUserRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
 };
 
 #[derive(Debug, Parser)]
@@ -22,6 +27,24 @@ struct Cli {
 enum Command {
     /// Show hypervisor host capabilities and daemon status.
     Host,
+    /// Sign in and store an API token.
+    Login {
+        #[arg(long, short)]
+        username: String,
+        #[arg(long, short)]
+        password: String,
+    },
+    /// Show the current session.
+    Whoami,
+    /// Recent tasks.
+    Tasks,
+    /// Audit log.
+    Audit,
+    /// Local users (admin).
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
+    },
     /// VM lifecycle and disk attach.
     Vm {
         #[command(subcommand)]
@@ -37,6 +60,45 @@ enum Command {
         #[command(subcommand)]
         command: IsoCommand,
     },
+    /// Virtual networks (bridge + IPAM).
+    Net {
+        #[command(subcommand)]
+        command: NetCommand,
+    },
+    /// Cluster membership and HA.
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UserCommand {
+    List,
+    Create {
+        #[arg(long, short)]
+        username: String,
+        #[arg(long, short)]
+        password: String,
+        #[arg(long, default_value = "operator")]
+        role: String,
+    },
+    #[command(name = "rm")]
+    Remove { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterCommand {
+    Status,
+    Join {
+        #[arg(long)]
+        peer: String,
+        #[arg(long, short)]
+        username: String,
+        #[arg(long, short)]
+        password: String,
+    },
+    Leave,
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,6 +119,11 @@ enum VmCommand {
     },
     Start { id: VmId },
     Stop { id: VmId },
+    Migrate {
+        id: VmId,
+        #[arg(long)]
+        target: Option<String>,
+    },
     #[command(name = "rm")]
     Remove { id: VmId },
     List,
@@ -68,6 +135,16 @@ enum VmCommand {
     Cdrom {
         #[command(subcommand)]
         command: CdromCommand,
+    },
+    Nic {
+        #[command(subcommand)]
+        command: NicCommand,
+    },
+    /// Serial console (tail of guest serial log).
+    Console {
+        id: VmId,
+        #[arg(long)]
+        follow: bool,
     },
 }
 
@@ -100,6 +177,44 @@ enum CdromCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum NicCommand {
+    Attach {
+        vm: VmId,
+        #[arg(long)]
+        network: NetworkId,
+        #[arg(long)]
+        ip: Option<String>,
+    },
+    Detach {
+        vm: VmId,
+        #[arg(long)]
+        tap: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NetCommand {
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "10.88.0.0/24")]
+        cidr: String,
+        #[arg(long)]
+        gateway: Option<String>,
+        #[arg(long)]
+        bridge: Option<String>,
+        #[arg(long, default_value_t = true)]
+        dhcp: bool,
+        #[arg(long, default_value_t = true)]
+        isolate: bool,
+    },
+    List,
+    Show { id: NetworkId },
+    #[command(name = "rm")]
+    Remove { id: NetworkId },
+}
+
+#[derive(Debug, Subcommand)]
 enum VolCommand {
     Create {
         #[arg(long)]
@@ -108,6 +223,8 @@ enum VolCommand {
         size: String,
         #[arg(long, default_value = "raw")]
         format: VolumeFormat,
+        #[arg(long)]
+        replicas: Option<u8>,
     },
     List,
     Show { id: VolumeId },
@@ -181,17 +298,181 @@ async fn run() -> Result<()> {
             println!("data_dir           {}", info.data_dir.display());
             println!("storage            {}", info.storage_root.display());
             println!(
+                "backend            {} replicas={} rbd={}",
+                info.storage_backend,
+                info.replica_count,
+                if info.rbd { "available" } else { "not found" }
+            );
+            println!(
                 "qemu-img           {}",
                 info.qemu_img
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "not found (raw volumes only)".into())
             );
+            println!(
+                "host-links         {}",
+                if info.apply_host_links {
+                    "linux ip/tap"
+                } else {
+                    "inventory only"
+                }
+            );
+            println!(
+                "node               {}",
+                info.node_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".into())
+            );
+            println!("quorum             {}", info.quorum);
             if !info.kvm {
                 eprintln!(
                     "note: /dev/kvm is missing; this machine can run the mock driver only"
                 );
             }
         }
+        Command::Login { username, password } => {
+            let out: TokenResponse = post_json(
+                &client,
+                &cli.url,
+                "/v1/login",
+                &LoginRequest {
+                    username,
+                    password,
+                },
+            )
+            .await?;
+            let path = token_path();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, &out.token)?;
+            println!("{} {} (token saved to {})", out.username, out.role, path.display());
+        }
+        Command::Whoami => {
+            let session: serde_json::Value = get_json(&client, &cli.url, "/v1/session").await?;
+            println!("{}", serde_json::to_string_pretty(&session)?);
+        }
+        Command::Tasks => {
+            let tasks: Vec<TaskRecord> = get_json(&client, &cli.url, "/v1/tasks").await?;
+            if tasks.is_empty() {
+                println!("no tasks");
+                return Ok(());
+            }
+            println!("{:<36} {:<14} {:<8} {}", "ID", "KIND", "STATUS", "ACTOR");
+            for task in tasks {
+                println!(
+                    "{:<36} {:<14} {:<8} {}",
+                    task.id, task.kind, task.status, task.actor
+                );
+            }
+        }
+        Command::Audit => {
+            let events: Vec<AuditEvent> = get_json(&client, &cli.url, "/v1/audit").await?;
+            if events.is_empty() {
+                println!("no audit events");
+                return Ok(());
+            }
+            for event in events {
+                println!(
+                    "{} {} {}",
+                    event.actor,
+                    event.action,
+                    event.target.unwrap_or_default()
+                );
+            }
+        }
+        Command::User { command } => match command {
+            UserCommand::List => {
+                let users: Vec<UserRecord> = get_json(&client, &cli.url, "/v1/users").await?;
+                if users.is_empty() {
+                    println!("no users");
+                    return Ok(());
+                }
+                println!("{:<38} {:<16} {}", "ID", "USERNAME", "ROLE");
+                for user in users {
+                    println!("{:<38} {:<16} {}", user.id, user.username, user.role);
+                }
+            }
+            UserCommand::Create {
+                username,
+                password,
+                role,
+            } => {
+                let role: Role = role.parse().map_err(|err| anyhow::anyhow!("{err}"))?;
+                let user: UserRecord = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/users",
+                    &CreateUserRequest {
+                        username,
+                        password,
+                        role,
+                    },
+                )
+                .await?;
+                println!("{} {} {}", user.id, user.username, user.role);
+            }
+            UserCommand::Remove { id } => {
+                delete(&client, &cli.url, &format!("/v1/users/{id}")).await?;
+            }
+        },
+        Command::Cluster { command } => match command {
+            ClusterCommand::Status => {
+                let status: ClusterStatus = get_json(&client, &cli.url, "/v1/cluster").await?;
+                println!(
+                    "cluster {} gen {} leader {} quorum {} fenced {}",
+                    status.name,
+                    status.generation,
+                    status
+                        .leader_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    status.quorum,
+                    status.fenced
+                );
+                println!(
+                    "{:<38} {:<12} {:<8} {}",
+                    "ID", "NAME", "ONLINE", "URL"
+                );
+                for member in status.members {
+                    println!(
+                        "{:<38} {:<12} {:<8} {}",
+                        member.id,
+                        member.name,
+                        member.online,
+                        member.peer_url
+                    );
+                }
+            }
+            ClusterCommand::Join {
+                peer,
+                username,
+                password,
+            } => {
+                let status: ClusterStatus = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/cluster/join",
+                    &JoinClusterRequest {
+                        peer,
+                        username,
+                        password,
+                    },
+                )
+                .await?;
+                println!(
+                    "joined {} ({} nodes, quorum {})",
+                    status.name,
+                    status.members.len(),
+                    status.quorum
+                );
+            }
+            ClusterCommand::Leave => {
+                let status: ClusterStatus =
+                    post_empty(&client, &cli.url, "/v1/cluster/leave").await?;
+                println!("solo {} quorum {}", status.name, status.quorum);
+            }
+        },
         Command::Vm { command } => match command {
             VmCommand::Create {
                 name,
@@ -220,6 +501,7 @@ async fn run() -> Result<()> {
                         .collect(),
                     nets: vec![],
                     serial_log: None,
+                    ha: true,
                 };
                 let record: VmRecord = post_json(&client, &cli.url, "/v1/vms", &spec).await?;
                 print_vm(&record);
@@ -234,6 +516,18 @@ async fn run() -> Result<()> {
                     post_empty(&client, &cli.url, &format!("/v1/vms/{id}/stop")).await?;
                 print_vm(&record);
             }
+            VmCommand::Migrate { id, target } => {
+                let record: VmRecord = post_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/vms/{id}/migrate"),
+                    &MigrateRequest {
+                        target: target.map(|s| s.parse()).transpose()?,
+                    },
+                )
+                .await?;
+                print_vm(&record);
+            }
             VmCommand::Remove { id } => {
                 delete(&client, &cli.url, &format!("/v1/vms/{id}")).await?;
             }
@@ -244,18 +538,19 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
                 println!(
-                    "{:<38} {:<16} {:<10} {:>4} {:>8} {:>6}",
-                    "ID", "NAME", "STATE", "CPU", "MEM", "DISKS"
+                    "{:<38} {:<16} {:<10} {:>4} {:>8} {:>6} {:>4}",
+                    "ID", "NAME", "STATE", "CPU", "MEM", "DISKS", "NIC"
                 );
                 for vm in vms {
                     println!(
-                        "{:<38} {:<16} {:<10} {:>4} {:>8} {:>6}",
+                        "{:<38} {:<16} {:<10} {:>4} {:>8} {:>6} {:>4}",
                         vm.id,
                         vm.spec.name,
                         vm.state,
                         vm.spec.vcpus,
                         vm.spec.memory_mib,
-                        vm.spec.disks.len()
+                        vm.spec.disks.len(),
+                        vm.spec.nets.len()
                     );
                 }
             }
@@ -299,13 +594,62 @@ async fn run() -> Result<()> {
                     print_vm(&record);
                 }
             },
+            VmCommand::Nic { command } => match command {
+                NicCommand::Attach { vm, network, ip } => {
+                    let record: VmRecord = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{vm}/nics"),
+                        &AttachNicRequest {
+                            network_id: network,
+                            ip,
+                        },
+                    )
+                    .await?;
+                    print_vm(&record);
+                }
+                NicCommand::Detach { vm, tap } => {
+                    let record: VmRecord =
+                        delete_json(&client, &cli.url, &format!("/v1/vms/{vm}/nics/{tap}"))
+                            .await?;
+                    print_vm(&record);
+                }
+            },
+            VmCommand::Console { id, follow } => {
+                let mut from = 0u64;
+                loop {
+                    let chunk: SerialChunk = get_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/console/serial?from={from}&max=8192"),
+                    )
+                    .await?;
+                    if !chunk.text.is_empty() {
+                        print!("{}", chunk.text);
+                    }
+                    from = chunk.next;
+                    if !follow {
+                        if from == 0 {
+                            let info: ConsoleInfo =
+                                get_json(&client, &cli.url, &format!("/v1/vms/{id}/console"))
+                                    .await?;
+                            if info.size == 0 {
+                                println!("(empty serial log)");
+                            }
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                }
+            }
         },
         Command::Vol { command } => match command {
-            VolCommand::Create { name, size, format } => {
+            VolCommand::Create { name, size, format, replicas } => {
                 let req = CreateVolumeRequest {
                     name,
                     size_bytes: parse_size(&size)?,
                     format,
+                    replicas,
                 };
                 let vol: VolumeRecord = post_json(&client, &cli.url, "/v1/volumes", &req).await?;
                 print_vol(&vol);
@@ -317,17 +661,18 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
                 println!(
-                    "{:<38} {:<16} {:<6} {:>8} {:>8}",
-                    "ID", "NAME", "FMT", "SIZE", "SNAPS"
+                    "{:<38} {:<16} {:<6} {:>8} {:>8} {:>8}",
+                    "ID", "NAME", "FMT", "SIZE", "SNAPS", "REPL"
                 );
                 for vol in vols {
                     println!(
-                        "{:<38} {:<16} {:<6} {:>8} {:>8}",
+                        "{:<38} {:<16} {:<6} {:>8} {:>8} {:>8}",
                         vol.id,
                         vol.name,
                         vol.format,
                         format_size(vol.size_bytes),
-                        vol.snapshots.len()
+                        vol.snapshots.len(),
+                        vol.replicas.len().max(usize::from(vol.replica_count.max(1)))
                     );
                 }
             }
@@ -407,22 +752,111 @@ async fn run() -> Result<()> {
                 delete(&client, &cli.url, &format!("/v1/isos/{name}")).await?;
             }
         },
+        Command::Net { command } => match command {
+            NetCommand::Create {
+                name,
+                cidr,
+                gateway,
+                bridge,
+                dhcp,
+                isolate,
+            } => {
+                let net: NetworkRecord = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/networks",
+                    &CreateNetworkRequest {
+                        name,
+                        cidr,
+                        gateway,
+                        bridge,
+                        dhcp,
+                        isolate,
+                    },
+                )
+                .await?;
+                println!(
+                    "{} {} {} {}",
+                    net.id,
+                    net.name,
+                    net.bridge,
+                    net.cidr
+                );
+            }
+            NetCommand::List => {
+                let nets: Vec<NetworkRecord> = get_json(&client, &cli.url, "/v1/networks").await?;
+                if nets.is_empty() {
+                    println!("no networks");
+                    return Ok(());
+                }
+                println!(
+                    "{:<38} {:<12} {:<8} {:<18} {}",
+                    "ID", "NAME", "BRIDGE", "CIDR", "DHCP"
+                );
+                for net in nets {
+                    println!(
+                        "{:<38} {:<12} {:<8} {:<18} {}",
+                        net.id, net.name, net.bridge, net.cidr, net.dhcp
+                    );
+                }
+            }
+            NetCommand::Show { id } => {
+                let net: NetworkRecord =
+                    get_json(&client, &cli.url, &format!("/v1/networks/{id}")).await?;
+                println!("{}", serde_json::to_string_pretty(&net)?);
+            }
+            NetCommand::Remove { id } => {
+                delete(&client, &cli.url, &format!("/v1/networks/{id}")).await?;
+            }
+        },
     }
     Ok(())
 }
 
 fn print_vm(record: &VmRecord) {
-    println!("{} {} {}", record.id, record.spec.name, record.state);
+    println!(
+        "{} {} {} {}",
+        record.id,
+        record.spec.name,
+        record.state,
+        record
+            .node_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
 }
 
 fn print_vol(record: &VolumeRecord) {
     println!(
-        "{} {} {} {}",
+        "{} {} {} {} replicas={}",
         record.id,
         record.name,
         record.format,
-        format_size(record.size_bytes)
+        format_size(record.size_bytes),
+        record.replicas.len()
     );
+}
+
+fn token_path() -> PathBuf {
+    if let Ok(path) = std::env::var("PERTISK_TOKEN_FILE") {
+        return PathBuf::from(path);
+    }
+    default_home().join("token")
+}
+
+fn load_token() -> Option<String> {
+    std::env::var("PERTISK_TOKEN")
+        .ok()
+        .or_else(|| std::fs::read_to_string(token_path()).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn with_auth(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match load_token() {
+        Some(token) => req.header("Authorization", format!("Bearer {token}")),
+        None => req,
+    }
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(
@@ -430,8 +864,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     base: &str,
     path: &str,
 ) -> Result<T> {
-    let response = client
-        .get(format!("{base}{path}"))
+    let response = with_auth(client.get(format!("{base}{path}")))
         .send()
         .await
         .with_context(|| {
@@ -446,8 +879,7 @@ async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
     path: &str,
     body: &B,
 ) -> Result<T> {
-    let response = client
-        .post(format!("{base}{path}"))
+    let response = with_auth(client.post(format!("{base}{path}")))
         .json(body)
         .send()
         .await
@@ -460,8 +892,7 @@ async fn post_empty<T: serde::de::DeserializeOwned>(
     base: &str,
     path: &str,
 ) -> Result<T> {
-    let response = client
-        .post(format!("{base}{path}"))
+    let response = with_auth(client.post(format!("{base}{path}")))
         .send()
         .await
         .with_context(|| format!("connecting to {base}"))?;
@@ -469,8 +900,7 @@ async fn post_empty<T: serde::de::DeserializeOwned>(
 }
 
 async fn delete(client: &reqwest::Client, base: &str, path: &str) -> Result<()> {
-    let response = client
-        .delete(format!("{base}{path}"))
+    let response = with_auth(client.delete(format!("{base}{path}")))
         .send()
         .await
         .with_context(|| format!("connecting to {base}"))?;
@@ -487,8 +917,7 @@ async fn delete_json<T: serde::de::DeserializeOwned>(
     base: &str,
     path: &str,
 ) -> Result<T> {
-    let response = client
-        .delete(format!("{base}{path}"))
+    let response = with_auth(client.delete(format!("{base}{path}")))
         .send()
         .await
         .with_context(|| format!("connecting to {base}"))?;

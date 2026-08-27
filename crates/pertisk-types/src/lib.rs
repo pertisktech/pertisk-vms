@@ -17,6 +17,8 @@ pub enum TypesError {
     InvalidVmId(String),
     #[error("invalid volume id: {0}")]
     InvalidVolumeId(String),
+    #[error("invalid network id: {0}")]
+    InvalidNetworkId(String),
     #[error("invalid vm spec: {0}")]
     InvalidSpec(String),
 }
@@ -28,6 +30,10 @@ pub struct VmId(Uuid);
 impl VmId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
     }
 }
 
@@ -85,6 +91,225 @@ impl FromStr for VolumeId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NetworkId(Uuid);
+
+impl NetworkId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for NetworkId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for NetworkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for NetworkId {
+    type Err = TypesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s)
+            .map(Self)
+            .map_err(|_| TypesError::InvalidNetworkId(s.to_string()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NodeId(Uuid);
+
+impl NodeId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for NodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl FromStr for NodeId {
+    type Err = TypesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(s)
+            .map(Self)
+            .map_err(|_| TypesError::InvalidSpec(format!("invalid node id: {s}")))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeRecord {
+    pub id: NodeId,
+    pub name: String,
+    pub peer_url: String,
+    #[serde(default)]
+    pub cpus: u32,
+    #[serde(default)]
+    pub memory_mib: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterConfig {
+    #[serde(default = "default_cluster_name")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    /// Reachable URL other nodes use (defaults to http://<listen>).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_url: Option<String>,
+    #[serde(default = "default_heartbeat_ms")]
+    pub heartbeat_ms: u64,
+    #[serde(default = "default_offline_after_ms")]
+    pub offline_after_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    /// Join this peer URL on startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<String>,
+}
+
+fn default_cluster_name() -> String {
+    "pertisk".into()
+}
+
+fn default_heartbeat_ms() -> u64 {
+    1000
+}
+
+fn default_offline_after_ms() -> u64 {
+    5000
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            name: default_cluster_name(),
+            node_name: None,
+            peer_url: None,
+            heartbeat_ms: default_heartbeat_ms(),
+            offline_after_ms: default_offline_after_ms(),
+            cpus: None,
+            memory_mib: None,
+            join: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterMemberStatus {
+    pub id: NodeId,
+    pub name: String,
+    pub peer_url: String,
+    pub online: bool,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub used_vcpus: u32,
+    pub used_memory_mib: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterStatus {
+    pub name: String,
+    pub generation: u64,
+    pub self_id: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_id: Option<NodeId>,
+    pub quorum: bool,
+    pub fenced: bool,
+    pub members: Vec<ClusterMemberStatus>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JoinClusterRequest {
+    pub peer: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MigrateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<NodeId>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_cidr() -> String {
+    "10.88.0.0/24".into()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NetworkRecord {
+    pub id: NetworkId,
+    pub name: String,
+    pub bridge: String,
+    pub cidr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default = "default_true")]
+    pub dhcp: bool,
+    #[serde(default = "default_true")]
+    pub isolate: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateNetworkRequest {
+    pub name: String,
+    #[serde(default = "default_cidr")]
+    pub cidr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<String>,
+    #[serde(default = "default_true")]
+    pub dhcp: bool,
+    #[serde(default = "default_true")]
+    pub isolate: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttachNicRequest {
+    pub network_id: NetworkId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConsoleInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_log: Option<PathBuf>,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerialChunk {
+    pub from: u64,
+    pub next: u64,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VolumeFormat {
@@ -135,6 +360,51 @@ pub struct VolumeSnapshot {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    #[default]
+    Replica,
+    Rbd,
+}
+
+impl StorageBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Replica => "replica",
+            Self::Rbd => "rbd",
+        }
+    }
+}
+
+impl fmt::Display for StorageBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for StorageBackend {
+    type Err = TypesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "replica" | "local" => Ok(Self::Replica),
+            "rbd" | "ceph" => Ok(Self::Rbd),
+            other => Err(TypesError::InvalidSpec(format!(
+                "unknown storage backend '{other}' (replica | rbd)"
+            ))),
+        }
+    }
+}
+
+fn default_replica_count() -> u8 {
+    2
+}
+
+fn default_one() -> u8 {
+    1
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeRecord {
     pub id: VolumeId,
@@ -146,6 +416,12 @@ pub struct VolumeRecord {
     pub backing_id: Option<VolumeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshots: Vec<VolumeSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replicas: Vec<NodeId>,
+    #[serde(default = "default_one")]
+    pub replica_count: u8,
+    #[serde(default)]
+    pub backend: StorageBackend,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -161,6 +437,9 @@ pub struct CreateVolumeRequest {
     pub size_bytes: u64,
     #[serde(default)]
     pub format: VolumeFormat,
+    /// Desired replica count. None uses host config (default 2, or 1 on a single node).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -275,11 +554,17 @@ pub struct DiskSpec {
     pub iso_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NetSpec {
-    /// TAP device name. Allocated in phase 3 if omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<NetworkId>,
+    /// TAP device name. Allocated when the NIC is attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tap: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -301,6 +586,9 @@ pub struct VmSpec {
     pub nets: Vec<NetSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_log: Option<PathBuf>,
+    /// Restart on another node if this node is lost. Default true.
+    #[serde(default = "default_true")]
+    pub ha: bool,
 }
 
 fn default_vcpus() -> u8 {
@@ -339,6 +627,28 @@ pub struct VmRecord {
     pub serial_log: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterSnapshot {
+    pub name: String,
+    pub secret: String,
+    pub generation: u64,
+    pub members: Vec<NodeRecord>,
+    pub vms: Vec<VmRecord>,
+    #[serde(default)]
+    pub volumes: Vec<VolumeRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HeartbeatMessage {
+    pub from: NodeId,
+    pub generation: u64,
+    pub member: NodeRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<ClusterSnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -382,6 +692,12 @@ pub struct StorageConfig {
     pub root: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_img: Option<PathBuf>,
+    #[serde(default)]
+    pub backend: StorageBackend,
+    #[serde(default = "default_replica_count")]
+    pub replica_count: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rbd_pool: Option<String>,
 }
 
 impl Default for StorageConfig {
@@ -389,6 +705,9 @@ impl Default for StorageConfig {
         Self {
             root: PathBuf::from("storage"),
             qemu_img: find_in_path("qemu-img"),
+            backend: StorageBackend::Replica,
+            replica_count: default_replica_count(),
+            rbd_pool: None,
         }
     }
 }
@@ -398,6 +717,28 @@ impl StorageConfig {
         Self {
             root: home.join("storage"),
             qemu_img: find_in_path("qemu-img"),
+            backend: StorageBackend::Replica,
+            replica_count: default_replica_count(),
+            rbd_pool: None,
+        }
+    }
+}
+
+fn default_apply_host_links() -> bool {
+    cfg!(target_os = "linux")
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// Create Linux bridges/TAPs with `ip`. Ignored on macOS.
+    #[serde(default = "default_apply_host_links")]
+    pub apply_host_links: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            apply_host_links: default_apply_host_links(),
         }
     }
 }
@@ -409,6 +750,10 @@ pub struct HostConfig {
     pub vmm: VmmConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 impl HostConfig {
@@ -417,6 +762,8 @@ impl HostConfig {
             daemon: DaemonConfig::default(),
             vmm: VmmConfig::default_for(home),
             storage: StorageConfig::default_for(home),
+            network: NetworkConfig::default(),
+            cluster: ClusterConfig::default(),
         }
     }
 
@@ -447,6 +794,18 @@ pub struct HostInfo {
     pub storage_root: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_img: Option<PathBuf>,
+    #[serde(default)]
+    pub apply_host_links: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    #[serde(default)]
+    pub quorum: bool,
+    #[serde(default)]
+    pub storage_backend: StorageBackend,
+    #[serde(default = "default_replica_count")]
+    pub replica_count: u8,
+    #[serde(default)]
+    pub rbd: bool,
 }
 
 pub fn default_home() -> PathBuf {
@@ -489,6 +848,12 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
             .qemu_img
             .clone()
             .or_else(|| find_in_path("qemu-img")),
+        apply_host_links: config.network.apply_host_links,
+        node_id: None,
+        quorum: true,
+        storage_backend: config.storage.backend,
+        replica_count: config.storage.replica_count.max(1),
+        rbd: find_in_path("rbd").is_some(),
     }
 }
 
@@ -563,6 +928,7 @@ mod tests {
             disks: vec![],
             nets: vec![],
             serial_log: None,
+            ha: true,
         };
         assert!(spec.validate().is_err());
     }

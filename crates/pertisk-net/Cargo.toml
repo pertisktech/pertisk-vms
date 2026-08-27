@@ -7,3 +7,9 @@ description = "Linux bridge, TAP, and guest networking (phase 3)"
 
 [dependencies]
 pertisk-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

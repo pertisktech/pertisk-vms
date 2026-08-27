@@ -52,11 +52,11 @@ Goal:  guest on a virtual network; operator can open a console
 Demo:  SSH into guest; serial or VNC from host
 Skip:  NSX / EVPN / multi-tenant overlay
 
-  [ ] Linux bridge (vmbr0)
-  [ ] Per-VM TAP + virtio-net; cleanup on destroy
-  [ ] Static IP or tiny DHCP (dnsmasq) on the bridge
-  [ ] Basic nftables / bridge isolation
-  [ ] Serial console log + attach
+  [x] Linux bridge (vmbr0) — real `ip` on Linux, inventory on macOS
+  [x] Per-VM TAP + virtio-net; cleanup on destroy
+  [x] Static IP or IPAM pool (dnsmasq daemon not started)
+  [x] Basic isolation (Linux `bridge link isolated`)
+  [x] Serial console log + attach
   [ ] VNC or websocket console proxy
 
 
@@ -66,12 +66,12 @@ Goal:  operators never SSH to the hypervisor (this is the product)
 Demo:  browser creates VM from ISO, watches task, opens console
 Skip:  UI without a strict API
 
-  [ ] REST: /vms /volumes /networks /tasks + OpenAPI
-  [ ] Inventory DB (SQLite first)
-  [ ] Tokens, users, roles (admin / operator / viewer)
-  [ ] Async task log (clone, start, backup)
-  [ ] Audit events
-  [ ] Web UI: inventory, create wizard, console, tasks
+  [x] REST: /vms /volumes /networks /tasks + OpenAPI
+  [x] Inventory DB (SQLite first)
+  [x] Tokens, users, roles (admin / operator / viewer)
+  [x] Async task log (clone, start, backup)
+  [x] Audit events
+  [x] Web UI: inventory, create wizard, console, tasks
 
 
 Phase 5 — Cluster, HA, migrate                 → v2.0 cluster
@@ -80,12 +80,12 @@ Goal:  more than one box
 Demo:  3 nodes; kill one; VMs restart elsewhere
 Skip:  fancy DRS before quorum and fencing
 
-  [ ] Node agent: heartbeat, local VMs, CPU/RAM/disk
-  [ ] Join/leave; shared inventory
-  [ ] Quorum + fencing (no split-brain)
-  [ ] HA restart on node loss
-  [ ] Live migration via VMM
-  [ ] Simple scheduler: least-loaded node that fits
+  [x] Node agent: heartbeat, local VMs, CPU/RAM/disk
+  [x] Join/leave; shared inventory
+  [x] Quorum + fencing (no split-brain)
+  [x] HA restart on node loss
+  [x] Live migration via VMM
+  [x] Simple scheduler: least-loaded node that fits
 
 
 Phase 6 — Distributed storage                  (optional, last)
@@ -94,10 +94,10 @@ Goal:  one pool across nodes (Nutanix/vSAN class)
 Demo:  VM disk survives node loss without copying files
 Skip:  starting the whole project here
 
-  [ ] Ceph RBD (or equivalent) volume backend
-  [ ] Replica placement + rebuild
-  [ ] Thin provision, snapshots, clones on shared storage
-  [ ] Storage-aware live migrate
+  [x] Ceph RBD (optional; `rbd` CLI) + replica file backend (default)
+  [x] Replica placement + rebuild
+  [x] Thin provision, snapshots, clones on shared storage
+  [x] Storage-aware live migrate / HA (prefer replica holders)
 
 
 Crate map

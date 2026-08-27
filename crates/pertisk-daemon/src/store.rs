@@ -59,6 +59,17 @@ impl Store {
         self.flush()
     }
 
+    pub fn replace_all(&self, records: Vec<VmRecord>) -> Result<(), DaemonError> {
+        {
+            let mut vms = self.vms.lock().expect("store lock");
+            vms.clear();
+            for record in records {
+                vms.insert(record.id, record);
+            }
+        }
+        self.flush()
+    }
+
     pub fn remove(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         let record = {
             let mut vms = self.vms.lock().expect("store lock");
@@ -106,12 +117,14 @@ mod tests {
                     disks: vec![],
                     nets: vec![],
                     serial_log: None,
+                    ha: true,
                 },
                 state: VmState::Created,
                 pid: None,
                 api_socket: None,
                 serial_log: None,
                 last_error: None,
+                node_id: None,
             })
             .unwrap();
         drop(store);

@@ -1,5 +1,7 @@
 //! Node daemon: persisted inventory and VMM lifecycle.
 
+mod cluster;
+mod control;
 mod http;
 mod service;
 mod store;
@@ -8,9 +10,12 @@ use std::path::{Path, PathBuf};
 
 use pertisk_types::{HostConfig, default_home};
 
+pub use control::{AuthUser, ControlStore};
 pub use http::router;
 pub use service::{DaemonError, Service};
 pub use store::Store;
+
+use crate::cluster::advertise_url;
 
 pub fn home_dir() -> PathBuf {
     default_home()
@@ -36,7 +41,30 @@ pub async fn bind_and_serve(
     service: Service,
 ) -> Result<(), DaemonError> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!(%listen, driver = %service.driver(), "pertiskd listening");
+    let addr = listener.local_addr()?;
+    let _ = service.set_peer_url(advertise_url(&addr.to_string(), None));
+    tracing::info!(%listen, bound = %addr, driver = %service.driver(), "pertiskd listening");
+    let ticker = service.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(ticker.heartbeat_period()).await;
+            if let Err(err) = ticker.cluster_tick().await {
+                tracing::warn!(error = %err, "cluster tick");
+            }
+        }
+    });
+    if let Some(peer) = service.join_peer() {
+        let joiner = service.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let user = std::env::var("PERTISK_JOIN_USER").unwrap_or_else(|_| "admin".into());
+            let pass = std::env::var("PERTISK_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
+            match joiner.join_cluster(&peer, &user, &pass).await {
+                Ok(status) => tracing::info!(nodes = status.members.len(), "joined cluster"),
+                Err(err) => tracing::error!(error = %err, "cluster join failed"),
+            }
+        });
+    }
     axum::serve(listener, router(service))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

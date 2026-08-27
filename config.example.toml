@@ -1,4 +1,5 @@
 # Generated on first pertiskd start at $PERTISK_HOME/config.toml (~/.pertisk).
+# Bootstrap admin password: env PERTISK_ADMIN_PASSWORD (default: admin).
 
 [daemon]
 listen = "127.0.0.1:7480"
@@ -13,3 +14,22 @@ run_dir = "/tmp/pertisk-run"
 [storage]
 root = "storage"
 # qemu_img = "/usr/local/bin/qemu-img"
+# replica = replicated files across cluster nodes (default)
+# rbd = Ceph RBD when the `rbd` CLI is installed
+backend = "replica"
+replica_count = 2
+# rbd_pool = "rbd"
+
+[network]
+# Linux: create bridges/TAPs with `ip`. macOS stays inventory-only.
+apply_host_links = false
+
+[cluster]
+name = "pertisk"
+# node_name = "node-1"
+# peer_url = "http://192.168.1.10:7480"
+# join = "http://192.168.1.10:7480"
+heartbeat_ms = 1000
+offline_after_ms = 5000
+# cpus = 8
+# memory_mib = 16384

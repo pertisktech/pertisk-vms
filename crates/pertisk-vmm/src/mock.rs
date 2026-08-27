@@ -38,6 +38,20 @@ impl MockDriver {
         match vm.state {
             VmState::Created | VmState::Stopped => {
                 vm.state = VmState::Running;
+                if let Some(path) = record.serial_log.as_ref().or(record.spec.serial_log.as_ref())
+                {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .and_then(|mut file| {
+                            use std::io::Write;
+                            writeln!(file, "pertisk mock serial: vm {} started", record.id)
+                        });
+                }
                 Ok(StartResult { pid: Some(0) })
             }
             state => Err(VmmError::InvalidState {
@@ -85,6 +99,7 @@ mod tests {
             disks: vec![],
             nets: vec![],
             serial_log: None,
+            ha: true,
         }
     }
 
@@ -97,6 +112,7 @@ mod tests {
             api_socket: None,
             serial_log: None,
             last_error: None,
+            node_id: None,
         }
     }
 

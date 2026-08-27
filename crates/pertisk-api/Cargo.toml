@@ -3,8 +3,9 @@ name = "pertisk-api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Public HTTP API types (phase 4). Phase 1 serves routes from pertisk-daemon."
+description = "Public HTTP API types: auth, tasks, audit, OpenAPI"
 
 [dependencies]
 pertisk-types.workspace = true
 serde.workspace = true
+serde_json.workspace = true
