@@ -1,0 +1,118 @@
+pertisk-vm — phases and tasks
+=============================
+
+MVP = phases 0–4 on one Linux/KVM node.
+Cluster = phase 5. HCI storage = phase 6 (last, optional).
+
+
+Phase 0 — Foundations
+---------------------
+Goal:  decisions and repo so later work does not thrash
+Demo:  workspace builds; /dev/kvm works; VMM binary runs a manual VM
+Skip:  API, Ceph, cluster protocol
+
+  [ ] Confirm /dev/kvm, CPU virt flags, nested virt
+  [ ] Pick VMM: Cloud Hypervisor (Linux) or QEMU (Windows/PCI)
+  [ ] Cargo workspace: types, vmm, storage, net, daemon, api, cli
+  [ ] VM/disk/net IDs, spec structs, host config file
+  [ ] Install VMM and boot one manual test VM
+
+
+Phase 1 — VM lifecycle                         → v0.1 hypervisor node
+---------------------
+Goal:  create / start / stop / destroy on one node
+Demo:  CLI boots Alpine; list shows running; stop is clean
+Skip:  UI, cluster, snapshots, SDN
+
+  [ ] VmmDriver trait: create, start, stop, destroy, status
+  [ ] Cloud Hypervisor adapter (unix-socket HTTP) or QEMU QMP
+  [ ] VM spec: vCPU, RAM, kernel or disk, serial log
+  [ ] Persist VM records (JSON/SQLite) with socket/pid paths
+  [ ] CLI: pertisk vm create | start | stop | rm | list | show
+  [ ] Integration test: boot, serial output, shutdown
+
+
+Phase 2 — Disks and images
+--------------------------
+Goal:  volumes operators expect
+Demo:  clone a template, attach ISO, boot installer
+Skip:  Ceph / vSAN / custom distributed FS
+
+  [ ] Local directory volume store (raw + qcow2)
+  [ ] Create / resize / delete; attach virtio-block
+  [ ] ISO library + CD-ROM attach
+  [ ] qcow2 snapshot + restore
+  [ ] Linked clone from template
+  [ ] Optional ZFS dataset backend
+
+
+Phase 3 — Network and console
+-----------------------------
+Goal:  guest on a virtual network; operator can open a console
+Demo:  SSH into guest; serial or VNC from host
+Skip:  NSX / EVPN / multi-tenant overlay
+
+  [ ] Linux bridge (vmbr0)
+  [ ] Per-VM TAP + virtio-net; cleanup on destroy
+  [ ] Static IP or tiny DHCP (dnsmasq) on the bridge
+  [ ] Basic nftables / bridge isolation
+  [ ] Serial console log + attach
+  [ ] VNC or websocket console proxy
+
+
+Phase 4 — API, auth, UI                        → v1.0 single-node platform
+-----------------------
+Goal:  operators never SSH to the hypervisor (this is the product)
+Demo:  browser creates VM from ISO, watches task, opens console
+Skip:  UI without a strict API
+
+  [ ] REST: /vms /volumes /networks /tasks + OpenAPI
+  [ ] Inventory DB (SQLite first)
+  [ ] Tokens, users, roles (admin / operator / viewer)
+  [ ] Async task log (clone, start, backup)
+  [ ] Audit events
+  [ ] Web UI: inventory, create wizard, console, tasks
+
+
+Phase 5 — Cluster, HA, migrate                 → v2.0 cluster
+------------------------------
+Goal:  more than one box
+Demo:  3 nodes; kill one; VMs restart elsewhere
+Skip:  fancy DRS before quorum and fencing
+
+  [ ] Node agent: heartbeat, local VMs, CPU/RAM/disk
+  [ ] Join/leave; shared inventory
+  [ ] Quorum + fencing (no split-brain)
+  [ ] HA restart on node loss
+  [ ] Live migration via VMM
+  [ ] Simple scheduler: least-loaded node that fits
+
+
+Phase 6 — Distributed storage                  (optional, last)
+-----------------------------
+Goal:  one pool across nodes (Nutanix/vSAN class)
+Demo:  VM disk survives node loss without copying files
+Skip:  starting the whole project here
+
+  [ ] Ceph RBD (or equivalent) volume backend
+  [ ] Replica placement + rebuild
+  [ ] Thin provision, snapshots, clones on shared storage
+  [ ] Storage-aware live migrate
+
+
+Crate map
+---------
+pertisk-types     IDs, spec, errors          all phases
+pertisk-vmm       CH / QEMU adapters         phase 1
+pertisk-storage   volumes, snapshots, ISO    phase 2
+pertisk-net       bridge, TAP, DHCP          phase 3
+pertisk-daemon    node agent, reconcile      phases 1 and 5
+pertisk-api       HTTP, auth, tasks          phase 4
+pertisk-cli       operator CLI               phase 1 onward
+
+
+Release gates
+-------------
+v0.1  phases 0–1   CLI starts/stops a VM
+v1.0  phases 2–4   disks + net + console + API + UI  (one-node Proxmox)
+v2.0  phase 5      cluster + HA (+ phase 6 if HCI)

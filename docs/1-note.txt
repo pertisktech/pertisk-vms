@@ -1,0 +1,72 @@
+How to make a Proxmox / Nutanix / vSphere-like platform in Rust
+================================================================
+
+You do not start by writing a hypervisor.
+
+Proxmox VE and Nutanix AHV sit on Linux KVM. vSphere sits on proprietary
+ESXi. What those products sell is the control plane: API, storage,
+networking, cluster, HA, live migration, UI.
+
+A realistic Rust platform reuses KVM, reuses a VMM, and writes orchestration
+in Rust.
+
+
+Stack (top = product, bottom = kernel)
+--------------------------------------
+
+7. Operator UI / CLI     optional Rust CLI; web UI can be TypeScript
+6. Management API        WRITE THIS — axum/tonic, RBAC, tasks
+5. Cluster / HA          later — Raft/corosync/etcd, fencing, scheduler
+4. Storage               integrate first — qcow2/ZFS/LVM, Ceph later
+3. Virtual networking    integrate first — bridge, TAP, VLAN, then SDN
+2. VMM (userspace)       REUSE — Cloud Hypervisor, Firecracker, or QEMU
+1. Hypervisor            DO NOT WRITE — Linux KVM
+
+
+What to copy from each product
+------------------------------
+
+Proxmox:  orchestrate Linux tools (QEMU, ZFS, Ceph, corosync). Rust is
+          already entering via proxmox-rs, pve-rs, pmxcfs rewrite.
+Nutanix:  the moat is HCI storage (AOS), not the hypervisor. Do not start
+          here; that is a multi-year storage product.
+vSphere:  copy the management model (inventory, roles, vMotion, DRS).
+          Do not rewrite ESXi. vim_rs is only an API client.
+
+
+Two viable Rust architectures
+-----------------------------
+
+A. Orchestrate QEMU/KVM (closest to Proxmox, recommended for compatibility)
+   Rust owns API, jobs, cluster. QEMU remains the VMM for Windows, GPU
+   passthrough, messy PCI, live migration.
+
+B. Cloud Hypervisor + rust-vmm (modern cloud VMM, narrower guests)
+   Entire VMM in Rust. Production users: Firecracker, Cloud Hypervisor,
+   crosvm, libkrun, Dragonball. Better for Linux cloud VMs than as a
+   drop-in vSphere replacement.
+
+rust-vmm crates (not a hypervisor — building blocks):
+  kvm-ioctls, vm-memory, linux-loader, virtio-queue, vhost,
+  vfio-ioctls, event-manager, seccompiler, acpi_tables
+
+
+Build sequence
+--------------
+
+1. Single-node VM lifecycle on KVM (create/start/stop)
+2. Disks, snapshots, ISO library (local qcow2/ZFS — not Ceph yet)
+3. Bridge + TAP + guest console
+4. REST API + auth + operator UI  ← this is the product
+5. Cluster, HA, live migration
+6. Distributed storage (Nutanix/vSAN year — optional, last)
+
+Minimum viable platform: Linux host, KVM, one VMM, file-backed disk,
+one bridge, Rust API that boots a VM from an ISO.
+
+Suggested default for pertisk-vm:
+  Control plane in Rust.
+  VMM = Cloud Hypervisor (Linux) or QEMU (Windows / PCI sprawl).
+  Storage = local qcow2/ZFS.
+  Cluster later.
+  Do not write KVM. Do not start with a custom distributed filesystem.
