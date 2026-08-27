@@ -29,6 +29,8 @@ rusqlite.workspace = true
 argon2.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

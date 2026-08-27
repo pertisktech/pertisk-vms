@@ -5,6 +5,7 @@ mod console;
 mod control;
 mod http;
 mod service;
+mod static_files;
 mod store;
 
 use std::path::{Path, PathBuf};

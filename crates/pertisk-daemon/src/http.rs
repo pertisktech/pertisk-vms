@@ -7,7 +7,7 @@ use axum::extract::{
 };
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
 use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::control::AuthUser;
+use crate::static_files::static_handler;
 use crate::{DaemonError, Service};
 
 pub fn router(service: Service) -> Router {
@@ -95,16 +96,12 @@ pub fn router(service: Service) -> Router {
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
     Router::new()
-        .route("/", get(ui))
         .route("/v1/health", get(health))
         .route("/v1/login", post(login))
         .route("/v1/openapi.json", get(openapi))
         .merge(protected)
+        .fallback(static_handler)
         .with_state(service)
-}
-
-async fn ui() -> Html<&'static str> {
-    Html(include_str!("../ui/index.html"))
 }
 
 async fn health() -> impl IntoResponse {
