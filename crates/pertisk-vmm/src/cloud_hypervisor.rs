@@ -36,6 +36,10 @@ impl CloudHypervisorDriver {
         self.run_dir.join(format!("{id}.serial"))
     }
 
+    fn console_socket_path(&self, id: pertisk_types::VmId) -> PathBuf {
+        self.run_dir.join(format!("{id}.console.sock"))
+    }
+
     pub async fn create(&self, id: pertisk_types::VmId, spec: &VmSpec) -> Result<CreateResult> {
         if spec.kernel.is_none() && spec.disks.is_empty() {
             return Err(VmmError::Message(
@@ -51,8 +55,12 @@ impl CloudHypervisorDriver {
             .serial_log
             .clone()
             .unwrap_or_else(|| self.serial_path(id));
+        let console_socket = self.console_socket_path(id);
         if let Some(parent) = serial_log.parent() {
             tokio::fs::create_dir_all(parent).await?;
+        }
+        if console_socket.exists() {
+            let _ = tokio::fs::remove_file(&console_socket).await;
         }
 
         info!(vm = %id, socket = %socket.display(), "starting cloud-hypervisor");
@@ -69,7 +77,7 @@ impl CloudHypervisorDriver {
 
         wait_ready(&socket, Duration::from_secs(5)).await?;
 
-        let config = ChVmConfig::from_spec(spec, &serial_log);
+        let config = ChVmConfig::from_spec(spec, &console_socket);
         let body = serde_json::to_vec(&config)?;
         let (status, resp) = put_json(&socket, "/api/v1/vm.create", Some(&body)).await?;
         expect_ok(status, &resp)?;
@@ -78,6 +86,7 @@ impl CloudHypervisorDriver {
             api_socket: Some(socket),
             pid,
             serial_log: Some(serial_log),
+            console_socket: Some(console_socket),
         })
     }
 
@@ -116,6 +125,9 @@ impl CloudHypervisorDriver {
         }
         self.reap_or_kill(record).await?;
         if let Some(socket) = &record.api_socket {
+            let _ = tokio::fs::remove_file(socket).await;
+        }
+        if let Some(socket) = &record.console_socket {
             let _ = tokio::fs::remove_file(socket).await;
         }
         Ok(())
@@ -199,16 +211,20 @@ struct ChNet {
 #[derive(Serialize)]
 struct ChConsole {
     mode: &'static str,
-    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    socket: Option<String>,
 }
 
 impl ChVmConfig {
-    fn from_spec(spec: &VmSpec, serial_log: &std::path::Path) -> Self {
+    fn from_spec(spec: &VmSpec, console_socket: &std::path::Path) -> Self {
         let payload = spec.kernel.as_ref().map(|kernel| ChPayload {
             kernel: Some(kernel.display().to_string()),
-            cmdline: spec.cmdline.clone().or_else(|| {
-                Some("console=ttyS0 reboot=k panic=1".into())
-            }),
+            cmdline: spec
+                .cmdline
+                .clone()
+                .or_else(|| Some("console=ttyS0 reboot=k panic=1".into())),
             initramfs: spec
                 .initramfs
                 .as_ref()
@@ -251,8 +267,9 @@ impl ChVmConfig {
             disks,
             net,
             serial: Some(ChConsole {
-                mode: "File",
-                file: serial_log.display().to_string(),
+                mode: "Socket",
+                file: None,
+                socket: Some(console_socket.display().to_string()),
             }),
         }
     }

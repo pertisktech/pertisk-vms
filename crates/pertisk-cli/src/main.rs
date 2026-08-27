@@ -3,15 +3,15 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use pertisk_api::{
+    AuditEvent, CreateUserRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
+};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterStatus,
     ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
     ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
     ResizeVolumeRequest, SerialChunk, SnapshotRequest, VmId, VmRecord, VmSpec, VolumeFormat,
     VolumeId, VolumeRecord, default_home, format_size, parse_size,
-};
-use pertisk_api::{
-    AuditEvent, CreateUserRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
 };
 
 #[derive(Debug, Parser)]
@@ -84,7 +84,9 @@ enum UserCommand {
         role: String,
     },
     #[command(name = "rm")]
-    Remove { id: String },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -117,17 +119,25 @@ enum VmCommand {
         #[arg(long)]
         disk: Vec<PathBuf>,
     },
-    Start { id: VmId },
-    Stop { id: VmId },
+    Start {
+        id: VmId,
+    },
+    Stop {
+        id: VmId,
+    },
     Migrate {
         id: VmId,
         #[arg(long)]
         target: Option<String>,
     },
     #[command(name = "rm")]
-    Remove { id: VmId },
+    Remove {
+        id: VmId,
+    },
     List,
-    Show { id: VmId },
+    Show {
+        id: VmId,
+    },
     Disk {
         #[command(subcommand)]
         command: DiskCommand,
@@ -140,11 +150,13 @@ enum VmCommand {
         #[command(subcommand)]
         command: NicCommand,
     },
-    /// Serial console (tail of guest serial log).
+    /// Serial console. --follow tails the log; --attach is an interactive websocket.
     Console {
         id: VmId,
         #[arg(long)]
         follow: bool,
+        #[arg(long)]
+        attach: bool,
     },
 }
 
@@ -209,9 +221,13 @@ enum NetCommand {
         isolate: bool,
     },
     List,
-    Show { id: NetworkId },
+    Show {
+        id: NetworkId,
+    },
     #[command(name = "rm")]
-    Remove { id: NetworkId },
+    Remove {
+        id: NetworkId,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -227,9 +243,13 @@ enum VolCommand {
         replicas: Option<u8>,
     },
     List,
-    Show { id: VolumeId },
+    Show {
+        id: VolumeId,
+    },
     #[command(name = "rm")]
-    Remove { id: VolumeId },
+    Remove {
+        id: VolumeId,
+    },
     Resize {
         id: VolumeId,
         #[arg(long)]
@@ -263,7 +283,9 @@ enum IsoCommand {
     },
     List,
     #[command(name = "rm")]
-    Remove { name: String },
+    Remove {
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -325,9 +347,7 @@ async fn run() -> Result<()> {
             );
             println!("quorum             {}", info.quorum);
             if !info.kvm {
-                eprintln!(
-                    "note: /dev/kvm is missing; this machine can run the mock driver only"
-                );
+                eprintln!("note: /dev/kvm is missing; this machine can run the mock driver only");
             }
         }
         Command::Login { username, password } => {
@@ -335,10 +355,7 @@ async fn run() -> Result<()> {
                 &client,
                 &cli.url,
                 "/v1/login",
-                &LoginRequest {
-                    username,
-                    password,
-                },
+                &LoginRequest { username, password },
             )
             .await?;
             let path = token_path();
@@ -346,7 +363,12 @@ async fn run() -> Result<()> {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&path, &out.token)?;
-            println!("{} {} (token saved to {})", out.username, out.role, path.display());
+            println!(
+                "{} {} (token saved to {})",
+                out.username,
+                out.role,
+                path.display()
+            );
         }
         Command::Whoami => {
             let session: serde_json::Value = get_json(&client, &cli.url, "/v1/session").await?;
@@ -430,17 +452,11 @@ async fn run() -> Result<()> {
                     status.quorum,
                     status.fenced
                 );
-                println!(
-                    "{:<38} {:<12} {:<8} {}",
-                    "ID", "NAME", "ONLINE", "URL"
-                );
+                println!("{:<38} {:<12} {:<8} {}", "ID", "NAME", "ONLINE", "URL");
                 for member in status.members {
                     println!(
                         "{:<38} {:<12} {:<8} {}",
-                        member.id,
-                        member.name,
-                        member.online,
-                        member.peer_url
+                        member.id, member.name, member.online, member.peer_url
                     );
                 }
             }
@@ -555,7 +571,8 @@ async fn run() -> Result<()> {
                 }
             }
             VmCommand::Show { id } => {
-                let record: VmRecord = get_json(&client, &cli.url, &format!("/v1/vms/{id}")).await?;
+                let record: VmRecord =
+                    get_json(&client, &cli.url, &format!("/v1/vms/{id}")).await?;
                 println!("{}", serde_json::to_string_pretty(&record)?);
             }
             VmCommand::Disk { command } => match command {
@@ -610,12 +627,15 @@ async fn run() -> Result<()> {
                 }
                 NicCommand::Detach { vm, tap } => {
                     let record: VmRecord =
-                        delete_json(&client, &cli.url, &format!("/v1/vms/{vm}/nics/{tap}"))
-                            .await?;
+                        delete_json(&client, &cli.url, &format!("/v1/vms/{vm}/nics/{tap}")).await?;
                     print_vm(&record);
                 }
             },
-            VmCommand::Console { id, follow } => {
+            VmCommand::Console { id, follow, attach } => {
+                if attach {
+                    attach_console(&cli.url, id).await?;
+                    return Ok(());
+                }
                 let mut from = 0u64;
                 loop {
                     let chunk: SerialChunk = get_json(
@@ -644,7 +664,12 @@ async fn run() -> Result<()> {
             }
         },
         Command::Vol { command } => match command {
-            VolCommand::Create { name, size, format, replicas } => {
+            VolCommand::Create {
+                name,
+                size,
+                format,
+                replicas,
+            } => {
                 let req = CreateVolumeRequest {
                     name,
                     size_bytes: parse_size(&size)?,
@@ -672,7 +697,9 @@ async fn run() -> Result<()> {
                         vol.format,
                         format_size(vol.size_bytes),
                         vol.snapshots.len(),
-                        vol.replicas.len().max(usize::from(vol.replica_count.max(1)))
+                        vol.replicas
+                            .len()
+                            .max(usize::from(vol.replica_count.max(1)))
                     );
                 }
             }
@@ -775,13 +802,7 @@ async fn run() -> Result<()> {
                     },
                 )
                 .await?;
-                println!(
-                    "{} {} {} {}",
-                    net.id,
-                    net.name,
-                    net.bridge,
-                    net.cidr
-                );
+                println!("{} {} {} {}", net.id, net.name, net.bridge, net.cidr);
             }
             NetCommand::List => {
                 let nets: Vec<NetworkRecord> = get_json(&client, &cli.url, "/v1/networks").await?;
@@ -857,6 +878,62 @@ fn with_auth(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         Some(token) => req.header("Authorization", format!("Bearer {token}")),
         None => req,
     }
+}
+
+fn ws_url(http: &str, path: &str, token: &str) -> String {
+    let base = if let Some(rest) = http.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = http.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("ws://{http}")
+    };
+    format!("{}{path}?token={token}", base.trim_end_matches('/'))
+}
+
+async fn attach_console(base: &str, id: VmId) -> Result<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let token = load_token().context("not logged in (pertisk login)")?;
+    let url = ws_url(base, &format!("/v1/vms/{id}/console/ws"), &token);
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .with_context(|| format!("websocket {url}"))?;
+    let (mut sink, mut stream) = ws.split();
+    let mut stdout = tokio::io::stdout();
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    loop {
+        tokio::select! {
+            incoming = stream.next() => {
+                match incoming {
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        stdout.write_all(text.as_bytes()).await?;
+                        stdout.flush().await?;
+                    }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes))) => {
+                        stdout.write_all(&bytes).await?;
+                        stdout.flush().await?;
+                    }
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => break,
+                    Some(Err(err)) => bail!("{err}"),
+                    Some(Ok(_)) => {}
+                }
+            }
+            line = stdin.next_line() => {
+                match line? {
+                    Some(text) => {
+                        sink.send(tokio_tungstenite::tungstenite::Message::Text(
+                            format!("{text}\n").into(),
+                        ))
+                        .await?;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(

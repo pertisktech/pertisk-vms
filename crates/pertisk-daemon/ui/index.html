@@ -83,12 +83,12 @@
         </section>
         <section>
           <h2>Serial console</h2>
-          <p id="console-meta" class="muted">Select a VM.</p>
+          <p id="console-meta" class="muted">Select a VM, then click the console and type.</p>
           <form class="inline" id="attach-iso">
             <label>ISO <select name="iso" id="iso-select"></select></label>
             <button type="submit">Attach ISO</button>
           </form>
-          <pre id="console"></pre>
+          <pre id="console" tabindex="0"></pre>
         </section>
       </div>
       <div class="row">
@@ -126,6 +126,7 @@
     const $ = (id) => document.getElementById(id);
     let token = localStorage.getItem("pertisk_token") || "";
     let consoleVm = "";
+    let consoleWs = null;
 
     async function api(path, opts = {}) {
       const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
@@ -162,6 +163,12 @@
     $("logout").addEventListener("click", () => {
       token = "";
       localStorage.removeItem("pertisk_token");
+      consoleVm = "";
+      if (consoleWs) {
+        consoleWs.onclose = null;
+        consoleWs.close();
+        consoleWs = null;
+      }
       showApp(false);
     });
 
@@ -313,7 +320,7 @@
         ["Actor", "Action", "Target"],
         audit.map((a) => [a.actor, a.action, a.target || ""])
       );
-      if (consoleVm) await loadConsole();
+      if (consoleVm) openConsoleWs(consoleVm);
     }
 
     function actions(vm) {
@@ -328,8 +335,10 @@
     async function act(kind, id, name) {
       if (kind === "console") {
         consoleVm = id;
-        $("console-meta").textContent = name + " · " + id;
-        await loadConsole();
+        $("console-meta").textContent = name + " · " + id + " · click console and type";
+        $("console").textContent = "";
+        openConsoleWs(id);
+        $("console").focus();
         return;
       }
       await mutate(async () => {
@@ -338,10 +347,46 @@
       });
     }
 
-    async function loadConsole() {
-      const chunk = await api("/v1/vms/" + consoleVm + "/console/serial?from=0&max=16384");
-      $("console").textContent = chunk.text || "(empty)";
+    function openConsoleWs(id) {
+      if (consoleWs && consoleWs.vmId === id && consoleWs.readyState <= 1) return;
+      if (consoleWs) {
+        consoleWs.onclose = null;
+        consoleWs.close();
+      }
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(
+        proto + "//" + location.host + "/v1/vms/" + id + "/console/ws?token=" + encodeURIComponent(token)
+      );
+      ws.vmId = id;
+      ws.onmessage = (e) => {
+        const el = $("console");
+        el.textContent += e.data;
+        el.scrollTop = el.scrollHeight;
+      };
+      ws.onclose = () => {
+        if (consoleVm === id) {
+          $("console-meta").textContent += " · disconnected";
+        }
+      };
+      consoleWs = ws;
     }
+
+    $("console").addEventListener("keydown", (e) => {
+      if (!consoleWs || consoleWs.readyState !== 1) return;
+      if (e.key === "Enter") {
+        consoleWs.send("\n");
+        e.preventDefault();
+      } else if (e.key === "Backspace") {
+        consoleWs.send("\x7f");
+        e.preventDefault();
+      } else if (e.key === "Tab") {
+        consoleWs.send("\t");
+        e.preventDefault();
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        consoleWs.send(e.key);
+        e.preventDefault();
+      }
+    });
 
     function table(headers, rows) {
       if (!rows.length) return `<p class="muted">none</p>`;

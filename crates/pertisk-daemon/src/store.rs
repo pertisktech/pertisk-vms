@@ -46,9 +46,9 @@ impl Store {
 
     pub fn name_taken(&self, name: &str, except: Option<VmId>) -> Result<bool, DaemonError> {
         let vms = self.vms.lock().expect("store lock");
-        Ok(vms.values().any(|vm| {
-            vm.spec.name == name && except.is_none_or(|id| vm.id != id)
-        }))
+        Ok(vms
+            .values()
+            .any(|vm| vm.spec.name == name && except.is_none_or(|id| vm.id != id)))
     }
 
     pub fn upsert(&self, record: VmRecord) -> Result<(), DaemonError> {
@@ -123,6 +123,7 @@ mod tests {
                 pid: None,
                 api_socket: None,
                 serial_log: None,
+                console_socket: None,
                 last_error: None,
                 node_id: None,
             })

@@ -4,12 +4,14 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng};
 use argon2::Argon2;
+use argon2::password_hash::{
+    PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+};
 use pertisk_api::{
     AuditEvent, CreateUserRequest, Role, TaskRecord, TaskStatus, TokenResponse, UserRecord,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,9 +52,8 @@ impl ControlStore {
         admin_password: Option<&str>,
     ) -> Result<Self, ControlError> {
         if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                ControlError::Message(format!("create control db dir: {err}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|err| ControlError::Message(format!("create control db dir: {err}")))?;
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(
@@ -149,10 +150,7 @@ impl ControlStore {
             Ok(UserRecord {
                 id: row.get(0)?,
                 username: row.get(1)?,
-                role: row
-                    .get::<_, String>(2)?
-                    .parse()
-                    .unwrap_or(Role::Viewer),
+                role: row.get::<_, String>(2)?.parse().unwrap_or(Role::Viewer),
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -191,7 +189,11 @@ impl ControlStore {
         };
         verify_password(password, &hash)?;
         let role: Role = role.parse().unwrap_or(Role::Viewer);
-        let token = format!("{}{}", Uuid::new_v4().as_simple(), Uuid::new_v4().as_simple());
+        let token = format!(
+            "{}{}",
+            Uuid::new_v4().as_simple(),
+            Uuid::new_v4().as_simple()
+        );
         let now = unix_now() as i64;
         conn.execute(
             "INSERT INTO tokens (token, user_id, created_unix) VALUES (?1, ?2, ?3)",
@@ -215,10 +217,7 @@ impl ControlStore {
                 Ok(AuthUser {
                     id: row.get(0)?,
                     username: row.get(1)?,
-                    role: row
-                        .get::<_, String>(2)?
-                        .parse()
-                        .unwrap_or(Role::Viewer),
+                    role: row.get::<_, String>(2)?.parse().unwrap_or(Role::Viewer),
                 })
             },
         );
@@ -355,9 +354,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
         target: row.get(4)?,
         error: row.get(5)?,
         created_unix: row.get::<_, i64>(6)? as u64,
-        finished_unix: row
-            .get::<_, Option<i64>>(7)?
-            .map(|v| v as u64),
+        finished_unix: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
     })
 }
 

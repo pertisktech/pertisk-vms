@@ -242,7 +242,10 @@ impl VolumePool {
     pub fn delete_volume(&self, id: VolumeId) -> Result<()> {
         let record = {
             let mut inner = self.inner.lock().expect("storage lock");
-            inner.volumes.remove(&id).ok_or(StorageError::NotFound(id))?
+            inner
+                .volumes
+                .remove(&id)
+                .ok_or(StorageError::NotFound(id))?
         };
         let _ = std::fs::remove_file(&record.path);
         let snap_dir = self.root.join("snapshots").join(id.to_string());
@@ -299,8 +302,7 @@ impl VolumePool {
             if !self.qemu.available() {
                 return Err(StorageError::LinkedRequiresQemu);
             }
-            self.qemu
-                .linked_clone(&source.path, source.format, &path)?;
+            self.qemu.linked_clone(&source.path, source.format, &path)?;
             Some(source.id)
         } else {
             std::fs::copy(&source.path, &path)?;

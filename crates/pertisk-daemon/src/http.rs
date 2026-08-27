@@ -1,18 +1,21 @@
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::Request;
+use axum::extract::{
+    DefaultBodyLimit, Path, Query, State,
+    ws::{Message, WebSocket, WebSocketUpgrade},
+};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
-use axum::extract::Request;
 use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterSnapshot,
-    CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest, JoinClusterRequest,
-    MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest, VmId, VmRecord, VmSpec,
-    VolumeId, VolumeRecord,
+    ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
+    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest, VmId,
+    VmRecord, VmSpec, VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -30,13 +33,21 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/stop", post(stop))
         .route("/v1/vms/{id}/migrate", post(migrate))
         .route("/v1/vms/{id}/disks", post(attach_disk))
-        .route("/v1/vms/{id}/disks/{volume_id}", axum::routing::delete(detach_disk))
+        .route(
+            "/v1/vms/{id}/disks/{volume_id}",
+            axum::routing::delete(detach_disk),
+        )
         .route("/v1/vms/{id}/cdrom", post(attach_iso))
-        .route("/v1/vms/{id}/cdrom/{iso}", axum::routing::delete(detach_iso))
+        .route(
+            "/v1/vms/{id}/cdrom/{iso}",
+            axum::routing::delete(detach_iso),
+        )
         .route("/v1/vms/{id}/nics", post(attach_nic))
         .route("/v1/vms/{id}/nics/{tap}", axum::routing::delete(detach_nic))
         .route("/v1/vms/{id}/console", get(console_info))
         .route("/v1/vms/{id}/console/serial", get(console_serial))
+        .route("/v1/vms/{id}/console/input", post(console_input))
+        .route("/v1/vms/{id}/console/ws", get(console_ws))
         .route("/v1/volumes", get(list_volumes).post(create_volume))
         .route("/v1/volumes/{id}", get(show_volume).delete(delete_volume))
         .route("/v1/volumes/{id}/resize", post(resize_volume))
@@ -68,11 +79,11 @@ pub fn router(service: Service) -> Router {
         .route("/v1/peer/stop", post(peer_stop))
         .route("/v1/peer/drop", post(peer_drop))
         .route("/v1/peer/volumes/ensure", post(peer_volume_ensure))
-        .route("/v1/peer/volumes/{id}", axum::routing::delete(peer_volume_delete))
         .route(
-            "/v1/peer/volumes/{id}/stat",
-            get(peer_volume_stat),
+            "/v1/peer/volumes/{id}",
+            axum::routing::delete(peer_volume_delete),
         )
+        .route("/v1/peer/volumes/{id}/stat", get(peer_volume_stat))
         .route(
             "/v1/peer/volumes/{id}/blob",
             get(peer_volume_blob_get).put(peer_volume_blob_put),
@@ -128,6 +139,23 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn query_token(uri: &axum::http::Uri) -> Option<String> {
+    let query = uri.query()?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next()?;
+        let value = parts.next().unwrap_or("");
+        if key == "token" && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn request_token(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
+    bearer_token(headers).or_else(|| query_token(uri))
+}
+
 fn required_role(method: &Method, path: &str) -> Role {
     if path.starts_with("/v1/users") {
         Role::Admin
@@ -162,7 +190,8 @@ async fn auth_middleware(
         });
         return Ok(next.run(req).await);
     }
-    let token = bearer_token(req.headers()).ok_or(crate::control::ControlError::Unauthorized)?;
+    let token = request_token(req.headers(), req.uri())
+        .ok_or(crate::control::ControlError::Unauthorized)?;
     let user = service.authenticate(&token)?;
     if !user.role.allows(required_role(&method, &path)) {
         return Err(crate::control::ControlError::Forbidden.into());
@@ -231,7 +260,14 @@ async fn start(
     Path(id): Path<VmId>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(
-        tracked(&service, &user, "vm.start", id.to_string(), service.start(id)).await?,
+        tracked(
+            &service,
+            &user,
+            "vm.start",
+            id.to_string(),
+            service.start(id),
+        )
+        .await?,
     ))
 }
 
@@ -441,6 +477,74 @@ async fn console_serial(
     Ok(Json(service.console_serial(id, query.from, query.max)?))
 }
 
+async fn console_input(
+    State(service): State<Service>,
+    Path(id): Path<VmId>,
+    Json(req): Json<ConsoleInput>,
+) -> Result<impl IntoResponse, DaemonError> {
+    service.write_console(id, &req.text).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn console_ws(
+    State(service): State<Service>,
+    Path(id): Path<VmId>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, DaemonError> {
+    let backlog = service.console_serial(id, 0, 256 * 1024)?;
+    let (rx, tx) = service.subscribe_console(id).await?;
+    Ok(ws.on_upgrade(move |socket| proxy_console(socket, backlog.text, rx, tx)))
+}
+
+async fn proxy_console(
+    mut socket: WebSocket,
+    backlog: String,
+    mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+) {
+    if !backlog.is_empty() && socket.send(Message::Text(backlog.into())).await.is_err() {
+        return;
+    }
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if tx.send(text.as_bytes().to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if tx.send(bytes.to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Ping(p))) => {
+                        if socket.send(Message::Pong(p)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+            chunk = rx.recv() => {
+                match chunk {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        if socket.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+}
+
 async fn list_networks(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.list_networks()?))
 }
@@ -592,10 +696,7 @@ async fn peer_volume_blob_get(
 ) -> Result<impl IntoResponse, DaemonError> {
     let rec = service.get_volume(id)?;
     let data = std::fs::read(&rec.path)?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        data,
-    ))
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], data))
 }
 
 async fn peer_volume_blob_put(
@@ -719,9 +820,8 @@ mod tests {
         let json = if bytes.is_empty() {
             serde_json::json!(null)
         } else {
-            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-                serde_json::json!({ "raw": String::from_utf8_lossy(&bytes) })
-            })
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&bytes) }))
         };
         (status, json)
     }
@@ -844,7 +944,12 @@ mod tests {
             self.tick.abort();
         }
 
-        async fn json(&self, method: Method, path: &str, body: Option<serde_json::Value>) -> serde_json::Value {
+        async fn json(
+            &self,
+            method: Method,
+            path: &str,
+            body: Option<serde_json::Value>,
+        ) -> serde_json::Value {
             let mut req = self.http().request(method, format!("{}{path}", self.url));
             req = req.header("authorization", format!("Bearer {}", self.token));
             if let Some(body) = body {
@@ -984,7 +1089,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let vms = survivor.json(Method::GET, "/v1/vms", None).await;
             if let Some(vm) = vms.as_array().and_then(|list| {
-                list.iter().find(|vm| vm["id"] == id && vm["state"] == "running")
+                list.iter()
+                    .find(|vm| vm["id"] == id && vm["state"] == "running")
             }) && vm["node_id"].as_str() != Some(owner.as_str())
             {
                 found = true;
@@ -1114,7 +1220,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             let vms = survivor.json(Method::GET, "/v1/vms", None).await;
             if let Some(vm) = vms.as_array().and_then(|list| {
-                list.iter().find(|vm| vm["id"] == id && vm["state"] == "running")
+                list.iter()
+                    .find(|vm| vm["id"] == id && vm["state"] == "running")
             }) && vm["node_id"].as_str() != Some(owner.as_str())
             {
                 dest = vm["node_id"].as_str().map(|s| s.to_string());
@@ -1129,5 +1236,148 @@ mod tests {
             replicas.iter().any(|r| r.as_str() == Some(dest.as_str())),
             "ha restarted on {dest} which did not already hold a replica"
         );
+    }
+
+    #[tokio::test]
+    async fn console_input_via_http() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, created) = send(
+            &app,
+            Method::POST,
+            "/v1/vms",
+            Some(token),
+            Some(json!({
+                "name": "cons",
+                "vcpus": 1,
+                "memory_mib": 512
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = created["id"].as_str().unwrap();
+        let (status, started) = send(
+            &app,
+            Method::POST,
+            &format!("/v1/vms/{id}/start"),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(started["state"], "running");
+        let (status, info) = send(
+            &app,
+            Method::GET,
+            &format!("/v1/host?token={token}"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(info["driver"].is_string());
+        let (status, _) = send(
+            &app,
+            Method::POST,
+            &format!("/v1/vms/{id}/console/input"),
+            Some(token),
+            Some(json!({ "text": "ping\n" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let mut text = String::new();
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let (status, chunk) = send(
+                &app,
+                Method::GET,
+                &format!("/v1/vms/{id}/console/serial?from=0&max=8192"),
+                Some(token),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            text = chunk["text"].as_str().unwrap_or("").to_string();
+            if text.contains("started") && text.contains("ping") {
+                break;
+            }
+        }
+        assert!(text.contains("started"), "missing boot serial: {text:?}");
+        assert!(text.contains("ping"), "missing console input: {text:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_websocket_roundtrip() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::connect_async;
+
+        let node = spawn_node("console").await;
+        let created = node
+            .json(
+                Method::POST,
+                "/v1/vms",
+                Some(json!({
+                    "name": "cons",
+                    "vcpus": 1,
+                    "memory_mib": 512
+                })),
+            )
+            .await;
+        let id = created["id"].as_str().unwrap();
+        let started = node
+            .json(Method::POST, &format!("/v1/vms/{id}/start"), None)
+            .await;
+        assert_eq!(started["state"], "running");
+        let ws_url = format!(
+            "{}/v1/vms/{id}/console/ws?token={}",
+            node.url.replacen("http://", "ws://", 1),
+            node.token
+        );
+        let (ws, _) = connect_async(&ws_url).await.expect("ws connect");
+        let (mut sink, mut stream) = ws.split();
+        let mut got = String::new();
+        for _ in 0..20 {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    got.push_str(&msg.to_string());
+                    if got.contains("started") {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            got.contains("started"),
+            "ws backlog missing boot log: {got:?}"
+        );
+        sink.send(tokio_tungstenite::tungstenite::Message::Text(
+            "ping\n".into(),
+        ))
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    got.push_str(&msg.to_string());
+                    if got.contains("ping") {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        node.kill();
+        assert!(got.contains("ping"), "ws did not echo input: {got:?}");
     }
 }

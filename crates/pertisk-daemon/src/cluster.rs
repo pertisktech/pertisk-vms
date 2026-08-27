@@ -188,7 +188,11 @@ impl Cluster {
             let persisted: Persisted = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
             let mut members = BTreeMap::new();
             for record in persisted.members {
-                let last_seen_ms = if record.id == persisted.self_id { now } else { 0 };
+                let last_seen_ms = if record.id == persisted.self_id {
+                    now
+                } else {
+                    0
+                };
                 members.insert(
                     record.id,
                     MemberState {
@@ -232,7 +236,11 @@ impl Cluster {
             Inner {
                 self_id,
                 name: config.cluster.name.clone(),
-                secret: format!("{}{}", Uuid::new_v4().as_simple(), Uuid::new_v4().as_simple()),
+                secret: format!(
+                    "{}{}",
+                    Uuid::new_v4().as_simple(),
+                    Uuid::new_v4().as_simple()
+                ),
                 generation: 1,
                 members,
                 fenced: false,
@@ -505,11 +513,7 @@ impl Cluster {
             .collect();
         let online = members.iter().filter(|m| m.online).count();
         let quorum = has_quorum(online, members.len());
-        let leader_id = members
-            .iter()
-            .filter(|m| m.online)
-            .map(|m| m.id)
-            .min();
+        let leader_id = members.iter().filter(|m| m.online).map(|m| m.id).min();
         ClusterStatus {
             name: inner.name.clone(),
             generation: inner.generation,

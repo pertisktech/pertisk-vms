@@ -65,10 +65,7 @@ pub fn parse_cidr(s: &str) -> Result<Ipv4Net> {
         return Err(NetError::Invalid("prefix must be 0..=32".into()));
     }
     let ip = parse_ipv4(addr)?;
-    let net = Ipv4Net {
-        network: 0,
-        prefix,
-    };
+    let net = Ipv4Net { network: 0, prefix };
     let network = ip & net.mask();
     Ok(Ipv4Net { network, prefix })
 }

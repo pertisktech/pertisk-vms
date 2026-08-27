@@ -40,11 +40,7 @@ impl QemuImg {
     }
 
     pub fn resize(&self, path: &Path, size: u64) -> Result<()> {
-        self.run(&[
-            "resize",
-            &path.display().to_string(),
-            &size.to_string(),
-        ])
+        self.run(&["resize", &path.display().to_string(), &size.to_string()])
     }
 
     pub fn linked_clone(

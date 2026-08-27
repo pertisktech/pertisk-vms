@@ -37,7 +37,12 @@ impl Rbd {
 
     pub fn create_image(&self, name: &str, size_bytes: u64) -> Result<()> {
         let mib = size_bytes.div_ceil(1024 * 1024).max(1);
-        self.run(&["create", &format!("{}/{}", self.pool, name), "--size", &mib.to_string()])
+        self.run(&[
+            "create",
+            &format!("{}/{}", self.pool, name),
+            "--size",
+            &mib.to_string(),
+        ])
     }
 
     pub fn remove_image(&self, name: &str) -> Result<()> {
@@ -45,11 +50,19 @@ impl Rbd {
     }
 
     pub fn snapshot_create(&self, name: &str, snap: &str) -> Result<()> {
-        self.run(&["snap", "create", &format!("{}/{}@{}", self.pool, name, snap)])
+        self.run(&[
+            "snap",
+            "create",
+            &format!("{}/{}@{}", self.pool, name, snap),
+        ])
     }
 
     pub fn snapshot_rollback(&self, name: &str, snap: &str) -> Result<()> {
-        self.run(&["snap", "rollback", &format!("{}/{}@{}", self.pool, name, snap)])
+        self.run(&[
+            "snap",
+            "rollback",
+            &format!("{}/{}@{}", self.pool, name, snap),
+        ])
     }
 
     pub fn clone_image(&self, src: &str, snap: &str, dest: &str) -> Result<()> {

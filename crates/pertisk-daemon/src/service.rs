@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use crate::Store;
 use crate::cluster::{self, Cluster, NodeLoad};
+use crate::console::ConsoleHub;
 use crate::control::{AuthUser, ControlError, ControlStore};
 
 #[derive(Debug, Error)]
@@ -66,6 +67,7 @@ pub struct Service {
     networks: Arc<NetworkPool>,
     control: Arc<ControlStore>,
     cluster: Arc<Cluster>,
+    console: ConsoleHub,
     http: reqwest::Client,
     config: HostConfig,
     data_dir: std::path::PathBuf,
@@ -91,6 +93,7 @@ impl Service {
             networks: Arc::new(networks),
             control: Arc::new(control),
             cluster: Arc::new(cluster),
+            console: ConsoleHub::new(),
             http: reqwest::Client::new(),
             config,
             data_dir,
@@ -138,7 +141,12 @@ impl Service {
         Ok(self.control.list_audit()?)
     }
 
-    pub fn audit(&self, actor: &str, action: &str, target: Option<&str>) -> Result<(), DaemonError> {
+    pub fn audit(
+        &self,
+        actor: &str,
+        action: &str,
+        target: Option<&str>,
+    ) -> Result<(), DaemonError> {
         Ok(self.control.audit(actor, action, target)?)
     }
 
@@ -212,6 +220,7 @@ impl Service {
             pid: None,
             api_socket: None,
             serial_log,
+            console_socket: None,
             last_error: None,
             node_id: Some(dest),
         };
@@ -246,11 +255,7 @@ impl Service {
         match record.state {
             VmState::Created | VmState::Stopped => {}
             state => {
-                return Err(pertisk_vmm::VmmError::InvalidState {
-                    state,
-                    op: "start",
-                }
-                .into());
+                return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
         }
         if record.state == VmState::Created {
@@ -260,6 +265,9 @@ impl Service {
                     record.api_socket = created.api_socket;
                     if created.serial_log.is_some() {
                         record.serial_log = created.serial_log;
+                    }
+                    if created.console_socket.is_some() {
+                        record.console_socket = created.console_socket;
                     }
                     self.store.upsert(record.clone())?;
                 }
@@ -282,6 +290,7 @@ impl Service {
                     record.node_id = Some(self.cluster.self_id());
                 }
                 self.store.upsert(record.clone())?;
+                self.attach_console(&record).await;
                 self.cluster.bump()?;
                 self.replicate().await;
                 Ok(record)
@@ -308,6 +317,7 @@ impl Service {
 
     pub async fn stop_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         let mut record = self.store.get(id)?;
+        self.console.drop_vm(id).await;
         self.vmm.stop(&record).await?;
         record.state = VmState::Stopped;
         record.last_error = None;
@@ -332,6 +342,7 @@ impl Service {
                 Err(err) => return Err(err.into()),
             }
         }
+        self.console.drop_vm(id).await;
         for nic in &record.spec.nets {
             let _ = self.networks.release_nic(nic);
         }
@@ -345,7 +356,12 @@ impl Service {
         record.node_id = Some(self.cluster.self_id());
         record.pid = None;
         record.api_socket = None;
-        let serial = self.config.vmm.run_dir.join(format!("{}.serial", record.id));
+        record.console_socket = None;
+        let serial = self
+            .config
+            .vmm
+            .run_dir
+            .join(format!("{}.serial", record.id));
         record.serial_log = Some(serial.clone());
         record.spec.serial_log = Some(serial);
         if record.state == VmState::Running {
@@ -366,6 +382,7 @@ impl Service {
     }
 
     pub async fn apply_drop(&self, record: &VmRecord) -> Result<(), DaemonError> {
+        self.console.drop_vm(record.id).await;
         match self.vmm.destroy(record).await {
             Ok(()) | Err(pertisk_vmm::VmmError::NotFound(_)) => Ok(()),
             Err(err) => Err(err.into()),
@@ -409,7 +426,10 @@ impl Service {
         Ok(self.volumes.get_volume(id)?)
     }
 
-    pub async fn create_volume(&self, req: CreateVolumeRequest) -> Result<VolumeRecord, DaemonError> {
+    pub async fn create_volume(
+        &self,
+        req: CreateVolumeRequest,
+    ) -> Result<VolumeRecord, DaemonError> {
         self.require_quorum()?;
         if self.config.storage.backend == StorageBackend::Rbd {
             if !Rbd::available() {
@@ -647,12 +667,7 @@ impl Service {
             .store
             .list()?
             .into_iter()
-            .filter(|vm| {
-                vm.spec
-                    .disks
-                    .iter()
-                    .any(|disk| disk.volume_id == Some(id))
-            })
+            .filter(|vm| vm.spec.disks.iter().any(|disk| disk.volume_id == Some(id)))
             .map(|vm| vm.id)
             .collect())
     }
@@ -680,10 +695,7 @@ impl Service {
         Ok(self.networks.get(id)?)
     }
 
-    pub fn create_network(
-        &self,
-        req: CreateNetworkRequest,
-    ) -> Result<NetworkRecord, DaemonError> {
+    pub fn create_network(&self, req: CreateNetworkRequest) -> Result<NetworkRecord, DaemonError> {
         Ok(self.networks.create(req)?)
     }
 
@@ -694,11 +706,7 @@ impl Service {
         Ok(self.networks.delete(id)?)
     }
 
-    pub fn attach_nic(
-        &self,
-        vm_id: VmId,
-        req: AttachNicRequest,
-    ) -> Result<VmRecord, DaemonError> {
+    pub fn attach_nic(&self, vm_id: VmId, req: AttachNicRequest) -> Result<VmRecord, DaemonError> {
         let mut vm = self.store.get(vm_id)?;
         self.require_stopped(&vm, "attach nic")?;
         let used_ips: Vec<String> = self
@@ -749,10 +757,52 @@ impl Service {
         Ok(ConsoleInfo {
             serial_log: path,
             size,
+            websocket: format!("/v1/vms/{id}/console/ws"),
         })
     }
 
-    pub fn console_serial(&self, id: VmId, from: u64, max: u64) -> Result<SerialChunk, DaemonError> {
+    pub async fn write_console(&self, id: VmId, text: &str) -> Result<(), DaemonError> {
+        let vm = self.store.get(id)?;
+        self.attach_console(&vm).await;
+        let _ = self.console.write(id, text.as_bytes().to_vec()).await;
+        Ok(())
+    }
+
+    pub async fn attach_console(&self, vm: &VmRecord) {
+        let path = vm
+            .serial_log
+            .clone()
+            .or_else(|| vm.spec.serial_log.clone())
+            .unwrap_or_else(|| self.config.vmm.run_dir.join(format!("{}.serial", vm.id)));
+        self.console
+            .ensure(vm.id, path, vm.console_socket.clone())
+            .await;
+    }
+
+    pub async fn subscribe_console(
+        &self,
+        id: VmId,
+    ) -> Result<
+        (
+            tokio::sync::broadcast::Receiver<Vec<u8>>,
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        ),
+        DaemonError,
+    > {
+        let vm = self.store.get(id)?;
+        self.attach_console(&vm).await;
+        self.console
+            .subscribe(id)
+            .await
+            .ok_or_else(|| DaemonError::Peer(format!("console not ready for {id}")))
+    }
+
+    pub fn console_serial(
+        &self,
+        id: VmId,
+        from: u64,
+        max: u64,
+    ) -> Result<SerialChunk, DaemonError> {
         let info = self.console_info(id)?;
         let Some(path) = info.serial_log else {
             return Ok(SerialChunk {
@@ -778,12 +828,7 @@ impl Service {
             .store
             .list()?
             .into_iter()
-            .filter(|vm| {
-                vm.spec
-                    .nets
-                    .iter()
-                    .any(|nic| nic.network_id == Some(id))
-            })
+            .filter(|vm| vm.spec.nets.iter().any(|nic| nic.network_id == Some(id)))
             .map(|vm| vm.id)
             .collect())
     }
@@ -1014,12 +1059,9 @@ impl Service {
                 .into_iter()
                 .filter(|id| loads.iter().any(|n| n.id == *id && n.online))
                 .collect();
-            let Some(dest) = cluster::schedule_storage(
-                &loads,
-                &vm.spec,
-                affinity.first().copied(),
-                &affinity,
-            ) else {
+            let Some(dest) =
+                cluster::schedule_storage(&loads, &vm.spec, affinity.first().copied(), &affinity)
+            else {
                 continue;
             };
             if dest == owner {
@@ -1049,9 +1091,10 @@ impl Service {
         let include = self.cluster.is_leader();
         let mut msg = self.cluster.heartbeat_out(include);
         if include {
-            msg.snapshot = Some(self.snapshot().unwrap_or_else(|_| {
-                self.cluster.membership_snapshot()
-            }));
+            msg.snapshot = Some(
+                self.snapshot()
+                    .unwrap_or_else(|_| self.cluster.membership_snapshot()),
+            );
         }
         for (_id, url) in self.cluster.peer_urls_except_self() {
             let url = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
@@ -1142,7 +1185,11 @@ impl Service {
         Ok(self.volumes.ensure_local(&record)?)
     }
 
-    pub fn apply_volume_blob(&self, id: VolumeId, bytes: &[u8]) -> Result<VolumeRecord, DaemonError> {
+    pub fn apply_volume_blob(
+        &self,
+        id: VolumeId,
+        bytes: &[u8],
+    ) -> Result<VolumeRecord, DaemonError> {
         if self.volumes.get_volume(id).is_err() {
             return Err(DaemonError::Storage(StorageError::NotFound(id)));
         }
@@ -1167,7 +1214,9 @@ impl Service {
                 let _ = self.volumes.ensure_local(record);
                 continue;
             }
-            let _ = self.peer_json::<VolumeRecord, _>(*replica, "/v1/peer/volumes/ensure", record).await;
+            let _ = self
+                .peer_json::<VolumeRecord, _>(*replica, "/v1/peer/volumes/ensure", record)
+                .await;
         }
     }
 
@@ -1211,9 +1260,14 @@ impl Service {
             }
             vol.replicas.retain(|id| online.contains(id));
             if vol.replicas.is_empty() {
-                vol.replicas = cluster::place_replicas(&online, vol.replica_count.max(1), Some(self.cluster.self_id()));
+                vol.replicas = cluster::place_replicas(
+                    &online,
+                    vol.replica_count.max(1),
+                    Some(self.cluster.self_id()),
+                );
             }
-            while vol.replicas.len() < usize::from(vol.replica_count.max(1)) && vol.replicas.len() < online.len()
+            while vol.replicas.len() < usize::from(vol.replica_count.max(1))
+                && vol.replicas.len() < online.len()
             {
                 if let Some(extra) = online.iter().find(|id| !vol.replicas.contains(id)) {
                     vol.replicas.push(*extra);
@@ -1225,7 +1279,11 @@ impl Service {
             self.ensure_replicas(&vol).await;
             if self.volumes.has_local(vol.id, vol.format) {
                 self.sync_volume_replicas(&vol).await;
-            } else if let Some(src) = vol.replicas.iter().copied().find(|id| *id != self.cluster.self_id())
+            } else if let Some(src) = vol
+                .replicas
+                .iter()
+                .copied()
+                .find(|id| *id != self.cluster.self_id())
                 && let Ok(bytes) = self.peer_get_blob(src, vol.id).await
             {
                 let _ = self.volumes.ensure_local(&vol);
@@ -1246,7 +1304,10 @@ impl Service {
             .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
         let response = self
             .http
-            .put(format!("{}/v1/peer/volumes/{id}/blob", url.trim_end_matches('/')))
+            .put(format!(
+                "{}/v1/peer/volumes/{id}/blob",
+                url.trim_end_matches('/')
+            ))
             .header("x-pertisk-peer", self.cluster.secret())
             .header("content-type", "application/octet-stream")
             .body(bytes.to_vec())
@@ -1263,14 +1324,21 @@ impl Service {
         Ok(())
     }
 
-    async fn peer_get_blob(&self, dest: pertisk_types::NodeId, id: VolumeId) -> Result<Vec<u8>, DaemonError> {
+    async fn peer_get_blob(
+        &self,
+        dest: pertisk_types::NodeId,
+        id: VolumeId,
+    ) -> Result<Vec<u8>, DaemonError> {
         let url = self
             .cluster
             .member_url(dest)
             .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
         let response = self
             .http
-            .get(format!("{}/v1/peer/volumes/{id}/blob", url.trim_end_matches('/')))
+            .get(format!(
+                "{}/v1/peer/volumes/{id}/blob",
+                url.trim_end_matches('/')
+            ))
             .header("x-pertisk-peer", self.cluster.secret())
             .send()
             .await
@@ -1285,14 +1353,21 @@ impl Service {
             .to_vec())
     }
 
-    async fn peer_delete_volume(&self, dest: pertisk_types::NodeId, id: VolumeId) -> Result<(), DaemonError> {
+    async fn peer_delete_volume(
+        &self,
+        dest: pertisk_types::NodeId,
+        id: VolumeId,
+    ) -> Result<(), DaemonError> {
         let url = self
             .cluster
             .member_url(dest)
             .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
         let _ = self
             .http
-            .delete(format!("{}/v1/peer/volumes/{id}", url.trim_end_matches('/')))
+            .delete(format!(
+                "{}/v1/peer/volumes/{id}",
+                url.trim_end_matches('/')
+            ))
             .header("x-pertisk-peer", self.cluster.secret())
             .send()
             .await;
@@ -1358,6 +1433,23 @@ mod tests {
         assert_eq!(vm.state, VmState::Created);
         let vm = svc.start(vm.id).await.unwrap();
         assert_eq!(vm.state, VmState::Running);
+        let chunk = svc.console_serial(vm.id, 0, 4096).unwrap();
+        assert!(
+            chunk.text.contains("started"),
+            "expected boot serial, got {:?}",
+            chunk.text
+        );
+        svc.write_console(vm.id, "help\n").await.unwrap();
+        let mut echoed = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let chunk = svc.console_serial(vm.id, 0, 4096).unwrap();
+            if chunk.text.contains("help") {
+                echoed = true;
+                break;
+            }
+        }
+        assert!(echoed, "console input was not captured");
         let vm = svc.stop(vm.id).await.unwrap();
         assert_eq!(vm.state, VmState::Stopped);
         svc.destroy(vm.id).await.unwrap();
@@ -1386,12 +1478,7 @@ mod tests {
             .await
             .unwrap();
         let vm = svc
-            .attach_disk(
-                vm.id,
-                AttachDiskRequest {
-                    volume_id: vol.id,
-                },
-            )
+            .attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
             .unwrap();
         assert_eq!(vm.spec.disks.len(), 1);
         assert_eq!(vm.spec.disks[0].volume_id, Some(vol.id));
@@ -1404,7 +1491,12 @@ mod tests {
         })
         .unwrap();
         let vm = svc
-            .attach_iso(vm.id, AttachIsoRequest { iso: "os.iso".into() })
+            .attach_iso(
+                vm.id,
+                AttachIsoRequest {
+                    iso: "os.iso".into(),
+                },
+            )
             .unwrap();
         assert_eq!(vm.spec.disks.len(), 2);
         assert!(svc.delete_volume(vol.id).await.is_err());

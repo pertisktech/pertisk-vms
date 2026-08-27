@@ -1,6 +1,7 @@
 //! Node daemon: persisted inventory and VMM lifecycle.
 
 mod cluster;
+mod console;
 mod control;
 mod http;
 mod service;
@@ -36,10 +37,7 @@ pub fn load_or_init_config(home: &Path) -> Result<(HostConfig, PathBuf), DaemonE
     Ok((config, path))
 }
 
-pub async fn bind_and_serve(
-    listen: &str,
-    service: Service,
-) -> Result<(), DaemonError> {
+pub async fn bind_and_serve(listen: &str, service: Service) -> Result<(), DaemonError> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let addr = listener.local_addr()?;
     let _ = service.set_peer_url(advertise_url(&addr.to_string(), None));

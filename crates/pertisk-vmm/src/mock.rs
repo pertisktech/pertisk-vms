@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use pertisk_types::{VmId, VmRecord, VmState, VmSpec};
+use pertisk_types::{VmId, VmRecord, VmSpec, VmState};
 
 use crate::{CreateResult, Result, StartResult, VmmError};
 
@@ -22,11 +22,17 @@ impl MockDriver {
 
     pub async fn create(&self, id: VmId, _spec: &VmSpec) -> Result<CreateResult> {
         let mut vms = self.vms.lock().expect("mock vmm lock");
-        vms.insert(id, MockVm { state: VmState::Created });
+        vms.insert(
+            id,
+            MockVm {
+                state: VmState::Created,
+            },
+        );
         Ok(CreateResult {
             api_socket: None,
             pid: None,
             serial_log: None,
+            console_socket: None,
         })
     }
 
@@ -38,7 +44,10 @@ impl MockDriver {
         match vm.state {
             VmState::Created | VmState::Stopped => {
                 vm.state = VmState::Running;
-                if let Some(path) = record.serial_log.as_ref().or(record.spec.serial_log.as_ref())
+                if let Some(path) = record
+                    .serial_log
+                    .as_ref()
+                    .or(record.spec.serial_log.as_ref())
                 {
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
@@ -54,10 +63,7 @@ impl MockDriver {
                 }
                 Ok(StartResult { pid: Some(0) })
             }
-            state => Err(VmmError::InvalidState {
-                state,
-                op: "start",
-            }),
+            state => Err(VmmError::InvalidState { state, op: "start" }),
         }
     }
 
@@ -78,7 +84,8 @@ impl MockDriver {
 
     pub async fn destroy(&self, record: &VmRecord) -> Result<()> {
         let mut vms = self.vms.lock().expect("mock vmm lock");
-        vms.remove(&record.id).ok_or(VmmError::NotFound(record.id))?;
+        vms.remove(&record.id)
+            .ok_or(VmmError::NotFound(record.id))?;
         Ok(())
     }
 }
@@ -111,6 +118,7 @@ mod tests {
             pid: None,
             api_socket: None,
             serial_log: None,
+            console_socket: None,
             last_error: None,
             node_id: None,
         }

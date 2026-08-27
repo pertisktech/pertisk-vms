@@ -301,12 +301,18 @@ pub struct ConsoleInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_log: Option<PathBuf>,
     pub size: u64,
+    pub websocket: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerialChunk {
     pub from: u64,
     pub next: u64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConsoleInput {
     pub text: String,
 }
 
@@ -625,6 +631,8 @@ pub struct VmRecord {
     pub api_socket: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_log: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_socket: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

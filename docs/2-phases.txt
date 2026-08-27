@@ -29,7 +29,7 @@ Skip:  UI, cluster, snapshots, SDN
   [x] VM spec: vCPU, RAM, kernel or disk, serial log
   [x] Persist VM records (JSON/SQLite) with socket/pid paths
   [x] CLI: pertisk vm create | start | stop | rm | list | show
-  [ ] Integration test: boot, serial output, shutdown
+  [x] Integration test: boot, serial output, shutdown
 
 
 Phase 2 — Disks and images
@@ -57,7 +57,7 @@ Skip:  NSX / EVPN / multi-tenant overlay
   [x] Static IP or IPAM pool (dnsmasq daemon not started)
   [x] Basic isolation (Linux `bridge link isolated`)
   [x] Serial console log + attach
-  [ ] VNC or websocket console proxy
+  [x] VNC or websocket console proxy
 
 
 Phase 4 — API, auth, UI                        → v1.0 single-node platform

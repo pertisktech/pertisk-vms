@@ -30,6 +30,8 @@ Writes require majority quorum. A node that loses quorum fences itself (stops lo
 Web UI: [http://127.0.0.1:7480/](http://127.0.0.1:7480/)  
 OpenAPI: [http://127.0.0.1:7480/v1/openapi.json](http://127.0.0.1:7480/v1/openapi.json)
 
+Serial console is a websocket at `/v1/vms/{id}/console/ws?token=...`. The UI attaches after you click **console**. CLI: `pertisk vm console <id> --attach`.
+
 Default bootstrap user is `admin`. Password is `PERTISK_ADMIN_PASSWORD` if set, otherwise `admin`. Restart `pertiskd` after upgrades.
 
 Home directory: `~/.pertisk`. On Linux, `apply_host_links = true` creates bridge/TAP devices with `ip`. qcow2 needs `qemu-img`.

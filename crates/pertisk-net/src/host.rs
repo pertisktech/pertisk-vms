@@ -53,16 +53,15 @@ fn run_ip(args: &[&str], ignore_exists: bool) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        let output = Command::new("ip").args(args).output().map_err(|err| {
-            NetError::Host(format!("ip {}: {err}", args.join(" ")))
-        })?;
+        let output = Command::new("ip")
+            .args(args)
+            .output()
+            .map_err(|err| NetError::Host(format!("ip {}: {err}", args.join(" "))))?;
         if output.status.success() {
             return Ok(());
         }
         let err = String::from_utf8_lossy(&output.stderr);
-        if ignore_exists
-            && (err.contains("File exists") || err.contains("exists"))
-        {
+        if ignore_exists && (err.contains("File exists") || err.contains("exists")) {
             return Ok(());
         }
         Err(NetError::Host(format!(

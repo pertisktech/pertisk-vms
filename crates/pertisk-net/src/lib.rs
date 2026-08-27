@@ -7,9 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use pertisk_types::{
-    CreateNetworkRequest, NetSpec, NetworkId, NetworkRecord, VmId,
-};
+use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkRecord, VmId};
 use serde::{Deserialize, Serialize};
 
 pub use host::{delete_tap, provision_nic};
@@ -119,11 +117,7 @@ impl NetworkPool {
         };
         if self.apply_host_links {
             let prefix = net.prefix;
-            host::ensure_bridge(
-                &record.bridge,
-                record.gateway.as_deref(),
-                prefix,
-            )?;
+            host::ensure_bridge(&record.bridge, record.gateway.as_deref(), prefix)?;
         }
         self.upsert(record.clone())?;
         Ok(record)
@@ -164,7 +158,9 @@ impl NetworkPool {
             }
             Some(ipam::ipv4_string(addr))
         } else if network.dhcp {
-            Some(ipam::ipv4_string(net.allocate(network.gateway.as_deref(), used_ips)?))
+            Some(ipam::ipv4_string(
+                net.allocate(network.gateway.as_deref(), used_ips)?,
+            ))
         } else {
             None
         };
@@ -276,9 +272,7 @@ mod tests {
             })
             .unwrap();
         let vm = VmId::new();
-        let nic = pool
-            .allocate_nic(net.id, vm, 0, None, &[])
-            .unwrap();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[]).unwrap();
         assert!(nic.tap.unwrap().starts_with('p'));
         assert_eq!(nic.ip.as_deref(), Some("10.88.0.2"));
         let nic2 = pool
