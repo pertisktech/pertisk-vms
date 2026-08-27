@@ -21,6 +21,23 @@ ensure_cloud_hypervisor() {
   command -v cloud-hypervisor >/dev/null || die "failed to install cloud-hypervisor into $CACHE"
 }
 
+ensure_firmware() {
+  mkdir -p "$CACHE"
+  local bin="$CACHE/hypervisor-fw"
+  local asset="hypervisor-fw"
+  case "$(uname -m)" in
+    aarch64|arm64) asset="hypervisor-fw-aarch64" ;;
+  esac
+  if [[ ! -s "$bin" ]]; then
+    echo "fetching rust-hypervisor-firmware 0.5.0 ($asset)"
+    curl -fsSL -o "$bin" \
+      "https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/${asset}"
+    chmod +x "$bin" || true
+  fi
+  [[ -s "$bin" ]] || die "failed to install hypervisor-fw into $CACHE"
+  FIRMWARE="$bin"
+}
+
 explain_cli() {
   echo "CLI is $pertisk (not on PATH). After this script:"
   echo "  export PATH=\"$(dirname "$pertisk"):\$PATH\""

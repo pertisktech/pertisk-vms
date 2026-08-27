@@ -30,12 +30,10 @@ source "$(dirname "$0")/lib.sh"
 arch="$(uname -m)"
 case "$arch" in
   x86_64)
-    fw_asset="hypervisor-fw"
     iso_arch="x86_64"
     ;;
   aarch64|arm64)
     arch=aarch64
-    fw_asset="hypervisor-fw-aarch64"
     iso_arch="aarch64"
     ;;
   *) die "unsupported arch $arch (need x86_64 or aarch64)" ;;
@@ -43,13 +41,7 @@ esac
 
 mkdir -p "$CACHE"
 ensure_cloud_hypervisor
-
-fw="$CACHE/hypervisor-fw"
-if [[ ! -s "$fw" ]]; then
-  echo "fetching rust-hypervisor-firmware 0.5.0 ($fw_asset)"
-  curl -fsSL -o "$fw" \
-    "https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/0.5.0/${fw_asset}"
-fi
+ensure_firmware
 
 iso="$CACHE/$ISO_NAME"
 if [[ ! -s "$iso" ]]; then
@@ -75,7 +67,7 @@ fi
 started_daemon=0
 echo "starting pertiskd listen=$LISTEN cli=$URL"
 PERTISK_ADMIN_PASSWORD="${PERTISK_ADMIN_PASSWORD:-admin}" \
-  "$pertiskd" --listen "$LISTEN" --driver cloud-hypervisor --firmware "$fw" &
+  "$pertiskd" --listen "$LISTEN" --driver cloud-hypervisor --firmware "$FIRMWARE" &
 started_daemon=1
 trap 'if [[ "$started_daemon" -eq 1 ]]; then kill %1 2>/dev/null || true; fi' EXIT
 ready=0
@@ -104,7 +96,7 @@ fi
 vol="$("$pertisk" --url "$URL" vol create --name "${NAME}-disk" --size 2G)"
 echo "$vol"
 vol_id="$(echo "$vol" | awk '{print $1}')"
-if ! created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 --firmware "$fw")"; then
+if ! created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 --firmware "$FIRMWARE")"; then
   echo "$created" >&2
   show_capacity
   die "vm create failed. Stop leftover guests: $pertisk --url $URL vm stop <id>"

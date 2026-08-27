@@ -29,6 +29,7 @@ command -v cargo >/dev/null || die "cargo not in PATH (install rustup: https://r
 source "$(dirname "$0")/lib.sh"
 mkdir -p "$CACHE"
 ensure_cloud_hypervisor
+ensure_firmware
 
 arch="$(uname -m)"
 case "$arch" in
@@ -75,7 +76,7 @@ fi
 started_daemon=0
 echo "starting pertiskd listen=$LISTEN cli=$URL"
 PERTISK_ADMIN_PASSWORD="${PERTISK_ADMIN_PASSWORD:-admin}" \
-  "$pertiskd" --listen "$LISTEN" --driver cloud-hypervisor &
+  "$pertiskd" --listen "$LISTEN" --driver cloud-hypervisor --firmware "$FIRMWARE" &
 started_daemon=1
 trap 'if [[ "$started_daemon" -eq 1 ]]; then kill %1 2>/dev/null || true; fi' EXIT
 ready=0

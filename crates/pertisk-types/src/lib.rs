@@ -894,15 +894,19 @@ pub fn find_firmware() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    const DIRS: &[&str] = &[
-        "/usr/lib/cloud-hypervisor",
-        "/usr/libexec/cloud-hypervisor",
-        "/usr/share/cloud-hypervisor",
-        "/usr/share/cloud-hypervisor/firmware",
+    let mut dirs = vec![
+        PathBuf::from("/usr/lib/cloud-hypervisor"),
+        PathBuf::from("/usr/libexec/cloud-hypervisor"),
+        PathBuf::from("/usr/share/cloud-hypervisor"),
+        PathBuf::from("/usr/share/cloud-hypervisor/firmware"),
+        default_home().join("images"),
     ];
-    for dir in DIRS {
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(home).join(".pertisk/images"));
+    }
+    for dir in dirs {
         for name in NAMES {
-            let candidate = PathBuf::from(dir).join(name);
+            let candidate = dir.join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }
