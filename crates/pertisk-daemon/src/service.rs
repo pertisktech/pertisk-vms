@@ -35,8 +35,8 @@ pub enum DaemonError {
     NoQuorum,
     #[error("node is fenced (lost quorum)")]
     Fenced,
-    #[error("no node has capacity for this vm")]
-    Unschedulable,
+    #[error("no node has capacity for this vm ({0})")]
+    Unschedulable(String),
     #[error("cluster peer: {0}")]
     Peer(String),
     #[error(transparent)]
@@ -937,9 +937,31 @@ impl Service {
         spec: &VmSpec,
         prefer: Option<pertisk_types::NodeId>,
     ) -> Result<pertisk_types::NodeId, DaemonError> {
+        self.cluster.touch_self();
+        let loads = self.loads()?;
         let affinity = self.volume_affinity(spec);
-        cluster::schedule_storage(&self.loads()?, spec, prefer, &affinity)
-            .ok_or(DaemonError::Unschedulable)
+        cluster::schedule_storage(&loads, spec, prefer, &affinity).ok_or_else(|| {
+            let detail = if loads.is_empty() {
+                "no members".into()
+            } else {
+                loads
+                    .iter()
+                    .map(|n| {
+                        format!(
+                            "{} online={} vcpu {}/{} mem {}/{} MiB",
+                            n.id,
+                            n.online,
+                            n.used_vcpus,
+                            n.cpus,
+                            n.used_memory_mib,
+                            n.memory_mib
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            DaemonError::Unschedulable(detail)
+        })
     }
 
     fn volume_affinity(&self, spec: &VmSpec) -> Vec<pertisk_types::NodeId> {

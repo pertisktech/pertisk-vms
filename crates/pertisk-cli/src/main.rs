@@ -385,6 +385,19 @@ async fn run() -> Result<()> {
                     .unwrap_or_else(|| "-".into())
             );
             println!("quorum             {}", info.quorum);
+            if let Ok(status) = get_json::<ClusterStatus>(&client, &cli.url, "/v1/cluster").await {
+                for member in &status.members {
+                    if info.node_id == Some(member.id) {
+                        println!(
+                            "capacity           vcpu {}/{} mem {}/{} MiB",
+                            member.used_vcpus,
+                            member.cpus,
+                            member.used_memory_mib,
+                            member.memory_mib
+                        );
+                    }
+                }
+            }
             if !info.kvm {
                 eprintln!("note: /dev/kvm is missing; this machine can run the mock driver only");
             }
@@ -491,11 +504,19 @@ async fn run() -> Result<()> {
                     status.quorum,
                     status.fenced
                 );
-                println!("{:<38} {:<12} {:<8} {}", "ID", "NAME", "ONLINE", "URL");
+                println!(
+                    "{:<38} {:<12} {:<8} {:<12} {:<16} {}",
+                    "ID", "NAME", "ONLINE", "VCPU", "MEM MiB", "URL"
+                );
                 for member in status.members {
                     println!(
-                        "{:<38} {:<12} {:<8} {}",
-                        member.id, member.name, member.online, member.peer_url
+                        "{:<38} {:<12} {:<8} {:<12} {:<16} {}",
+                        member.id,
+                        member.name,
+                        member.online,
+                        format!("{}/{}", member.used_vcpus, member.cpus),
+                        format!("{}/{}", member.used_memory_mib, member.memory_mib),
+                        member.peer_url
                     );
                 }
             }

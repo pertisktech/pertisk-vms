@@ -64,37 +64,50 @@ cargo build -q -p pertisk-daemon -p pertisk-cli
 pertisk="$ROOT/target/debug/pertisk"
 pertiskd="$ROOT/target/debug/pertiskd"
 
-started_daemon=0
-if ! curl -fsS "$URL/v1/health" >/dev/null 2>&1; then
-  echo "starting pertiskd on $URL"
-  PERTISK_ADMIN_PASSWORD="${PERTISK_ADMIN_PASSWORD:-admin}" \
-    "$pertiskd" --listen "$listen" --driver cloud-hypervisor &
-  started_daemon=1
-  trap 'if [[ "$started_daemon" -eq 1 ]]; then kill %1 2>/dev/null || true; fi' EXIT
-  ready=0
-  for _ in $(seq 1 80); do
-    if curl -fsS "$URL/v1/health" >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
+if curl -fsS "$URL/v1/health" >/dev/null 2>&1; then
+  echo "restarting pertiskd at $URL so this build is used"
+  pkill -x pertiskd 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    curl -fsS "$URL/v1/health" >/dev/null 2>&1 || break
     sleep 0.25
   done
-  [[ "$ready" -eq 1 ]] || die "pertiskd did not become ready at $URL"
 fi
 
+started_daemon=0
+echo "starting pertiskd on $URL"
+PERTISK_ADMIN_PASSWORD="${PERTISK_ADMIN_PASSWORD:-admin}" \
+  "$pertiskd" --listen "$listen" --driver cloud-hypervisor &
+started_daemon=1
+trap 'if [[ "$started_daemon" -eq 1 ]]; then kill %1 2>/dev/null || true; fi' EXIT
+ready=0
+for _ in $(seq 1 80); do
+  if curl -fsS "$URL/v1/health" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 0.25
+done
+[[ "$ready" -eq 1 ]] || die "pertiskd did not become ready at $URL"
+
 "$pertisk" --url "$URL" login -u "${PERTISK_JOIN_USER:-admin}" -p "${PERTISK_ADMIN_PASSWORD:-admin}"
+explain_cli
 host="$("$pertisk" --url "$URL" host)"
 echo "$host"
 echo "$host" | grep -q 'kvm[[:space:]]*true' || die "daemon reports kvm=false"
 echo "$host" | grep -q 'driver[[:space:]]*cloud-hypervisor' || die "daemon is not using cloud-hypervisor"
+show_capacity
 
 if ! "$pertisk" --url "$URL" iso list | grep -q "^${ISO_NAME}[[:space:]]"; then
   "$pertisk" --url "$URL" iso import "$iso" --name "$ISO_NAME"
 fi
 
-created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 \
+if ! created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 \
   --kernel "$kernel" --initramfs "$initramfs" \
-  --cmdline "console=ttyS0,115200 modules=loop,squashfs,virtio_blk alpine_dev=/dev/vda:iso9660 modloop=/boot/modloop-virt")"
+  --cmdline "console=ttyS0,115200 modules=loop,squashfs,virtio_blk alpine_dev=/dev/vda:iso9660 modloop=/boot/modloop-virt")"; then
+  echo "$created" >&2
+  show_capacity
+  die "vm create failed. Stop leftover guests: $pertisk --url $URL vm stop <id>"
+fi
 echo "$created"
 id="$(echo "$created" | awk '{print $1}')"
 [[ -n "$id" ]] || die "vm create returned no id"

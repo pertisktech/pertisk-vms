@@ -894,7 +894,7 @@ impl IntoResponse for DaemonError {
             Self::Control(crate::control::ControlError::UserNotFound(_)) => StatusCode::NOT_FOUND,
             Self::Control(crate::control::ControlError::UserExists(_)) => StatusCode::CONFLICT,
             Self::Control(crate::control::ControlError::Message(_)) => StatusCode::BAD_REQUEST,
-            Self::NoQuorum | Self::Fenced | Self::Unschedulable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NoQuorum | Self::Fenced | Self::Unschedulable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Peer(_) => StatusCode::BAD_GATEWAY,
             Self::Storage(err) => storage_status(err),
             Self::Net(err) => net_status(err),

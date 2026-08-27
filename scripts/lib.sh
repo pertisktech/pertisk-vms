@@ -20,3 +20,16 @@ ensure_cloud_hypervisor() {
   export PATH="$CACHE:$PATH"
   command -v cloud-hypervisor >/dev/null || die "failed to install cloud-hypervisor into $CACHE"
 }
+
+explain_cli() {
+  echo "CLI is $pertisk (not on PATH). After this script:"
+  echo "  export PATH=\"$(dirname "$pertisk"):\$PATH\""
+  echo "  pertisk --url $URL vm list"
+}
+
+show_capacity() {
+  echo "--- cluster ---"
+  "$pertisk" --url "$URL" cluster status || true
+  echo "--- guests ---"
+  "$pertisk" --url "$URL" vm list || true
+}

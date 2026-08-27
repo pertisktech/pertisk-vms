@@ -28,12 +28,21 @@ pub fn has_quorum(online: usize, total: usize) -> bool {
     total > 0 && online * 2 > total
 }
 
+/// vCPU overcommit vs advertised host threads. Memory stays a hard cap.
+const CPU_OVERCOMMIT: u32 = 8;
+
+fn cpu_capacity(n: &NodeLoad) -> u32 {
+    n.cpus.saturating_mul(CPU_OVERCOMMIT).max(n.cpus)
+}
+
+fn node_fits(n: &NodeLoad, spec: &VmSpec) -> bool {
+    n.online
+        && cpu_capacity(n).saturating_sub(n.used_vcpus) >= u32::from(spec.vcpus)
+        && n.memory_mib.saturating_sub(n.used_memory_mib) >= spec.memory_mib
+}
+
 pub fn schedule(nodes: &[NodeLoad], spec: &VmSpec, prefer: Option<NodeId>) -> Option<NodeId> {
-    let fits = |n: &NodeLoad| {
-        n.online
-            && n.cpus.saturating_sub(n.used_vcpus) >= u32::from(spec.vcpus)
-            && n.memory_mib.saturating_sub(n.used_memory_mib) >= spec.memory_mib
-    };
+    let fits = |n: &NodeLoad| node_fits(n, spec);
     if let Some(id) = prefer
         && nodes.iter().any(|n| n.id == id && fits(n))
     {
@@ -62,11 +71,7 @@ pub fn schedule_storage(
     {
         return Some(id);
     }
-    let fits = |n: &NodeLoad| {
-        n.online
-            && n.cpus.saturating_sub(n.used_vcpus) >= u32::from(spec.vcpus)
-            && n.memory_mib.saturating_sub(n.used_memory_mib) >= spec.memory_mib
-    };
+    let fits = |n: &NodeLoad| node_fits(n, spec);
     let local: Vec<_> = nodes
         .iter()
         .filter(|n| fits(n) && affinity.contains(&n.id))
@@ -132,7 +137,28 @@ fn default_cpus(override_n: Option<u32>) -> u32 {
 }
 
 fn default_memory_mib(override_n: Option<u32>) -> u32 {
-    override_n.unwrap_or(16_384)
+    if let Some(n) = override_n {
+        return n;
+    }
+    advertised_host_memory_mib().unwrap_or(16_384)
+}
+
+fn advertised_host_memory_mib() -> Option<u32> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("MemTotal:") else {
+            continue;
+        };
+        let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+        let mib = (kb / 1024).max(1024);
+        // Leave headroom for the host and Cloud Hypervisor.
+        return Some((mib.saturating_mul(3) / 4) as u32);
+    }
+    None
+}
+
+fn member_is_online(member: &MemberState, self_id: NodeId, now: u64, timeout: u64) -> bool {
+    member.record.id == self_id || now.saturating_sub(member.last_seen_ms) <= timeout
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -361,7 +387,7 @@ impl Cluster {
         inner
             .members
             .values()
-            .filter(|m| now.saturating_sub(m.last_seen_ms) <= timeout)
+            .filter(|m| member_is_online(m, inner.self_id, now, timeout))
             .map(|m| m.record.id)
             .collect()
     }
@@ -372,7 +398,7 @@ impl Cluster {
         let online = inner
             .members
             .values()
-            .filter(|m| now.saturating_sub(m.last_seen_ms) <= self.offline_after_ms)
+            .filter(|m| member_is_online(m, inner.self_id, now, self.offline_after_ms))
             .count();
         has_quorum(online, inner.members.len())
     }
@@ -505,7 +531,7 @@ impl Cluster {
             .members
             .values()
             .map(|m| {
-                let online = now.saturating_sub(m.last_seen_ms) <= self.offline_after_ms;
+                let online = member_is_online(m, inner.self_id, now, self.offline_after_ms);
                 let load = loads.iter().find(|l| l.id == m.record.id);
                 ClusterMemberStatus {
                     id: m.record.id,
@@ -615,6 +641,40 @@ mod tests {
     }
 
     #[test]
+    fn overcommits_vcpus_on_small_hosts() {
+        let node = NodeLoad {
+            id: NodeId::new(),
+            online: true,
+            cpus: 1,
+            memory_mib: 4096,
+            used_vcpus: 1,
+            used_memory_mib: 512,
+        };
+        let id = node.id;
+        assert_eq!(schedule(&[node], &spec_small(), None), Some(id));
+    }
+
+    fn spec_small() -> VmSpec {
+        let mut spec = spec();
+        spec.vcpus = 1;
+        spec.memory_mib = 512;
+        spec
+    }
+
+    #[test]
+    fn rejects_when_vcpu_overcommit_exhausted() {
+        let node = NodeLoad {
+            id: NodeId::new(),
+            online: true,
+            cpus: 1,
+            memory_mib: 16_384,
+            used_vcpus: 8,
+            used_memory_mib: 4096,
+        };
+        assert_eq!(schedule(&[node], &spec_small(), None), None);
+    }
+
+    #[test]
     fn persist_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = HostConfig::default_for(dir.path());
@@ -629,5 +689,19 @@ mod tests {
         assert_eq!(reopened.self_record().name, "alpha");
         assert!(reopened.has_quorum());
         assert!(reopened.is_leader());
+    }
+
+    #[test]
+    fn self_stays_schedulable_after_heartbeat_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.offline_after_ms = 50;
+        config.cluster.cpus = Some(1);
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(cluster.has_quorum());
+        let status = cluster.status(&[]);
+        assert!(status.members.iter().all(|m| m.online));
     }
 }
