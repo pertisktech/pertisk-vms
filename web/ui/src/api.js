@@ -72,6 +72,10 @@ export function replicasOf(vol) {
   return asList(vol?.replicas)
 }
 
+export function snapshotsOf(vol) {
+  return asList(vol?.snapshots)
+}
+
 export function parseSize(raw) {
   const s = String(raw).trim().toUpperCase()
   const m = /^(\d+)([KMGT])?I?B?$/.exec(s)
@@ -92,6 +96,14 @@ export function formatBytes(n) {
     i += 1
   } while (x >= 1024 && i < units.length - 1)
   return `${x >= 10 ? x.toFixed(0) : x.toFixed(1)} ${units[i]}`
+}
+
+export function formatUnix(sec) {
+  const n = Number(sec)
+  if (!n) return '—'
+  const d = new Date(n * 1000)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString()
 }
 
 export function shortId(id) {

@@ -6,8 +6,8 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ConsoleInfo,
     CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SnapshotRequest, StorageBackend, VmId, VmRecord, VmSpec, VmState, VolumeId, VolumeRecord,
-    probe_host,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState, VolumeId,
+    VolumeRecord, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -228,6 +228,39 @@ impl Service {
         self.cluster.bump()?;
         self.replicate().await;
         Ok(record)
+    }
+
+    pub async fn update(
+        &self,
+        id: VmId,
+        req: UpdateVmRequest,
+    ) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        if req.vcpus.is_some() || req.memory_mib.is_some() {
+            self.require_stopped(&vm, "resize cpu or memory")?;
+        }
+        if let Some(name) = req.name {
+            let name = name.trim().to_string();
+            if self.store.name_taken(&name, Some(id))? {
+                return Err(DaemonError::NameTaken(name));
+            }
+            vm.spec.name = name;
+        }
+        if let Some(vcpus) = req.vcpus {
+            vm.spec.vcpus = vcpus;
+        }
+        if let Some(memory_mib) = req.memory_mib {
+            vm.spec.memory_mib = memory_mib;
+        }
+        if let Some(ha) = req.ha {
+            vm.spec.ha = ha;
+        }
+        vm.spec.validate()?;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
     }
 
     pub async fn start(&self, id: VmId) -> Result<VmRecord, DaemonError> {
@@ -1385,7 +1418,8 @@ mod tests {
     use super::*;
     use crate::control::ControlStore;
     use pertisk_types::{
-        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, VolumeFormat, parse_size,
+        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, UpdateVmRequest, VolumeFormat,
+        parse_size,
     };
     use pertisk_vmm::VmmBackend;
 
@@ -1454,6 +1488,51 @@ mod tests {
         assert_eq!(vm.state, VmState::Stopped);
         svc.destroy(vm.id).await.unwrap();
         assert!(svc.get(vm.id).is_err());
+    }
+
+    #[tokio::test]
+    async fn update_spec_when_stopped() {
+        let (svc, _dir) = service();
+        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc
+            .update(
+                vm.id,
+                UpdateVmRequest {
+                    name: Some("web".into()),
+                    vcpus: Some(2),
+                    memory_mib: Some(1024),
+                    ha: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(vm.spec.name, "web");
+        assert_eq!(vm.spec.vcpus, 2);
+        assert_eq!(vm.spec.memory_mib, 1024);
+        assert!(!vm.spec.ha);
+        let running = svc.start(vm.id).await.unwrap();
+        let err = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    vcpus: Some(4),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DaemonError::MustBeStopped(_, _)));
+        let running = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    ha: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(running.spec.ha);
     }
 
     #[tokio::test]

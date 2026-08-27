@@ -252,6 +252,18 @@ pub struct MigrateRequest {
     pub target: Option<NodeId>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateVmRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ha: Option<bool>,
+}
+
 fn default_true() -> bool {
     true
 }

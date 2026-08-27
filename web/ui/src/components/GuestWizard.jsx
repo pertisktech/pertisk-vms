@@ -305,6 +305,10 @@ export default function GuestWizard({ volumes, isos, networks, onClose, onCreate
                 </dd>
               </div>
               <div>
+                <dt>HA</dt>
+                <dd>{form.ha ? 'Restart on node loss' : 'Pinned to this node'}</dd>
+              </div>
+              <div>
                 <dt>Disk</dt>
                 <dd>{diskLabel}</dd>
               </div>

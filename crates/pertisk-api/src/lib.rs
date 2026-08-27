@@ -177,6 +177,7 @@ pub fn openapi_json() -> serde_json::Value {
             },
             "/v1/vms/{id}": {
                 "get": { "summary": "Show VM" },
+                "patch": { "summary": "Update VM name, vCPU, memory, or HA" },
                 "delete": { "summary": "Destroy VM" }
             },
             "/v1/vms/{id}/start": { "post": { "summary": "Start VM" } },

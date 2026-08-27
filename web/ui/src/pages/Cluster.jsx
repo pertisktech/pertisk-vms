@@ -3,11 +3,13 @@ import { useOutletContext } from 'react-router-dom'
 import { api, asList } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
+import { useConfirm } from '../components/Confirm'
 import { useInventory } from '../useInventory'
 
 export default function Cluster() {
   const { canWrite } = useOutletContext()
   const { cluster, error, setError, mutate } = useInventory()
+  const confirm = useConfirm()
   const members = asList(cluster?.members)
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ peer: '', username: 'admin', password: '' })
@@ -51,9 +53,28 @@ export default function Cluster() {
           </p>
         </div>
         {canWrite && (
-          <Btn icon="plus" onClick={() => setOpen(true)}>
-            Join peer
-          </Btn>
+          <div className="dash-resources-actions">
+            {members.length > 1 && (
+              <Btn
+                icon="trash"
+                variant="danger"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: 'Leave cluster',
+                    message:
+                      'This node becomes a solo cluster. Guests on other nodes stay there. Continue?',
+                    confirmLabel: 'Leave',
+                  })
+                  if (ok) mutate(() => api('/v1/cluster/leave', { method: 'POST' }))
+                }}
+              >
+                Leave
+              </Btn>
+            )}
+            <Btn icon="plus" onClick={() => setOpen(true)}>
+              Join peer
+            </Btn>
+          </div>
         )}
       </div>
       {error && (
@@ -74,6 +95,8 @@ export default function Cluster() {
               <div className="guest-card-top">
                 <span className={`guest-orb ${m.online ? 'running' : 'stopped'}`} />
                 <strong>{m.name}</strong>
+                {m.id === cluster?.self_id && <span className="badge pending">this node</span>}
+                {m.id === cluster?.leader_id && <span className="badge ready">leader</span>}
                 <span className={`badge ${m.online ? 'online' : 'offline'}`}>
                   {m.online ? 'online' : 'offline'}
                 </span>

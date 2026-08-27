@@ -14,7 +14,8 @@ use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterSnapshot,
     ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
-    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest, VmId,
+    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
+    UpdateVmRequest, VmId,
     VmRecord, VmSpec, VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
@@ -29,7 +30,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/session", get(session))
         .route("/v1/host", get(host))
         .route("/v1/vms", get(list).post(create))
-        .route("/v1/vms/{id}", get(show).delete(destroy))
+        .route("/v1/vms/{id}", get(show).patch(update_vm).delete(destroy))
         .route("/v1/vms/{id}/start", post(start))
         .route("/v1/vms/{id}/stop", post(stop))
         .route("/v1/vms/{id}/migrate", post(migrate))
@@ -249,6 +250,24 @@ async fn show(
     Path(id): Path<VmId>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.get(id)?))
+}
+
+async fn update_vm(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<UpdateVmRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.update",
+            id.to_string(),
+            service.update(id, req),
+        )
+        .await?,
+    ))
 }
 
 async fn start(

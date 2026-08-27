@@ -1,4 +1,5 @@
 import { Icon } from '../components/Icons'
+import { formatUnix } from '../api'
 import { useInventory } from '../useInventory'
 
 export default function Activity() {
@@ -37,6 +38,7 @@ export default function Activity() {
                   <th>Status</th>
                   <th>Actor</th>
                   <th>Target</th>
+                  <th>When</th>
                 </tr>
               </thead>
               <tbody>
@@ -50,6 +52,7 @@ export default function Activity() {
                     </td>
                     <td>{t.actor}</td>
                     <td className="mono-inline">{t.target || '—'}</td>
+                    <td className="muted">{formatUnix(t.created_unix)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -70,6 +73,7 @@ export default function Activity() {
                   <th>Actor</th>
                   <th>Action</th>
                   <th>Target</th>
+                  <th>When</th>
                 </tr>
               </thead>
               <tbody>
@@ -78,6 +82,7 @@ export default function Activity() {
                     <td>{a.actor}</td>
                     <td>{a.action}</td>
                     <td className="mono-inline">{a.target || '—'}</td>
+                    <td className="muted">{formatUnix(a.created_unix)}</td>
                   </tr>
                 ))}
               </tbody>

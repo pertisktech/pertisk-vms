@@ -10,7 +10,7 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterStatus,
     ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
     ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
-    ResizeVolumeRequest, SerialChunk, SnapshotRequest, VmId, VmRecord, VmSpec, VolumeFormat,
+    ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec, VolumeFormat,
     VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
@@ -137,6 +137,18 @@ enum VmCommand {
     List,
     Show {
         id: VmId,
+    },
+    /// Change name, vCPU, memory, or HA while the guest is defined.
+    Update {
+        id: VmId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        cpus: Option<u8>,
+        #[arg(long)]
+        memory: Option<u32>,
+        #[arg(long)]
+        ha: Option<bool>,
     },
     Disk {
         #[command(subcommand)]
@@ -575,6 +587,27 @@ async fn run() -> Result<()> {
                     get_json(&client, &cli.url, &format!("/v1/vms/{id}")).await?;
                 println!("{}", serde_json::to_string_pretty(&record)?);
             }
+            VmCommand::Update {
+                id,
+                name,
+                cpus,
+                memory,
+                ha,
+            } => {
+                let record: VmRecord = patch_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/vms/{id}"),
+                    &UpdateVmRequest {
+                        name,
+                        vcpus: cpus,
+                        memory_mib: memory,
+                        ha,
+                    },
+                )
+                .await?;
+                print_vm(&record);
+            }
             VmCommand::Disk { command } => match command {
                 DiskCommand::Attach { vm, volume } => {
                     let record: VmRecord = post_json(
@@ -957,6 +990,20 @@ async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
     body: &B,
 ) -> Result<T> {
     let response = with_auth(client.post(format!("{base}{path}")))
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("connecting to {base}"))?;
+    read_json(response).await
+}
+
+async fn patch_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    body: &B,
+) -> Result<T> {
+    let response = with_auth(client.patch(format!("{base}{path}")))
         .json(body)
         .send()
         .await

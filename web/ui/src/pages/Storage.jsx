@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api, formatBytes, parseSize, replicasOf } from '../api'
+import { api, formatBytes, parseSize, replicasOf, snapshotsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
@@ -8,13 +8,22 @@ import { useInventory } from '../useInventory'
 
 export default function Storage() {
   const { canWrite } = useOutletContext()
-  const { volumes, isos, error, setError, mutate } = useInventory()
+  const { volumes, isos, cluster, error, setError, mutate } = useInventory()
   const confirm = useConfirm()
+  const members = cluster?.members || []
+
+  function nodeName(id) {
+    return members.find((m) => m.id === id)?.name || (id ? String(id).slice(0, 8) : '—')
+  }
   const [volOpen, setVolOpen] = useState(false)
   const [isoOpen, setIsoOpen] = useState(false)
   const [vol, setVol] = useState({ name: '', size: '8G', replicas: 2 })
   const [isoPath, setIsoPath] = useState('')
   const [busy, setBusy] = useState(false)
+  const [action, setAction] = useState(null)
+  const [actionName, setActionName] = useState('')
+  const [actionSize, setActionSize] = useState('')
+  const [actionLinked, setActionLinked] = useState(false)
 
   async function createVol(e) {
     e.preventDefault()
@@ -49,6 +58,49 @@ export default function Storage() {
       setIsoOpen(false)
     } catch {
       /* inventory error */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openAction(type, v) {
+    setAction({ type, vol: v })
+    setActionName(type === 'clone' ? `${v.name}-copy` : type === 'snap' ? 'snap-1' : '')
+    setActionSize(type === 'resize' ? String(Math.ceil((v.size_bytes || 0) / 1024 / 1024) + 'M') : '')
+    setActionLinked(false)
+  }
+
+  async function runAction(e) {
+    e.preventDefault()
+    if (!action) return
+    setBusy(true)
+    const id = action.vol.id
+    try {
+      await mutate(async () => {
+        if (action.type === 'resize') {
+          await api(`/v1/volumes/${id}/resize`, {
+            method: 'POST',
+            body: { size_bytes: parseSize(actionSize) },
+          })
+        } else if (action.type === 'clone') {
+          await api(`/v1/volumes/${id}/clone`, {
+            method: 'POST',
+            body: { name: actionName.trim(), linked: actionLinked },
+          })
+        } else if (action.type === 'snap') {
+          await api(`/v1/volumes/${id}/snapshots`, {
+            method: 'POST',
+            body: { name: actionName.trim() },
+          })
+        } else if (action.type === 'restore') {
+          await api(`/v1/volumes/${id}/snapshots/${encodeURIComponent(actionName)}/restore`, {
+            method: 'POST',
+          })
+        }
+      })
+      setAction(null)
+    } catch {
+      /* inventory */
     } finally {
       setBusy(false)
     }
@@ -101,32 +153,63 @@ export default function Storage() {
                 </tr>
               </thead>
               <tbody>
-                {volumes.map((v) => (
+                {volumes.map((v) => {
+                  const snaps = snapshotsOf(v)
+                  const reps = replicasOf(v)
+                  return (
                   <tr key={v.id}>
-                    <td>{v.name}</td>
+                    <td>
+                      {v.name}
+                      {snaps.length > 0 && (
+                        <div className="muted">
+                          {snaps.map((s) => s.name).join(', ')}
+                        </div>
+                      )}
+                    </td>
                     <td className="mono-inline">{v.format}</td>
                     <td>{formatBytes(v.size_bytes)}</td>
-                    <td>{replicasOf(v).length || v.replica_count || 1}</td>
+                    <td>
+                      {reps.length === 0
+                        ? v.replica_count || 1
+                        : reps.map((id) => nodeName(id)).join(', ')}
+                    </td>
                     {canWrite && (
                       <td className="col-actions">
-                        <Btn
-                          icon="trash"
-                          variant="danger"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: 'Delete volume',
-                              message: `Delete ${v.name}?`,
-                              confirmLabel: 'Delete',
-                            })
-                            if (ok) mutate(() => api(`/v1/volumes/${v.id}`, { method: 'DELETE' }))
-                          }}
-                        >
-                          Delete
-                        </Btn>
+                        <div className="row-actions" style={{ marginTop: 0 }}>
+                          <Btn variant="secondary" onClick={() => openAction('resize', v)}>
+                            Resize
+                          </Btn>
+                          <Btn variant="secondary" onClick={() => openAction('snap', v)}>
+                            Snapshot
+                          </Btn>
+                          {snaps.length > 0 && (
+                            <Btn variant="secondary" onClick={() => openAction('restore', v)}>
+                              Restore
+                            </Btn>
+                          )}
+                          <Btn variant="secondary" onClick={() => openAction('clone', v)}>
+                            Clone
+                          </Btn>
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: 'Delete volume',
+                                message: `Delete ${v.name}?`,
+                                confirmLabel: 'Delete',
+                              })
+                              if (ok) mutate(() => api(`/v1/volumes/${v.id}`, { method: 'DELETE' }))
+                            }}
+                          >
+                            Delete
+                          </Btn>
+                        </div>
                       </td>
                     )}
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -177,6 +260,96 @@ export default function Storage() {
           </div>
         )}
       </section>
+
+      {action && (
+        <Modal
+          title={
+            action.type === 'resize'
+              ? `Resize ${action.vol.name}`
+              : action.type === 'clone'
+                ? `Clone ${action.vol.name}`
+                : action.type === 'restore'
+                  ? `Restore ${action.vol.name}`
+                  : `Snapshot ${action.vol.name}`
+          }
+          onClose={() => setAction(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setAction(null)}>
+                Cancel
+              </button>
+              <button type="submit" form="vol-action" disabled={busy}>
+                {busy ? 'Working…' : 'Apply'}
+              </button>
+            </>
+          }
+        >
+          <form id="vol-action" onSubmit={runAction}>
+            {action.type === 'resize' && (
+              <div className="field">
+                <label htmlFor="act-size">New size</label>
+                <input
+                  id="act-size"
+                  required
+                  value={actionSize}
+                  onChange={(e) => setActionSize(e.target.value)}
+                  placeholder="16G"
+                />
+              </div>
+            )}
+            {action.type === 'clone' && (
+              <>
+                <div className="field">
+                  <label htmlFor="act-clone">New name</label>
+                  <input
+                    id="act-clone"
+                    required
+                    value={actionName}
+                    onChange={(e) => setActionName(e.target.value)}
+                  />
+                </div>
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={actionLinked}
+                    onChange={(e) => setActionLinked(e.target.checked)}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">Linked clone (qcow2 backing file)</span>
+                </label>
+              </>
+            )}
+            {action.type === 'snap' && (
+              <div className="field">
+                <label htmlFor="act-snap">Snapshot name</label>
+                <input
+                  id="act-snap"
+                  required
+                  value={actionName}
+                  onChange={(e) => setActionName(e.target.value)}
+                />
+              </div>
+            )}
+            {action.type === 'restore' && (
+              <div className="field">
+                <label htmlFor="act-restore">Snapshot</label>
+                <select
+                  id="act-restore"
+                  value={actionName}
+                  onChange={(e) => setActionName(e.target.value)}
+                  required
+                >
+                  {snapshotsOf(action.vol).map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </form>
+        </Modal>
+      )}
 
       {volOpen && (
         <Modal

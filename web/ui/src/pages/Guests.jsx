@@ -3,6 +3,7 @@ import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { api, asList, disksOf, getToken, netsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import GuestWizard from '../components/GuestWizard'
+import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
 import { useInventory } from '../useInventory'
 
@@ -28,9 +29,21 @@ export default function Guests() {
   const [consoleText, setConsoleText] = useState('')
   const [iso, setIso] = useState('')
   const [volumeId, setVolumeId] = useState('')
+  const [networkId, setNetworkId] = useState('')
+  const [migrateVm, setMigrateVm] = useState(null)
+  const [migrateTarget, setMigrateTarget] = useState('')
+  const [edit, setEdit] = useState({ name: '', vcpus: 1, memory_mib: 512, ha: true })
   const wsRef = useRef(null)
   const preRef = useRef(null)
   const selectedVm = vms.find((vm) => vm.id === selected) || null
+  const usedVolIds = new Set(
+    vms.flatMap((vm) => disksOf(vm).map((d) => d.volume_id).filter(Boolean)),
+  )
+  const freeVolumes = volumes.filter((v) => !usedVolIds.has(v.id))
+  const hasCdrom = disksOf(selectedVm).some((d) => d.cdrom || d.iso_name)
+  const migratePeers = asList(cluster?.members).filter(
+    (m) => m.online && m.id !== migrateVm?.node_id,
+  )
 
   useEffect(() => {
     if (!isos.length) return
@@ -38,9 +51,26 @@ export default function Guests() {
   }, [isos, iso])
 
   useEffect(() => {
-    if (!volumes.length) return
-    if (!volumeId) setVolumeId(volumes[0].id)
-  }, [volumes, volumeId])
+    const used = new Set(vms.flatMap((vm) => disksOf(vm).map((d) => d.volume_id).filter(Boolean)))
+    const free = volumes.filter((v) => !used.has(v.id))
+    if (!free.length) return
+    if (!volumeId || used.has(volumeId)) setVolumeId(free[0].id)
+  }, [volumes, vms, volumeId])
+
+  useEffect(() => {
+    if (!networks.length) return
+    if (!networkId) setNetworkId(networks[0].id)
+  }, [networks, networkId])
+
+  useEffect(() => {
+    if (!selectedVm) return
+    setEdit({
+      name: selectedVm.spec?.name || '',
+      vcpus: selectedVm.spec?.vcpus || 1,
+      memory_mib: selectedVm.spec?.memory_mib || 512,
+      ha: selectedVm.spec?.ha !== false,
+    })
+  }, [selectedVm?.id])
 
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
@@ -101,9 +131,16 @@ export default function Guests() {
       })
       if (!ok) return
     }
+    if (kind === 'migrate') {
+      const peers = asList(cluster?.members).filter(
+        (m) => m.online && m.id !== vm.node_id,
+      )
+      setMigrateVm(vm)
+      setMigrateTarget(peers[0]?.id || '')
+      return
+    }
     await mutate(async () => {
       if (kind === 'rm') await api(`/v1/vms/${vm.id}`, { method: 'DELETE' })
-      else if (kind === 'migrate') await api(`/v1/vms/${vm.id}/migrate`, { method: 'POST', body: {} })
       else await api(`/v1/vms/${vm.id}/${kind}`, { method: 'POST' })
     })
     if (kind === 'rm' && selected === vm.id) setSelected(null)
@@ -151,6 +188,7 @@ export default function Guests() {
                 <span className={`guest-orb ${vm.state}`} />
                 <strong>{vm.spec?.name || vm.id}</strong>
                 <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
+                {vm.spec?.ha !== false && <span className="badge pending">HA</span>}
               </div>
               <div className="guest-meta">
                 <span>
@@ -198,12 +236,164 @@ export default function Guests() {
           <div className="dash-resources-head">
             <div>
               <h2 className="card-title">
-                <Icon name="terminal" size={18} />
-                {selectedVm.spec?.name} console
+                <Icon name="guests" size={18} />
+                {selectedVm.spec?.name} hardware
               </h2>
-              <p className="muted">Click the serial pane and type. Enter, Tab, and Backspace are forwarded.</p>
+              <p className="muted">
+                {selectedVm.state === 'running'
+                  ? 'Stop the guest before changing disks, NICs, vCPU, or memory. HA can change while running.'
+                  : 'Attach or detach disks, ISO, and networks while stopped.'}
+              </p>
             </div>
-            <div className="row-actions">
+          </div>
+          {canWrite && (
+            <form
+              className="machine-edit"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const running = selectedVm.state === 'running'
+                const body = {
+                  name: edit.name.trim(),
+                  ha: edit.ha,
+                }
+                if (!running) {
+                  body.vcpus = Number(edit.vcpus)
+                  body.memory_mib = Number(edit.memory_mib)
+                }
+                mutate(() =>
+                  api(`/v1/vms/${selectedVm.id}`, { method: 'PATCH', body }),
+                )
+              }}
+            >
+              <div className="form-grid">
+                <div className="field">
+                  <label htmlFor="edit-name">Name</label>
+                  <input
+                    id="edit-name"
+                    required
+                    value={edit.name}
+                    onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="edit-cpu">vCPU</label>
+                  <input
+                    id="edit-cpu"
+                    type="number"
+                    min="1"
+                    disabled={selectedVm.state === 'running'}
+                    value={edit.vcpus}
+                    onChange={(e) => setEdit({ ...edit, vcpus: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="edit-mem">Memory MiB</label>
+                  <input
+                    id="edit-mem"
+                    type="number"
+                    min="64"
+                    disabled={selectedVm.state === 'running'}
+                    value={edit.memory_mib}
+                    onChange={(e) => setEdit({ ...edit, memory_mib: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="machine-edit-row">
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={edit.ha}
+                    onChange={(e) => setEdit({ ...edit, ha: e.target.checked })}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">Restart elsewhere if this node is lost</span>
+                </label>
+                <button type="submit">Save</button>
+              </div>
+            </form>
+          )}
+          <div className="hw-grid">
+            <div>
+              <p className="wizard-section-title">Disks</p>
+              {disksOf(selectedVm).filter((d) => !d.cdrom).length === 0 && (
+                <p className="muted">No data disks.</p>
+              )}
+              {disksOf(selectedVm)
+                .filter((d) => !d.cdrom)
+                .map((d) => {
+                  const vol = volumes.find((v) => v.id === d.volume_id)
+                  return (
+                    <div key={d.volume_id || d.path} className="hw-row">
+                      <span>{vol?.name || d.path || 'disk'}</span>
+                      {canWrite && d.volume_id && (
+                        <Btn
+                          variant="secondary"
+                          disabled={selectedVm.state === 'running'}
+                          onClick={() =>
+                            mutate(() =>
+                              api(`/v1/vms/${selectedVm.id}/disks/${d.volume_id}`, {
+                                method: 'DELETE',
+                              }),
+                            )
+                          }
+                        >
+                          Detach
+                        </Btn>
+                      )}
+                    </div>
+                  )
+                })}
+              {canWrite && freeVolumes.length > 0 && (
+                <form
+                  className="inline-attach"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    mutate(() =>
+                      api(`/v1/vms/${selectedVm.id}/disks`, {
+                        method: 'POST',
+                        body: { volume_id: volumeId },
+                      }),
+                    )
+                  }}
+                >
+                  <select value={volumeId} onChange={(e) => setVolumeId(e.target.value)}>
+                    {freeVolumes.map((vol) => (
+                      <option key={vol.id} value={vol.id}>
+                        {vol.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" disabled={selectedVm.state === 'running'}>
+                    Attach
+                  </button>
+                </form>
+              )}
+            </div>
+            <div>
+              <p className="wizard-section-title">CD-ROM</p>
+              {!hasCdrom && <p className="muted">No ISO attached.</p>}
+              {disksOf(selectedVm)
+                .filter((d) => d.cdrom || d.iso_name)
+                .map((d) => (
+                  <div key={d.iso_name || 'cd'} className="hw-row">
+                    <span>{d.iso_name || 'ISO'}</span>
+                    {canWrite && d.iso_name && (
+                      <Btn
+                        variant="secondary"
+                        disabled={selectedVm.state === 'running'}
+                        onClick={() =>
+                          mutate(() =>
+                            api(`/v1/vms/${selectedVm.id}/cdrom/${encodeURIComponent(d.iso_name)}`, {
+                              method: 'DELETE',
+                            }),
+                          )
+                        }
+                      >
+                        Detach
+                      </Btn>
+                    )}
+                  </div>
+                ))}
               {canWrite && isos.length > 0 && (
                 <form
                   className="inline-attach"
@@ -221,32 +411,77 @@ export default function Guests() {
                       </option>
                     ))}
                   </select>
-                  <button type="submit">Attach ISO</button>
+                  <button type="submit" disabled={selectedVm.state === 'running'}>
+                    Attach
+                  </button>
                 </form>
               )}
-              {canWrite && volumes.length > 0 && (
+            </div>
+            <div>
+              <p className="wizard-section-title">NICs</p>
+              {netsOf(selectedVm).length === 0 && <p className="muted">No NICs.</p>}
+              {netsOf(selectedVm).map((n, i) => (
+                <div key={n.tap || n.mac || i} className="hw-row">
+                  <span>
+                    {n.tap || n.mac || 'nic'}
+                    {n.ip ? ` · ${n.ip}` : ''}
+                  </span>
+                  {canWrite && n.tap && (
+                    <Btn
+                      variant="secondary"
+                      disabled={selectedVm.state === 'running'}
+                      onClick={() =>
+                        mutate(() =>
+                          api(`/v1/vms/${selectedVm.id}/nics/${encodeURIComponent(n.tap)}`, {
+                            method: 'DELETE',
+                          }),
+                        )
+                      }
+                    >
+                      Detach
+                    </Btn>
+                  )}
+                </div>
+              ))}
+              {canWrite && networks.length > 0 && (
                 <form
                   className="inline-attach"
                   onSubmit={(e) => {
                     e.preventDefault()
                     mutate(() =>
-                      api(`/v1/vms/${selectedVm.id}/disks`, {
+                      api(`/v1/vms/${selectedVm.id}/nics`, {
                         method: 'POST',
-                        body: { volume_id: volumeId },
+                        body: { network_id: networkId },
                       }),
                     )
                   }}
                 >
-                  <select value={volumeId} onChange={(e) => setVolumeId(e.target.value)}>
-                    {volumes.map((vol) => (
-                      <option key={vol.id} value={vol.id}>
-                        {vol.name}
+                  <select value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
+                    {networks.map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.name}
                       </option>
                     ))}
                   </select>
-                  <button type="submit">Attach volume</button>
+                  <button type="submit" disabled={selectedVm.state === 'running'}>
+                    Attach
+                  </button>
                 </form>
               )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {selectedVm && (
+        <section className="console-dock card">
+          <div className="dash-resources-head">
+            <div>
+              <h2 className="card-title">
+                <Icon name="terminal" size={18} />
+                {selectedVm.spec?.name} console
+              </h2>
+              <p className="muted">Click the serial pane and type. Enter, Tab, and Backspace are forwarded.</p>
             </div>
           </div>
           <pre
@@ -259,6 +494,57 @@ export default function Guests() {
             {consoleText || 'Select Console on a guest, then type here.'}
           </pre>
         </section>
+      )}
+
+      {migrateVm && (
+        <Modal
+          title={`Migrate ${migrateVm.spec?.name || migrateVm.id}`}
+          hint="Pick an online node. Empty target lets the scheduler choose."
+          onClose={() => setMigrateVm(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setMigrateVm(null)}>
+                Cancel
+              </button>
+              <button type="submit" form="migrate-guest">
+                Migrate
+              </button>
+            </>
+          }
+        >
+          <form
+            id="migrate-guest"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const id = migrateVm.id
+              const target = migrateTarget || undefined
+              setMigrateVm(null)
+              mutate(() =>
+                api(`/v1/vms/${id}/migrate`, {
+                  method: 'POST',
+                  body: target ? { target } : {},
+                }),
+              )
+            }}
+          >
+            <div className="field">
+              <label htmlFor="migrate-target">Target node</label>
+              <select
+                id="migrate-target"
+                value={migrateTarget}
+                onChange={(e) => setMigrateTarget(e.target.value)}
+              >
+                <option value="">Scheduler pick</option>
+                {migratePeers.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                    {m.id === cluster?.self_id ? ' (this node)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </form>
+        </Modal>
       )}
 
       {openCreate && (
