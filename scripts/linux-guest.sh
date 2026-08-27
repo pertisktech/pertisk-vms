@@ -38,24 +38,26 @@ esac
 listen="${URL#http://}"
 listen="${listen#https://}"
 
-base="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VER}/releases/${arch}/netboot"
 iso_url="${ALPINE_ISO_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_VER}/releases/${arch}/alpine-virt-${ALPINE_REL}-${arch}.iso}"
 mkdir -p "$CACHE"
-kernel="$CACHE/vmlinuz-virt"
-initramfs="$CACHE/initramfs-virt"
 iso="$CACHE/$ISO_NAME"
-if [[ ! -s "$kernel" ]]; then
-  echo "fetching $base/vmlinuz-virt"
-  curl -fsSL -o "$kernel" "$base/vmlinuz-virt"
-fi
-if [[ ! -s "$initramfs" ]]; then
-  echo "fetching $base/initramfs-virt"
-  curl -fsSL -o "$initramfs" "$base/initramfs-virt"
-fi
+kernel="$CACHE/iso-boot/vmlinuz-virt"
+initramfs="$CACHE/iso-boot/initramfs-virt"
 if [[ ! -s "$iso" ]]; then
   echo "fetching $iso_url"
   curl -fsSL -o "$iso" "$iso_url"
 fi
+if [[ ! -s "$kernel" || ! -s "$initramfs" || "$iso" -nt "$kernel" ]]; then
+  echo "extracting kernel/initramfs from $ISO_NAME"
+  mnt="$(mktemp -d)"
+  mount -o loop,ro "$iso" "$mnt" || die "loop-mount ISO failed (need root and the iso9660 module)"
+  mkdir -p "$CACHE/iso-boot"
+  cp -f "$mnt/boot/vmlinuz-virt" "$kernel"
+  cp -f "$mnt/boot/initramfs-virt" "$initramfs"
+  umount "$mnt"
+  rmdir "$mnt"
+fi
+[[ -s "$kernel" && -s "$initramfs" ]] || die "ISO is missing boot/vmlinuz-virt or boot/initramfs-virt"
 
 echo "building pertiskd and pertisk"
 cargo build -q -p pertisk-daemon -p pertisk-cli
@@ -92,7 +94,7 @@ fi
 
 created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 \
   --kernel "$kernel" --initramfs "$initramfs" \
-  --cmdline "console=ttyS0,115200 modules=loop,squashfs,virtio_blk,overlay")"
+  --cmdline "console=ttyS0,115200 modules=loop,squashfs,virtio_blk alpine_dev=/dev/vda:iso9660 modloop=/boot/modloop-virt")"
 echo "$created"
 id="$(echo "$created" | awk '{print $1}')"
 [[ -n "$id" ]] || die "vm create returned no id"
