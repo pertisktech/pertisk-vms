@@ -1,6 +1,6 @@
 # pertisk-vm
 
-Virtualization control plane in Rust (phases 0–6).
+Virtualization control plane in Rust (phases 0–7).
 Default driver on macOS is `mock`. Real guests need Linux KVM + Cloud Hypervisor.
 
 Operators use the HTTP API, CLI, or web UI. Do not SSH onto the hypervisor for day-to-day VM work.
@@ -78,3 +78,22 @@ pertisk vm cdrom attach --iso web-1-cidata.iso <id>
 ```
 
 Attach that seed last; firmware boots an installer ISO or the OS disk, not the cidata volume.
+
+**Node install / flashable image (phase 7):** not a custom hypervisor — Debian + pertiskd.
+
+On an existing Linux KVM box (9955HX after you install Ubuntu/Debian):
+
+```bash
+sudo ./scripts/install-node.sh
+```
+
+That installs `pertiskd` as a systemd service (`0.0.0.0:7480`, home `/var/lib/pertisk`). Admin password is in `/etc/pertisk/admin`.
+
+To build a USB disk image (Linux build host with [mkosi](https://github.com/systemd/mkosi)):
+
+```bash
+./scripts/build-iso.sh
+sudo dd if=out/pertisk-node.raw of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Boot that image, or from it install to internal NVMe: `pertisk-install --disk /dev/nvme0n1 --yes`. Install refuses if `/dev/kvm` is missing.

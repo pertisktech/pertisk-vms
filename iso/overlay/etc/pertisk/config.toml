@@ -1,0 +1,21 @@
+# Appliance defaults. First boot may rewrite listen / node_name / firmware paths.
+
+[daemon]
+listen = "0.0.0.0:7480"
+
+[vmm]
+driver = "cloud-hypervisor"
+run_dir = "/var/lib/pertisk/run"
+cloud_hypervisor = "/usr/bin/cloud-hypervisor"
+firmware = "/usr/lib/cloud-hypervisor/hypervisor-fw"
+
+[storage]
+root = "/var/lib/pertisk/storage"
+backend = "replica"
+replica_count = 1
+
+[network]
+apply_host_links = true
+
+[cluster]
+name = "pertisk"

@@ -1,0 +1,95 @@
+#!/bin/bash
+# Copy the running live/appliance root onto a target disk (Proxmox-style install).
+# Usage: pertisk-install --disk /dev/nvme0n1 --yes
+set -euo pipefail
+
+DISK=""
+YES=0
+ESP_MIB=512
+MIN_GIB=20
+
+die() { echo "pertisk-install: $*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --disk) DISK="$2"; shift 2 ;;
+    --yes) YES=1; shift ;;
+    -h|--help)
+      echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
+      echo "Installs this live image onto DISK (GPT: EFI + ext4). Wipes DISK."
+      exit 0
+      ;;
+    *) die "unknown arg $1" ;;
+  esac
+done
+
+[[ "$(id -u)" -eq 0 ]] || die "run as root"
+/usr/sbin/pertisk-kvm-check || die "refusing install: this machine cannot run KVM"
+[[ -n "$DISK" ]] || die "pass --disk /dev/sdX or /dev/nvme0n1"
+[[ -b "$DISK" ]] || die "$DISK is not a block device"
+[[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
+
+root_src="$(findmnt -n -o SOURCE / || true)"
+if [[ -n "$root_src" && "$root_src" == "$DISK"* ]]; then
+  die "$DISK looks like the current root ($root_src); boot the live ISO first"
+fi
+
+bytes="$(blockdev --getsize64 "$DISK")"
+gib=$((bytes / 1024 / 1024 / 1024))
+[[ "$gib" -ge "$MIN_GIB" ]] || die "$DISK is ${gib}GiB; need at least ${MIN_GIB}GiB"
+
+echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
+sgdisk --zap-all "$DISK"
+sgdisk -n1:0:+${ESP_MIB}M -t1:ef00 -c1:ESP \
+       -n2:0:0 -t2:8300 -c2:root \
+       "$DISK"
+partprobe "$DISK" || true
+sleep 1
+
+if [[ "$DISK" == *[0-9] ]]; then
+  p1="${DISK}p1"
+  p2="${DISK}p2"
+else
+  p1="${DISK}1"
+  p2="${DISK}2"
+fi
+[[ -b "$p1" && -b "$p2" ]] || die "partitions $p1 $p2 did not appear"
+
+mkfs.fat -F32 -n PERTISKESP "$p1"
+mkfs.ext4 -F -L pertisk-root "$p2"
+
+mnt=/mnt/pertisk-install
+mkdir -p "$mnt"
+mount "$p2" "$mnt"
+mkdir -p "$mnt/boot/efi"
+mount "$p1" "$mnt/boot/efi"
+
+rsync -aHAX --numeric-ids --info=progress2 \
+  --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
+  --exclude=/mnt --exclude=/tmp --exclude=/media \
+  / "$mnt/"
+
+mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp"
+mount --bind /dev "$mnt/dev"
+mount --bind /dev/pts "$mnt/dev/pts"
+mount -t proc proc "$mnt/proc"
+mount -t sysfs sys "$mnt/sys"
+
+uuid_root="$(blkid -s UUID -o value "$p2")"
+uuid_esp="$(blkid -s UUID -o value "$p1")"
+cat >"$mnt/etc/fstab" <<EOF
+UUID=$uuid_root / ext4 defaults 0 1
+UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
+EOF
+
+if [[ -d /sys/firmware/efi ]]; then
+  chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=pertisk --recheck
+else
+  chroot "$mnt" grub-install --target=i386-pc --recheck "$DISK"
+fi
+chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
+
+rm -f "$mnt/var/lib/pertisk/.firstboot-done"
+umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
+echo "pertisk-install: done. Remove the USB and reboot from $DISK."
+echo "UI will be http://<host>:7480/  (admin password in /etc/pertisk/admin after first boot)"

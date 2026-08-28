@@ -1,0 +1,15 @@
+#!/bin/sh
+# Exit 0 only when this machine can run KVM guests.
+set -eu
+
+if [ ! -e /dev/kvm ]; then
+  echo "pertisk: /dev/kvm is missing (enable SVM/VT-x, load kvm_amd or kvm_intel)" >&2
+  exit 1
+fi
+
+if [ -r /proc/cpuinfo ] && ! grep -Eq 'svm|vmx' /proc/cpuinfo; then
+  echo "pertisk: CPU has no svm/vmx flag (virtualization disabled in firmware?)" >&2
+  exit 1
+fi
+
+exit 0

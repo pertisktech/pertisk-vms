@@ -1,0 +1,22 @@
+[Unit]
+Description=pertisk-vm node daemon
+Documentation=https://github.com/pertisktech/pertisk-vms
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/bin/pertiskd
+
+[Service]
+Type=simple
+Environment=PERTISK_HOME=/var/lib/pertisk
+EnvironmentFile=-/etc/pertisk/daemon.env
+ExecStartPre=/usr/sbin/pertisk-kvm-check
+ExecStart=/usr/bin/pertiskd
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+# TAP/bridge and /dev/kvm
+User=root
+
+[Install]
+WantedBy=multi-user.target

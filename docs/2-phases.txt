@@ -110,15 +110,15 @@ Demo:  flash ISO → install to disk → reboot → http://<host>:7480/ creates 
 Skip:  writing a hypervisor; Windows/graphical guest VGA (still Cloud Hypervisor serial)
 
 This is a Linux installer image that ships pertisk, not a new VMM.
-Today you install Ubuntu/Debian yourself, then run pertiskd. Phase 7 replaces that.
+Today you can `sudo ./scripts/install-node.sh` on Linux KVM. `./scripts/build-iso.sh` (mkosi) builds a flashable disk image.
 
-  [ ] Pick base: Debian live-build, Ubuntu autoinstall, or mkosi (not a custom kernel)
-  [ ] Image contents: Linux + KVM + cloud-hypervisor + hypervisor-fw + pertiskd + CLI
-  [ ] systemd: pertiskd on boot, listen 0.0.0.0:7480, bootstrap admin password
-  [ ] Installer: disk layout (OS + VM storage), hostname, network, root/admin
-  [ ] Build pipeline: reproducible ISO/USB (x86_64 first; aarch64 later)
-  [ ] First-boot wizard: UI or TTY; join cluster optional
-  [ ] Hardware check: SVM/VMX, /dev/kvm, RAM, disk; refuse if KVM missing
+  [x] Pick base: Debian bookworm via mkosi (not a custom kernel)
+  [x] Image contents: Linux + KVM + cloud-hypervisor + hypervisor-fw + pertiskd + CLI
+  [x] systemd: pertiskd on boot, listen 0.0.0.0:7480, bootstrap admin password
+  [x] Installer: disk layout (EFI + root), hostname, network, root/admin (`pertisk-install`)
+  [x] Build pipeline: `scripts/build-iso.sh` → `out/pertisk-node.raw` (x86_64; Linux build host)
+  [x] First-boot: TTY/issue + `/etc/pertisk/admin`; join cluster still via CLI/UI
+  [x] Hardware check: SVM/VMX + `/dev/kvm` (`pertisk-kvm-check`; install refuses without it)
   [ ] Proof: one box (e.g. 16c/64G) flashed from USB, Alpine guest via serial
 
 
@@ -156,8 +156,9 @@ v2.0  phase 5      cluster + HA  (+ phase 6 HCI if replica/RBD is in play)
               `replicated_volume_ha_prefers_replica_holder`)
       open:   3-node demo on Linux (kill a box; guest restarts on a replica holder)
 
-v3.0  phase 7      flashable installer ISO (Proxmox-style node)
-      not started: no pertisk ISO to dd/balenaEtcher today
-      depends:     v1.0 on Linux KVM already proven (scripts/linux-host.sh)
-      ships:       Debian/Ubuntu-based image, not a custom kernel
+v3.0  phase 7      flashable node image (Proxmox-style)
+      done:   Debian mkosi overlay, systemd, firstboot, kvm check, pertisk-install
+      path:   sudo ./scripts/install-node.sh  (existing Linux)
+              ./scripts/build-iso.sh          (Linux + mkosi → out/*.raw)
+      open:   proof on real hardware (flash USB, Alpine guest)
       not in v3.0: QEMU VGA / noVNC (separate; needed for Ubuntu Desktop/Windows)

@@ -1,0 +1,68 @@
+#!/bin/bash
+# One-shot appliance setup. Safe to re-run until /var/lib/pertisk/.firstboot-done exists.
+set -euo pipefail
+
+HOME_DIR="${PERTISK_HOME:-/var/lib/pertisk}"
+ENV_FILE=/etc/pertisk/daemon.env
+PASS_FILE=/etc/pertisk/admin
+ISSUE=/etc/issue.d/pertisk.issue
+
+mkdir -p "$HOME_DIR/run" "$HOME_DIR/storage" "$HOME_DIR/state" /etc/pertisk /etc/issue.d
+chmod 755 /etc/pertisk
+
+if ! /usr/sbin/pertisk-kvm-check; then
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm: this machine cannot run guests (/dev/kvm or SVM/VMX missing).
+Fix firmware virtualization, then: systemctl restart pertisk-firstboot pertiskd
+EOF
+  echo "pertisk-firstboot: kvm check failed (see $ISSUE)"
+  exit 1
+fi
+
+if [[ ! -f "$HOME_DIR/config.toml" ]]; then
+  if [[ -f /etc/pertisk/config.toml ]]; then
+    cp /etc/pertisk/config.toml "$HOME_DIR/config.toml"
+  fi
+fi
+
+node="$(hostname -s 2>/dev/null || echo pertisk)"
+if [[ -f "$HOME_DIR/config.toml" ]] && ! grep -q 'node_name' "$HOME_DIR/config.toml"; then
+  tmp="$(mktemp)"
+  awk -v n="$node" '
+    /^\[cluster\]/ { print; print "node_name = \"" n "\""; next }
+    { print }
+  ' "$HOME_DIR/config.toml" >"$tmp"
+  mv "$tmp" "$HOME_DIR/config.toml"
+fi
+
+if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
+  if [[ -r "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    source "$ENV_FILE"
+    set +a
+  fi
+fi
+
+if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
+  PERTISK_ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
+  if [[ -z "$PERTISK_ADMIN_PASSWORD" ]]; then
+    PERTISK_ADMIN_PASSWORD="admin"
+  fi
+  umask 077
+  printf 'PERTISK_ADMIN_PASSWORD=%s\n' "$PERTISK_ADMIN_PASSWORD" >>"$ENV_FILE"
+  echo "pertisk-firstboot: generated admin password"
+fi
+umask 077
+printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
+chmod 600 "$ENV_FILE" "$PASS_FILE"
+
+ips="$(hostname -I 2>/dev/null | awk '{print $1}')"
+ips="${ips:-<this-host>}"
+cat >"$ISSUE" <<EOF
+pertisk-vm  http://${ips}:7480/   user admin   password in $PASS_FILE
+EOF
+
+touch "$HOME_DIR/.firstboot-done"
+echo "pertisk-firstboot: done. UI http://${ips}:7480/"
+exit 0

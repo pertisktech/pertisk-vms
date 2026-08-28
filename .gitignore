@@ -3,6 +3,9 @@
 .DS_Store
 /.pertisk
 /data
+/out
 *.swp
 web/ui/node_modules
 web/ui/dist
+iso/overlay/usr/bin/
+iso/overlay/usr/lib/cloud-hypervisor/
