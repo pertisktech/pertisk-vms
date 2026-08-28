@@ -103,11 +103,12 @@ pub fn prepare_linux_iso_boot(
         }
         image.copy_file(k_lba, k_size, &kernel)?;
         image.copy_file(i_lba, i_size, &initramfs)?;
+        let cmdline = resolve_cmdline(cmdline, &roots.volume_id);
         fs::write(&cmd_file, format!("{cmdline}\n"))?;
         return Ok(Some(LinuxIsoBoot {
             kernel,
             initramfs,
-            cmdline: (*cmdline).to_string(),
+            cmdline,
         }));
     }
 
@@ -118,6 +119,16 @@ pub fn prepare_linux_iso_boot(
         return Err(StorageError::Message(SHIM_MSG.into()));
     }
     Ok(None)
+}
+
+/// Anaconda's initrd (`inst.*` cmdlines) only finds the install tree when `inst.stage2`
+/// points at the ISO volume label.
+fn resolve_cmdline(base: &str, volume_id: &str) -> String {
+    if volume_id.is_empty() || !base.contains("inst.") || base.contains("inst.stage2") {
+        return base.to_string();
+    }
+    let label = volume_id.replace(' ', "\\x20");
+    format!("{base} inst.stage2=hd:LABEL={label}")
 }
 
 fn cache_fresh(iso: &Path, kernel: &Path, initrd: &Path, cmdline: &Path) -> bool {
@@ -151,6 +162,7 @@ struct IsoImage {
 struct Roots {
     iso: Option<(u32, u32)>,
     joliet: Option<(u32, u32)>,
+    volume_id: String,
 }
 
 impl IsoImage {
@@ -170,6 +182,7 @@ impl IsoImage {
     fn roots(&mut self) -> Result<Option<Roots>, StorageError> {
         let mut iso = None;
         let mut joliet = None;
+        let mut volume_id = String::new();
         for lba in 16u32..32 {
             let sector = match self.read_at(lba, SECTOR as u32) {
                 Ok(s) => s,
@@ -180,7 +193,10 @@ impl IsoImage {
             }
             match sector[0] {
                 255 => break,
-                1 => iso = parse_root_record(&sector),
+                1 => {
+                    iso = parse_root_record(&sector);
+                    volume_id = parse_volume_id(&sector);
+                }
                 2 if is_joliet(&sector) => joliet = parse_root_record(&sector),
                 _ => {}
             }
@@ -188,7 +204,11 @@ impl IsoImage {
         if iso.is_none() && joliet.is_none() {
             return Ok(None);
         }
-        Ok(Some(Roots { iso, joliet }))
+        Ok(Some(Roots {
+            iso,
+            joliet,
+            volume_id,
+        }))
     }
 
     fn lookup(&mut self, roots: &Roots, parts: &[&str]) -> Option<(u32, u32, bool)> {
@@ -230,8 +250,18 @@ impl IsoImage {
         self.file.seek(SeekFrom::Start(u64::from(lba) * SECTOR))?;
         let mut limited = Read::by_ref(&mut self.file).take(u64::from(size));
         let mut out = File::create(dest)?;
-        std::io::copy(&mut limited, &mut out)?;
+        let copied = std::io::copy(&mut limited, &mut out)?;
         out.flush()?;
+        drop(out);
+        // A short read means the ISO itself is incomplete; booting it panics the guest at
+        // "Initramfs unpacking failed" / "Unable to mount root fs", so fail loudly instead.
+        if copied != u64::from(size) {
+            let _ = fs::remove_file(dest);
+            return Err(StorageError::Message(format!(
+                "ISO is truncated: {} needs {size} bytes at LBA {lba}, only {copied} readable; re-download the image",
+                dest.display()
+            )));
+        }
         Ok(())
     }
 }
@@ -241,6 +271,13 @@ fn is_joliet(sector: &[u8]) -> bool {
         && sector[88] == 0x25
         && sector[89] == 0x2f
         && matches!(sector[90], 0x40 | 0x43 | 0x45)
+}
+
+fn parse_volume_id(sector: &[u8]) -> String {
+    if sector.len() < 72 {
+        return String::new();
+    }
+    String::from_utf8_lossy(&sector[40..72]).trim().to_string()
 }
 
 fn parse_root_record(sector: &[u8]) -> Option<(u32, u32)> {
