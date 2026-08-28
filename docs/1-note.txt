@@ -59,7 +59,8 @@ Build sequence
 3. Bridge + TAP + guest console
 4. REST API + auth + operator UI  ← this is the product
 5. Cluster, HA, live migration
-6. Distributed storage (Nutanix/vSAN year — optional, last)
+6. Distributed storage (Nutanix/vSAN year — optional)
+7. Flashable installer ISO (Proxmox-style node) — after the control plane works
 
 Minimum viable platform: Linux host, KVM, one VMM, file-backed disk,
 one bridge, Rust API that boots a VM from an ISO.

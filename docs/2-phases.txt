@@ -2,7 +2,8 @@ pertisk-vm — phases and tasks
 =============================
 
 MVP = phases 0–4 on one Linux/KVM node.
-Cluster = phase 5. HCI storage = phase 6 (last, optional).
+Cluster = phase 5. HCI storage = phase 6 (optional).
+Bare-metal installer ISO = phase 7 (Proxmox-style flash; after the control plane).
 
 
 Phase 0 — Foundations
@@ -102,6 +103,25 @@ Skip:  starting the whole project here
   [x] Storage-aware live migrate / HA (prefer replica holders)
 
 
+Phase 7 — Installer ISO                         → v3.0 flashable node
+-----------------------
+Goal:  USB/ISO boots the 9955HX (or any x86_64 box); after install, UI manages VMs
+Demo:  flash ISO → install to disk → reboot → http://<host>:7480/ creates a guest
+Skip:  writing a hypervisor; Windows/graphical guest VGA (still Cloud Hypervisor serial)
+
+This is a Linux installer image that ships pertisk, not a new VMM.
+Today you install Ubuntu/Debian yourself, then run pertiskd. Phase 7 replaces that.
+
+  [ ] Pick base: Debian live-build, Ubuntu autoinstall, or mkosi (not a custom kernel)
+  [ ] Image contents: Linux + KVM + cloud-hypervisor + hypervisor-fw + pertiskd + CLI
+  [ ] systemd: pertiskd on boot, listen 0.0.0.0:7480, bootstrap admin password
+  [ ] Installer: disk layout (OS + VM storage), hostname, network, root/admin
+  [ ] Build pipeline: reproducible ISO/USB (x86_64 first; aarch64 later)
+  [ ] First-boot wizard: UI or TTY; join cluster optional
+  [ ] Hardware check: SVM/VMX, /dev/kvm, RAM, disk; refuse if KVM missing
+  [ ] Proof: one box (e.g. 16c/64G) flashed from USB, Alpine guest via serial
+
+
 Crate map
 ---------
 pertisk-types     IDs, spec, errors          all phases
@@ -111,6 +131,7 @@ pertisk-net       bridge, TAP, DHCP          phase 3
 pertisk-daemon    node agent, reconcile      phases 1 and 5
 pertisk-api       HTTP, auth, tasks          phase 4
 pertisk-cli       operator CLI               phase 1 onward
+iso/image         live + installer (scripts) phase 7
 
 
 Release gates
@@ -134,3 +155,9 @@ v2.0  phase 5      cluster + HA  (+ phase 6 HCI if replica/RBD is in play)
       proof:  HA restart tests (`three_node_ha_restarts_elsewhere`,
               `replicated_volume_ha_prefers_replica_holder`)
       open:   3-node demo on Linux (kill a box; guest restarts on a replica holder)
+
+v3.0  phase 7      flashable installer ISO (Proxmox-style node)
+      not started: no pertisk ISO to dd/balenaEtcher today
+      depends:     v1.0 on Linux KVM already proven (scripts/linux-host.sh)
+      ships:       Debian/Ubuntu-based image, not a custom kernel
+      not in v3.0: QEMU VGA / noVNC (separate; needed for Ubuntu Desktop/Windows)
