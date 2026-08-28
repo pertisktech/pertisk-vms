@@ -1,5 +1,8 @@
 //! Minimal ISO 9660 + Joliet image for cloud-init NoCloud (`cidata` volume id).
 
+#[cfg(test)]
+use std::collections::BTreeMap;
+
 const SECTOR: usize = 2048;
 
 pub fn cidata_iso(user_data: &[u8], meta_data: &[u8]) -> Vec<u8> {
@@ -82,6 +85,164 @@ fn write_joliet_iso(volume_id: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
         image[dest..dest + data.len()].copy_from_slice(data);
     }
     image
+}
+
+/// Nested Joliet tree used by installer-kernel extraction tests (`casper/vmlinuz`, `efi/ubuntu/…`).
+#[cfg(test)]
+pub(crate) fn tree_iso(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut dirs: Vec<String> = vec![String::new()];
+    for (path, _) in files {
+        let parts: Vec<&str> = path.split('/').collect();
+        let mut prefix = String::new();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            if !dirs.iter().any(|d| d == &prefix) {
+                dirs.push(prefix.clone());
+            }
+        }
+    }
+    dirs.sort();
+
+    let lba_pvd = 16u32;
+    let lba_svd = 17;
+    let lba_term = 18;
+    let lba_pt_le = 19;
+    let lba_pt_be = 20;
+    let lba_jpt_le = 21;
+    let lba_jpt_be = 22;
+    let mut next = 23u32;
+    let mut dir_lba: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for dir in &dirs {
+        let iso = next;
+        next += 1;
+        let joliet = next;
+        next += 1;
+        dir_lba.insert(dir.clone(), (iso, joliet));
+    }
+    let mut extents = Vec::new();
+    for (_, data) in files {
+        let sectors = data.len().div_ceil(SECTOR) as u32;
+        extents.push((next, sectors.max(1)));
+        next += sectors.max(1);
+    }
+    let volume_sectors = next;
+    let mut image = vec![0u8; volume_sectors as usize * SECTOR];
+    let (root_iso, root_joliet) = dir_lba[""];
+
+    write_pvd(
+        &mut image[lba_pvd as usize * SECTOR..][..SECTOR],
+        "TESTISO",
+        volume_sectors,
+        root_iso,
+        lba_pt_le,
+        lba_pt_be,
+    );
+    write_svd(
+        &mut image[lba_svd as usize * SECTOR..][..SECTOR],
+        "TESTISO",
+        volume_sectors,
+        root_joliet,
+        lba_jpt_le,
+        lba_jpt_be,
+    );
+    image[lba_term as usize * SECTOR] = 255;
+    image[lba_term as usize * SECTOR + 1..lba_term as usize * SECTOR + 6].copy_from_slice(b"CD001");
+    image[lba_term as usize * SECTOR + 6] = 1;
+    write_path_table(
+        &mut image[lba_pt_le as usize * SECTOR..][..SECTOR],
+        root_iso,
+        false,
+    );
+    write_path_table(
+        &mut image[lba_pt_be as usize * SECTOR..][..SECTOR],
+        root_iso,
+        true,
+    );
+    write_path_table(
+        &mut image[lba_jpt_le as usize * SECTOR..][..SECTOR],
+        root_joliet,
+        false,
+    );
+    write_path_table(
+        &mut image[lba_jpt_be as usize * SECTOR..][..SECTOR],
+        root_joliet,
+        true,
+    );
+
+    for dir in &dirs {
+        let (iso_lba, joliet_lba) = dir_lba[dir];
+        let iso_bytes = dir_bytes(dir, &dirs, files, &extents, &dir_lba, false);
+        let joliet_bytes = dir_bytes(dir, &dirs, files, &extents, &dir_lba, true);
+        image[iso_lba as usize * SECTOR..][..iso_bytes.len()].copy_from_slice(&iso_bytes);
+        image[joliet_lba as usize * SECTOR..][..joliet_bytes.len()].copy_from_slice(&joliet_bytes);
+    }
+    for (i, (_, data)) in files.iter().enumerate() {
+        let (lba, _) = extents[i];
+        let dest = lba as usize * SECTOR;
+        image[dest..dest + data.len()].copy_from_slice(data);
+    }
+    image
+}
+
+#[cfg(test)]
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(p, _)| p).unwrap_or("")
+}
+
+#[cfg(test)]
+fn basename_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(_, b)| b).unwrap_or(path)
+}
+
+#[cfg(test)]
+fn dir_bytes(
+    dir: &str,
+    dirs: &[String],
+    files: &[(&str, &[u8])],
+    extents: &[(u32, u32)],
+    dir_lba: &BTreeMap<String, (u32, u32)>,
+    joliet: bool,
+) -> Vec<u8> {
+    let (self_iso, self_joliet) = dir_lba[dir];
+    let self_lba = if joliet { self_joliet } else { self_iso };
+    let parent = if dir.is_empty() { dir } else { parent_of(dir) };
+    let (p_iso, p_joliet) = dir_lba[parent];
+    let parent_lba = if joliet { p_joliet } else { p_iso };
+    let mut buf = Vec::new();
+    buf.extend(dir_record(self_lba, SECTOR as u32, 0x02, &[0], joliet));
+    buf.extend(dir_record(parent_lba, SECTOR as u32, 0x02, &[1], joliet));
+    for child in dirs {
+        if child.is_empty() || parent_of(child) != dir {
+            continue;
+        }
+        let (c_iso, c_joliet) = dir_lba[child];
+        let child_lba = if joliet { c_joliet } else { c_iso };
+        let name = basename_of(child);
+        let ident = if joliet {
+            ucs2(name)
+        } else {
+            name.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(31)
+                .map(|c| c.to_ascii_uppercase())
+                .collect::<String>()
+                .into_bytes()
+        };
+        buf.extend(dir_record(child_lba, SECTOR as u32, 0x02, &ident, joliet));
+    }
+    for (i, (path, data)) in files.iter().enumerate() {
+        if parent_of(path) != dir {
+            continue;
+        }
+        let (lba, _) = extents[i];
+        let name = basename_of(path);
+        let ident = if joliet { ucs2(name) } else { iso_ident(name) };
+        buf.extend(dir_record(lba, data.len() as u32, 0, &ident, joliet));
+    }
+    buf
 }
 
 fn write_pvd(

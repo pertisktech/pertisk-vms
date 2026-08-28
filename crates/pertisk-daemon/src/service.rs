@@ -293,8 +293,16 @@ impl Service {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
         }
-        if record.state == VmState::Created {
-            match self.vmm.create(record.id, &record.spec).await {
+        let boot_spec = self.iso_linux_boot_spec(&record.spec)?;
+        let socket_missing = record
+            .api_socket
+            .as_ref()
+            .map(|p| !p.exists())
+            .unwrap_or(true);
+        let recreate = record.state == VmState::Created
+            || (self.driver() == DriverKind::CloudHypervisor && socket_missing);
+        if recreate {
+            match self.vmm.create(record.id, &boot_spec).await {
                 Ok(created) => {
                     record.pid = created.pid;
                     record.api_socket = created.api_socket;
@@ -883,6 +891,41 @@ impl Service {
             next: from + (end - start) as u64,
             text,
         })
+    }
+
+    fn iso_linux_boot_spec(&self, spec: &VmSpec) -> Result<VmSpec, DaemonError> {
+        let mut spec = spec.clone();
+        if self.driver() != DriverKind::CloudHypervisor || spec.kernel.is_some() {
+            return Ok(spec);
+        }
+        let Some(disk) = spec
+            .disks
+            .iter()
+            .find(|disk| disk.cdrom && !iso_is_cidata(disk))
+        else {
+            return Ok(spec);
+        };
+        let name = disk
+            .iso_name
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "iso".into());
+        let dest = self.config.storage.root.join("iso-boot").join(&name);
+        if let Some(boot) = pertisk_storage::prepare_linux_iso_boot(&disk.path, &dest)? {
+            tracing::info!(
+                iso = %name,
+                kernel = %boot.kernel.display(),
+                "kernel-booting installer ISO (bypassing UEFI shim)"
+            );
+            spec.kernel = Some(boot.kernel);
+            spec.initramfs = Some(boot.initramfs);
+            if spec.cmdline.is_none() {
+                spec.cmdline = Some(boot.cmdline);
+            }
+        }
+        Ok(spec)
     }
 
     fn network_users(&self, id: NetworkId) -> Result<Vec<VmId>, DaemonError> {
@@ -1476,6 +1519,21 @@ impl Service {
         self.cluster.reset_solo()?;
         self.cluster_status()
     }
+}
+
+fn iso_is_cidata(disk: &DiskSpec) -> bool {
+    disk.iso_name
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains("cidata")
+        || disk
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("cidata")
 }
 
 #[cfg(test)]

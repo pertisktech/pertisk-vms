@@ -70,6 +70,8 @@ pertisk vm console <id> --attach
 
 Alpine virt / cloud images use **serial**. Graphical Ubuntu/Windows installers need VGA (not in Cloud Hypervisor).
 
+Ubuntu/Debian **installer ISOs** cannot EFI-boot: Cloud Hypervisor firmware (`hypervisor-fw`) does not implement shim/Secure Boot (`import_mok_state Unsupported`). On start, pertisk extracts `casper/vmlinuz` (or Debian `install.amd`) and kernel-boots with `console=ttyS0`. After install, detach the ISO and start again to boot the disk. Prefer Alpine virt, or a cloud image + cloud-init.
+
 **Cloud-init ISO** (Linux cloud images, not Proxmox/ESXi installers): Storage → Import ISO → Cloud-init, or:
 
 ```bash

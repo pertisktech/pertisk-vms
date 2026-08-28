@@ -357,6 +357,13 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
                   This node has no firmware (hypervisor-fw). Disk/ISO boot needs it; kernel boot still works.
                 </p>
               )}
+              {form.iso && host?.driver === 'cloud-hypervisor' && (
+                <p className="muted">
+                  Console is serial only. Ubuntu/Debian installer ISOs cannot EFI-boot (Secure Boot shim);
+                  pertisk boots their installer kernel on ttyS0 instead. Alpine virt works. Ubuntu Desktop
+                  and Windows need VGA (not available).
+                </p>
+              )}
             </div>
             <label className="chk" style={{ marginTop: '1rem' }}>
               <input

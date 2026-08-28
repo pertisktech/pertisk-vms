@@ -1,6 +1,7 @@
 //! Local directory volumes, file snapshots, ISO library, optional qemu-img, optional Ceph RBD.
 
 mod iso9660;
+mod iso_boot;
 mod qemu;
 mod rbd;
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::iso9660::cidata_iso;
 use crate::qemu::QemuImg;
+pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
 pub use rbd::Rbd;
 
 #[derive(Debug, thiserror::Error)]
