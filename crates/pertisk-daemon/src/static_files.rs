@@ -28,9 +28,16 @@ fn serve(path: &str) -> Response {
             let mime = mime_guess::from_path(path)
                 .first_or_octet_stream()
                 .to_string();
+            // Vite content-hashes /assets/*, so only index.html must be revalidated.
+            let cache = if path.starts_with("assets/") {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            };
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
+                .header(header::CACHE_CONTROL, cache)
                 .body(Body::from(content.data.to_vec()))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
@@ -47,6 +54,7 @@ a{color:#9a7bf7}</style></head>
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CACHE_CONTROL, "no-cache")
                 .body(Body::from(html))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
