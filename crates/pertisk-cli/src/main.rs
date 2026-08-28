@@ -617,7 +617,10 @@ async fn run() -> Result<()> {
                     &client,
                     &cli.url,
                     "/v1/vms",
-                    &CreateVmRequest { id, spec },
+                    &CreateVmRequest {
+                        id: Some(id),
+                        spec,
+                    },
                 )
                 .await?;
                 if let Some(size) = disk_size {

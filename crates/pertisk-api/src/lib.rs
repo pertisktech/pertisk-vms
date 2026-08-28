@@ -127,7 +127,8 @@ pub struct AuditEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateVmRequest {
-    pub id: VmId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<VmId>,
     #[serde(flatten)]
     pub spec: VmSpec,
 }

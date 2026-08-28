@@ -282,7 +282,11 @@ impl Service {
             self.store.upsert(record.clone())?;
         }
         if dest != self.cluster.self_id() {
-            return self.peer_run(dest, record).await;
+            let started = self.peer_run(dest, record).await?;
+            self.store.upsert(started.clone())?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(started);
         }
         self.start_local(id).await
     }
@@ -1070,6 +1074,9 @@ impl Service {
     }
 
     pub fn apply_snapshot(&self, snap: pertisk_types::ClusterSnapshot) -> Result<(), DaemonError> {
+        if snap.generation < self.cluster.generation() {
+            return Ok(());
+        }
         self.cluster.apply_membership(&snap)?;
         self.store.replace_all(snap.vms)?;
         self.volumes.replace_records(snap.volumes)?;
@@ -1166,7 +1173,7 @@ impl Service {
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
         }
-        if quorum && self.cluster.is_leader() {
+        if quorum {
             self.recover_ha().await?;
         }
         self.send_heartbeats().await;
@@ -1213,6 +1220,7 @@ impl Service {
                 .into_iter()
                 .filter(|id| loads.iter().any(|n| n.id == *id && n.online))
                 .collect();
+            eprintln!("recovery candidate self={} vm={} owner={} affinity={:?} loads={:?}", self.cluster.self_id(), vm.id, owner, affinity, loads.iter().map(|n| (n.id, n.online)).collect::<Vec<_>>());
             let Some(dest) =
                 cluster::schedule_storage(&loads, &vm.spec, affinity.first().copied(), &affinity)
             else {
@@ -1250,7 +1258,7 @@ impl Service {
                     .unwrap_or_else(|_| self.cluster.membership_snapshot()),
             );
         }
-        for (_id, url) in self.cluster.peer_urls_online_except_self() {
+        for (_id, url) in self.cluster.peer_urls_except_self() {
             let url = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
             let _ = self
                 .http

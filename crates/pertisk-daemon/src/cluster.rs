@@ -483,6 +483,12 @@ impl Cluster {
                     },
                 );
             }
+            for (id, member) in &inner.members {
+                next.entry(*id).or_insert_with(|| MemberState {
+                    record: member.record.clone(),
+                    last_seen_ms: member.last_seen_ms,
+                });
+            }
             if !next.contains_key(&inner.self_id) {
                 let self_id = inner.self_id;
                 if let Some(self_member) = inner.members.remove(&self_id) {

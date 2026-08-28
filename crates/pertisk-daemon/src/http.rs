@@ -245,12 +245,13 @@ async fn create(
     Extension(user): Extension<AuthUser>,
     Json(req): Json<CreateVmRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
+    let id = req.id.unwrap_or_default();
     let record = tracked(
         &service,
         &user,
         "vm.create",
         req.spec.name.clone(),
-        service.create(req.id, req.spec),
+        service.create(id, req.spec),
     )
     .await?;
     Ok((StatusCode::CREATED, Json(record)))
