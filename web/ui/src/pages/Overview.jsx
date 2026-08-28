@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom'
 import { asList, disksOf } from '../api'
-import { Icon } from '../components/Icons'
 import { useInventory } from '../useInventory'
 
 function stateClass(state) {
@@ -17,27 +16,7 @@ export default function Overview() {
   const running = vms.filter((vm) => vm.state === 'running').length
 
   return (
-    <div className="dash-page">
-      <div className="page-head">
-        <div>
-          <h1>
-            <Icon name="overview" size={20} />
-            Atelier
-          </h1>
-          <p className="dash-lead muted">
-            {host
-              ? `${host.os}/${host.arch} · ${host.driver} · kvm ${host.kvm ? 'yes' : 'no'}${
-                  host.firmware ? ' · firmware' : ''
-                }`
-              : 'Loading host…'}
-          </p>
-        </div>
-        <Link to="/guests?new=1" className="btn-icon">
-          <Icon name="plus" size={16} />
-          <span>New guest</span>
-        </Link>
-      </div>
-
+    <div className="pve-stack">
       {error && <div className="banner danger">{error}</div>}
 
       <div className="dash-stat-row">
@@ -72,8 +51,12 @@ export default function Overview() {
       <section className="dash-panel">
         <div className="dash-resources-head">
           <div>
-            <h2 className="card-title">Stage</h2>
-            <p className="dash-section-sub muted">Guests currently on this cluster.</p>
+            <h2 className="card-title">Guests</h2>
+            <p className="dash-section-sub muted">
+              {host
+                ? `${host.os}/${host.arch} · ${host.driver} · kvm ${host.kvm ? 'yes' : 'no'}`
+                : 'Loading host…'}
+            </p>
           </div>
         </div>
         {loading && !vms.length ? (
@@ -81,18 +64,12 @@ export default function Overview() {
         ) : vms.length === 0 ? (
           <div className="dash-empty card">
             <strong>No guests yet</strong>
-            <p className="muted">Create a guest to start a machine on the cluster.</p>
-            <div className="dash-empty-actions">
-              <Link to="/guests?new=1" className="btn-icon">
-                <Icon name="plus" size={16} />
-                <span>Create guest</span>
-              </Link>
-            </div>
+            <p className="muted">Use Create guest in the header to start a machine.</p>
           </div>
         ) : (
           <div className="guest-grid">
             {vms.slice(0, 8).map((vm) => (
-              <Link key={vm.id} to="/guests" className="guest-card">
+              <Link key={vm.id} to={`/vm/${vm.id}/summary`} className="guest-card">
                 <div className="guest-card-top">
                   <span className={`guest-orb ${vm.state}`} />
                   <strong>{vm.spec?.name || vm.id}</strong>

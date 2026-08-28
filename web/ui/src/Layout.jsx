@@ -1,40 +1,28 @@
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { api, clearToken, getToken } from './api'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
+import { api, clearToken, getToken } from './api'
 import { Icon } from './components/Icons'
 import { applyTheme } from './theme'
 import { useConfirm } from './components/Confirm'
+import { useInventory } from './useInventory'
+import ResourceTree from './components/ResourceTree'
+import TaskLog from './components/TaskLog'
+import GuestWizard from './components/GuestWizard'
 
-const SIDEBAR_KEY = 'pertisk_vm_sidebar_collapsed'
-
-const NAV = [
-  { to: '/', label: 'Overview', icon: 'overview', end: true },
-  { to: '/guests', label: 'Guests', icon: 'guests' },
-  { to: '/storage', label: 'Storage', icon: 'disk' },
-  { to: '/networks', label: 'Networks', icon: 'network' },
-  { to: '/cluster', label: 'Cluster', icon: 'cluster' },
-  { to: '/activity', label: 'Activity', icon: 'activity' },
-  { to: '/users', label: 'Users', icon: 'users', adminOnly: true },
-]
-
-function resolveTitle(pathname) {
-  const match = NAV.filter((n) =>
-    n.end ? pathname === n.to : pathname === n.to || pathname.startsWith(`${n.to}/`),
-  ).sort((a, b) => b.to.length - a.to.length)[0]
-  return match?.label ?? 'Pertisk VM'
-}
+const TREE_KEY = 'pertisk_vm_tree_collapsed'
 
 export default function Layout() {
   const nav = useNavigate()
   const location = useLocation()
   const confirm = useConfirm()
+  const inv = useInventory()
   const [user, setUser] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === 'true')
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(TREE_KEY) === 'true')
+  const [wizard, setWizard] = useState(false)
   const userMenuRef = useRef(null)
-  const title = resolveTitle(location.pathname)
 
   useEffect(() => {
     applyTheme(theme)
@@ -59,7 +47,7 @@ export default function Layout() {
   }, [location.pathname])
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_KEY, String(collapsed))
+    localStorage.setItem(TREE_KEY, String(collapsed))
   }, [collapsed])
 
   useEffect(() => {
@@ -88,94 +76,126 @@ export default function Layout() {
 
   const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
   const canWrite = user?.role && user.role !== 'viewer'
+  const quorum = inv.cluster?.quorum !== false
 
   return (
-    <div className="shell">
-      <div
-        className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
-        aria-hidden={!mobileOpen}
-        onClick={() => setMobileOpen(false)}
-      />
-      <aside className={`sidebar${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
-        <div className="sidebar-header">
-          <div className="brand">
-            <span className="brand-mark" aria-hidden>
-              <Icon name="guests" size={16} />
-            </span>
-            <div className="brand-text">
-              <span>
-                Pertisk <span className="accent">VM</span>
-              </span>
-            </div>
-          </div>
+    <div className="pve-shell">
+      <header className="pve-header">
+        <button
+          type="button"
+          className="pve-icon-btn pve-mobile-toggle"
+          onClick={() => setMobileOpen((v) => !v)}
+          aria-label="Toggle resource tree"
+        >
+          <Icon name="menu" size={18} />
+        </button>
+        <div className="pve-brand">
+          <span className="brand-mark" aria-hidden>
+            <Icon name="guests" size={15} />
+          </span>
+          <span>
+            Pertisk <span className="accent">VM</span>
+          </span>
+        </div>
+        <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
+          <Icon name={quorum ? 'check' : 'alert'} size={13} />
+          {quorum ? 'Quorate' : 'No quorum'}
+        </span>
+        <div className="pve-header-spacer" />
+        {canWrite && (
+          <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
+            <Icon name="plus" size={15} />
+            <span>Create guest</span>
+          </button>
+        )}
+        <button
+          type="button"
+          className="pve-icon-btn"
+          onClick={inv.refresh}
+          title="Refresh"
+          aria-label="Refresh"
+        >
+          <Icon name="refresh" size={16} />
+        </button>
+        <div className="user-menu" ref={userMenuRef}>
           <button
             type="button"
-            className={`sidebar-collapse-btn${!collapsed ? ' anchor-right' : ''}`}
-            onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
+            onClick={() => setShowUserMenu((v) => !v)}
           >
-            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={16} />
+            <span className="user-avatar">{initial}</span>
+            <span className="user-name">{user?.username || '…'}</span>
           </button>
+          {showUserMenu && (
+            <div className="user-menu-dropdown">
+              <div className="user-menu-meta">{user?.role || 'session'}</div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = theme === 'dark' ? 'light' : 'dark'
+                  setTheme(next)
+                  applyTheme(next)
+                }}
+              >
+                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </button>
+              <button type="button" onClick={logout}>
+                <Icon name="logout" size={16} />
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
-        <nav className="nav" aria-label="Primary">
-          {NAV.filter((n) => !n.adminOnly || user?.role === 'admin').map(({ to, label, icon, end }) => (
-            <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
-              <Icon name={icon} className="icon" size={18} />
-              <span className="nav-label">{label}</span>
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
+      </header>
 
-      <div className={`main${mobileOpen ? ' sidebar-open' : ''}`}>
-        <header className="topbar">
-          <div className="topbar-left">
-            <button
-              type="button"
-              className="secondary topbar-menu-btn"
-              onClick={() => setMobileOpen(true)}
-              aria-label="Open menu"
-            >
-              <Icon name="menu" size={18} />
-            </button>
-            <h1 className="topbar-title">{title}</h1>
-          </div>
-          <div className="user-menu" ref={userMenuRef}>
-            <button
-              type="button"
-              className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
-              onClick={() => setShowUserMenu((v) => !v)}
-            >
-              <span className="user-avatar">{initial}</span>
-              <span className="user-name">{user?.username || '…'}</span>
-            </button>
-            {showUserMenu && (
-              <div className="user-menu-dropdown">
-                <div className="user-menu-meta">{user?.role || 'session'}</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = theme === 'dark' ? 'light' : 'dark'
-                    setTheme(next)
-                    applyTheme(next)
-                  }}
-                >
-                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-                  {theme === 'dark' ? 'Light' : 'Dark'}
-                </button>
-                <button type="button" onClick={logout}>
-                  <Icon name="logout" size={16} />
-                  Sign out
-                </button>
-              </div>
-            )}
-          </div>
-        </header>
-        <main className="content">
-          <Outlet context={{ user, canWrite }} />
+      <div className="pve-body">
+        <div
+          className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
+          aria-hidden={!mobileOpen}
+          onClick={() => setMobileOpen(false)}
+        />
+        <aside className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
+          <ResourceTree
+            cluster={inv.cluster}
+            host={inv.host}
+            vms={inv.vms}
+            volumes={inv.volumes}
+            networks={inv.networks}
+            isos={inv.isos}
+          />
+          <button
+            type="button"
+            className="pve-tree-collapse"
+            onClick={() => setCollapsed((v) => !v)}
+            title={collapsed ? 'Expand tree' : 'Collapse tree'}
+            aria-label={collapsed ? 'Expand tree' : 'Collapse tree'}
+          >
+            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={14} />
+          </button>
+        </aside>
+
+        <main className="pve-main">
+          <Outlet context={{ user, canWrite, inv }} />
         </main>
       </div>
+
+      <TaskLog tasks={inv.tasks} />
+
+      {wizard && (
+        <GuestWizard
+          volumes={inv.volumes}
+          isos={inv.isos}
+          networks={inv.networks}
+          host={inv.host}
+          cluster={inv.cluster}
+          onClose={() => setWizard(false)}
+          onCreated={async () => {
+            setWizard(false)
+            await inv.refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

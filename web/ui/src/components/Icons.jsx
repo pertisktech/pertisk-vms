@@ -27,6 +27,15 @@ import {
   HiOutlineX,
   HiOutlineRefresh,
   HiOutlineCollection,
+  HiOutlineChevronRight,
+  HiOutlineChevronDown,
+  HiOutlineChevronUp,
+  HiOutlineFolder,
+  HiOutlineOfficeBuilding,
+  HiOutlineSearch,
+  HiOutlineDocumentText,
+  HiOutlineCog,
+  HiOutlineClock,
 } from 'react-icons/hi'
 
 const ICONS = {
@@ -58,6 +67,15 @@ const ICONS = {
   migrate: HiOutlineSwitchHorizontal,
   refresh: HiOutlineRefresh,
   volumes: HiOutlineCollection,
+  'chevron-right': HiOutlineChevronRight,
+  'chevron-down': HiOutlineChevronDown,
+  'chevron-up': HiOutlineChevronUp,
+  folder: HiOutlineFolder,
+  datacenter: HiOutlineOfficeBuilding,
+  search: HiOutlineSearch,
+  summary: HiOutlineDocumentText,
+  hardware: HiOutlineCog,
+  clock: HiOutlineClock,
 }
 
 export function Icon({ name, size = 18, className = '' }) {
