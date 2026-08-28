@@ -110,15 +110,16 @@ Demo:  flash ISO → install to disk → reboot → http://<host>:7480/ creates 
 Skip:  writing a hypervisor; Windows/graphical guest VGA (still Cloud Hypervisor serial)
 
 This is a Linux installer image that ships pertisk, not a new VMM.
-Today you can `sudo ./scripts/install-node.sh` on Linux KVM. `./scripts/build-iso.sh` (mkosi) builds a flashable disk image.
+Today you can `sudo ./scripts/install-node.sh` on Linux KVM. `./scripts/build-iso.sh` (mkosi) builds a flashable ISO.
 
   [x] Pick base: Debian bookworm via mkosi (not a custom kernel)
   [x] Image contents: Linux + KVM + cloud-hypervisor + hypervisor-fw + pertiskd + CLI
   [x] systemd: pertiskd on boot, listen 0.0.0.0:7480, bootstrap admin password
-  [x] Installer: disk layout (EFI + root), hostname, network, root/admin (`pertisk-install`)
-  [x] Build pipeline: `scripts/build-iso.sh` → `out/pertisk-node.raw` (x86_64; Linux build host)
-  [x] First-boot: TTY/issue + `/etc/pertisk/admin`; join cluster still via CLI/UI
+  [x] Installer: disk layout (EFI + root); `pertisk-install --list` / `--disk … --yes`
+  [x] Build pipeline: `scripts/build-iso.sh` → `out/pertisk-node.iso` (x86_64; Linux + mkosi)
+  [x] First-boot: TTY/issue + `/etc/pertisk/admin`; optional join via `/etc/pertisk/join`
   [x] Hardware check: SVM/VMX + `/dev/kvm` (`pertisk-kvm-check`; install refuses without it)
+  [x] Flash helper: `scripts/flash.sh` (refuses to wipe the running root)
   [ ] Proof: one box (e.g. 16c/64G) flashed from USB, Alpine guest via serial
 
 
@@ -159,6 +160,7 @@ v2.0  phase 5      cluster + HA  (+ phase 6 HCI if replica/RBD is in play)
 v3.0  phase 7      flashable node image (Proxmox-style)
       done:   Debian mkosi overlay, systemd, firstboot, kvm check, pertisk-install
       path:   sudo ./scripts/install-node.sh  (existing Linux)
-              ./scripts/build-iso.sh          (Linux + mkosi → out/*.raw)
+              ./scripts/build-iso.sh          (Linux + mkosi → out/*.iso)
+              sudo ./scripts/flash.sh --image out/pertisk-node.iso --disk /dev/sdX --yes
       open:   proof on real hardware (flash USB, Alpine guest)
       not in v3.0: QEMU VGA / noVNC (separate; needed for Ubuntu Desktop/Windows)

@@ -44,6 +44,13 @@ if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
   fi
 fi
 
+if [[ -r /etc/pertisk/join ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  source /etc/pertisk/join
+  set +a
+fi
+
 if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
   PERTISK_ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
   if [[ -z "$PERTISK_ADMIN_PASSWORD" ]]; then
@@ -56,6 +63,16 @@ fi
 umask 077
 printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
 chmod 600 "$ENV_FILE" "$PASS_FILE"
+
+if [[ -n "${PERTISK_JOIN:-}" ]]; then
+  if ! grep -q '^PERTISK_JOIN=' "$ENV_FILE" 2>/dev/null; then
+    printf 'PERTISK_JOIN=%s\n' "$PERTISK_JOIN" >>"$ENV_FILE"
+  fi
+  if [[ -n "${PERTISK_JOIN_USER:-}" ]] && ! grep -q '^PERTISK_JOIN_USER=' "$ENV_FILE"; then
+    printf 'PERTISK_JOIN_USER=%s\n' "$PERTISK_JOIN_USER" >>"$ENV_FILE"
+  fi
+  echo "pertisk-firstboot: will join $PERTISK_JOIN"
+fi
 
 ips="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ips="${ips:-<this-host>}"

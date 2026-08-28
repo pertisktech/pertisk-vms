@@ -1,21 +1,35 @@
 #!/bin/bash
 # Copy the running live/appliance root onto a target disk (Proxmox-style install).
 # Usage: pertisk-install --disk /dev/nvme0n1 --yes
+#        pertisk-install --list
 set -euo pipefail
 
 DISK=""
 YES=0
+LIST=0
 ESP_MIB=512
 MIN_GIB=20
 
 die() { echo "pertisk-install: $*" >&2; exit 1; }
 
+list_disks() {
+  echo "NAME SIZE MODEL TRAN"
+  if command -v lsblk >/dev/null; then
+    lsblk -d -n -o NAME,SIZE,MODEL,TRAN 2>/dev/null | grep -Ev '^(loop|sr)' || true
+  else
+    echo "(lsblk not found)"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --disk) DISK="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
+    --list) LIST=1; shift ;;
+    --min-gib) MIN_GIB="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
+      echo "       pertisk-install --list"
       echo "Installs this live image onto DISK (GPT: EFI + ext4). Wipes DISK."
       exit 0
       ;;
@@ -23,9 +37,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$LIST" -eq 1 ]]; then
+  list_disks
+  exit 0
+fi
+
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 /usr/sbin/pertisk-kvm-check || die "refusing install: this machine cannot run KVM"
-[[ -n "$DISK" ]] || die "pass --disk /dev/sdX or /dev/nvme0n1"
+if [[ -z "$DISK" ]]; then
+  echo "pertisk-install: pass --disk (candidates):" >&2
+  list_disks >&2
+  die "pass --disk /dev/sdX or /dev/nvme0n1"
+fi
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 

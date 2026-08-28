@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Build a flashable disk image (mkosi) on Linux. Output: out/pertisk-node.raw
+# Build a flashable ISO (mkosi) on Linux. Output: out/pertisk-node.iso (or .raw if FORMAT=disk)
 # Usage: ./scripts/build-iso.sh
-# Flash: sudo dd if=out/pertisk-node.raw of=/dev/sdX bs=4M status=progress conv=fsync
-# Live install to internal disk after booting that image: pertisk-install --disk /dev/nvme0n1 --yes
+#        PERTISK_IMAGE_FORMAT=disk ./scripts/build-iso.sh
+# Flash ISO: sudo ./scripts/flash.sh --image out/pertisk-node.iso --disk /dev/sdX --yes
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 OVERLAY="$ROOT/iso/overlay"
 OUT="$ROOT/out"
+FORMAT="${PERTISK_IMAGE_FORMAT:-iso}"
 
 die() { echo "build-iso: $*" >&2; exit 1; }
 
@@ -33,11 +34,18 @@ install -m 755 "$(command -v cloud-hypervisor)" "$OVERLAY/usr/bin/cloud-hypervis
 install -m 644 "$FIRMWARE" "$OVERLAY/usr/lib/cloud-hypervisor/hypervisor-fw"
 chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-firstboot" "$OVERLAY/usr/sbin/pertisk-install"
 
-echo "mkosi (needs root for the image)"
-( cd "$ROOT/iso" && mkosi --force )
+echo "mkosi format=$FORMAT (needs root for the image)"
+if ! ( cd "$ROOT/iso" && mkosi --force --format "$FORMAT" ); then
+  if [[ "$FORMAT" == "iso" ]]; then
+    echo "mkosi --format iso failed; retrying as disk image" >&2
+    ( cd "$ROOT/iso" && mkosi --force --format disk )
+  else
+    exit 1
+  fi
+fi
 
 echo
 echo "=== image ==="
-ls -lh "$OUT" || ls -lh "$ROOT/iso"/pertisk-node* || true
-echo "Flash the .raw/.disk image to USB, boot it, then either use it as the OS disk"
-echo "or run: pertisk-install --disk /dev/nvme0n1 --yes"
+ls -lh "$OUT" 2>/dev/null || ls -lh "$ROOT/iso"/pertisk-node* 2>/dev/null || true
+echo "Flash: sudo ./scripts/flash.sh --image out/pertisk-node.iso --disk /dev/sdX --yes"
+echo "Then boot USB. To install to NVMe: pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes"

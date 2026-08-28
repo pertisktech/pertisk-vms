@@ -1,0 +1,3 @@
+# Optional cluster join. Copied into daemon.env on first boot if present.
+# PERTISK_JOIN=http://192.168.1.10:7480
+# PERTISK_JOIN_USER=admin

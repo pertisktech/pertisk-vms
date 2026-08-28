@@ -1,0 +1,3 @@
+pertisk-vm node
+Install to disk:  pertisk-install --disk /dev/nvme0n1 --yes
+UI after first boot: http://<this-host>:7480/  (admin password: /etc/pertisk/admin)
