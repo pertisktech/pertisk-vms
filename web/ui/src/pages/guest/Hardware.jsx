@@ -1,15 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api, disksOf, netsOf } from '../../api'
-import { Btn } from '../../components/Icons'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, disksOf, formatBytes, netsOf } from '../../api'
+import { Btn, Icon } from '../../components/Icons'
+import Modal from '../../components/Modal'
+import { useConfirm } from '../../components/Confirm'
 import { useGuest } from '../GuestView'
+
+const ADD_KINDS = [
+  { key: 'disk', label: 'Hard Disk', icon: 'disk' },
+  { key: 'cdrom', label: 'CD/DVD Drive', icon: 'volumes' },
+  { key: 'nic', label: 'Network Device', icon: 'network' },
+]
 
 export default function GuestHardware() {
   const { vm, canWrite, inv } = useGuest()
-  const [iso, setIso] = useState('')
-  const [volumeId, setVolumeId] = useState('')
-  const [networkId, setNetworkId] = useState('')
-  const [nicIp, setNicIp] = useState('')
-  const [edit, setEdit] = useState({ name: '', vcpus: 1, memory_mib: 512, ha: true })
+  const confirm = useConfirm()
+  const [addOpen, setAddOpen] = useState(false)
+  const [dialog, setDialog] = useState(null)
+  const [form, setForm] = useState({})
+  const addRef = useRef(null)
 
   const running = vm.state === 'running'
   const freeVolumes = useMemo(() => {
@@ -18,261 +26,342 @@ export default function GuestHardware() {
     )
     return inv.volumes.filter((v) => !used.has(v.id))
   }, [inv.vms, inv.volumes])
-  const disks = disksOf(vm).filter((d) => !d.cdrom)
-  const cdroms = disksOf(vm).filter((d) => d.cdrom || d.iso_name)
 
   useEffect(() => {
-    setEdit({
-      name: vm.spec?.name || '',
-      vcpus: vm.spec?.vcpus || 1,
-      memory_mib: vm.spec?.memory_mib || 512,
-      ha: vm.spec?.ha !== false,
-    })
-  }, [vm.id])
-
-  useEffect(() => {
-    if (inv.isos.length && !iso) setIso(inv.isos[0].name)
-  }, [inv.isos, iso])
-
-  useEffect(() => {
-    if (freeVolumes.length && !freeVolumes.some((v) => v.id === volumeId)) {
-      setVolumeId(freeVolumes[0].id)
+    if (!addOpen) return
+    function onPointerDown(e) {
+      if (addRef.current && !addRef.current.contains(e.target)) setAddOpen(false)
     }
-  }, [freeVolumes, volumeId])
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [addOpen])
 
-  useEffect(() => {
-    if (inv.networks.length && !networkId) setNetworkId(inv.networks[0].id)
-  }, [inv.networks, networkId])
+  function openDialog(kind) {
+    setAddOpen(false)
+    if (kind === 'disk') setForm({ volume_id: freeVolumes[0]?.id || '' })
+    if (kind === 'cdrom') setForm({ iso: inv.isos[0]?.name || '' })
+    if (kind === 'nic') setForm({ network_id: inv.networks[0]?.id || '', ip: '' })
+    if (kind === 'memory') setForm({ memory_mib: vm.spec?.memory_mib || 512 })
+    if (kind === 'cpu') setForm({ vcpus: vm.spec?.vcpus || 1 })
+    if (kind === 'name') setForm({ name: vm.spec?.name || '', ha: vm.spec?.ha !== false })
+    setDialog(kind)
+  }
+
+  async function submit(e) {
+    e.preventDefault()
+    const kind = dialog
+    setDialog(null)
+    await inv.mutate(() => {
+      if (kind === 'disk') {
+        return api(`/v1/vms/${vm.id}/disks`, {
+          method: 'POST',
+          body: { volume_id: form.volume_id },
+        })
+      }
+      if (kind === 'cdrom') {
+        return api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso: form.iso } })
+      }
+      if (kind === 'nic') {
+        return api(`/v1/vms/${vm.id}/nics`, {
+          method: 'POST',
+          body: { network_id: form.network_id, ip: form.ip?.trim() || undefined },
+        })
+      }
+      const body =
+        kind === 'memory'
+          ? { memory_mib: Number(form.memory_mib) }
+          : kind === 'cpu'
+            ? { vcpus: Number(form.vcpus) }
+            : { name: form.name.trim(), ha: form.ha }
+      return api(`/v1/vms/${vm.id}`, { method: 'PATCH', body })
+    })
+  }
+
+  async function remove(row) {
+    const ok = await confirm({
+      title: `Remove ${row.label}`,
+      message: `Detach ${row.value} from ${vm.spec?.name || vm.id}?`,
+      confirmLabel: 'Detach',
+    })
+    if (!ok) return
+    await inv.mutate(() => api(row.removeUrl, { method: 'DELETE' }))
+  }
+
+  const rows = []
+  rows.push({
+    key: 'name',
+    icon: 'guests',
+    label: 'Name',
+    value: vm.spec?.name || '—',
+    edit: 'name',
+  })
+  rows.push({
+    key: 'memory',
+    icon: 'memory',
+    label: 'Memory',
+    value: `${vm.spec?.memory_mib || 0} MiB`,
+    edit: 'memory',
+    lockedWhileRunning: true,
+  })
+  rows.push({
+    key: 'cpu',
+    icon: 'cpu',
+    label: 'Processors',
+    value: `${vm.spec?.vcpus || 1} vCPU`,
+    edit: 'cpu',
+    lockedWhileRunning: true,
+  })
+  rows.push({
+    key: 'ha',
+    icon: 'cluster',
+    label: 'High Availability',
+    value: vm.spec?.ha !== false ? 'restart on node loss' : 'off',
+    edit: 'name',
+  })
+
+  disksOf(vm)
+    .filter((d) => !d.cdrom)
+    .forEach((d, i) => {
+      const vol = inv.volumes.find((v) => v.id === d.volume_id)
+      rows.push({
+        key: `disk-${d.volume_id || i}`,
+        icon: 'disk',
+        label: `Hard Disk (virtio${i})`,
+        value: `${vol?.name || d.path || 'disk'}${vol?.size_bytes ? `, ${formatBytes(vol.size_bytes)}` : ''}`,
+        removeUrl: d.volume_id ? `/v1/vms/${vm.id}/disks/${d.volume_id}` : null,
+        lockedWhileRunning: true,
+      })
+    })
+
+  disksOf(vm)
+    .filter((d) => d.cdrom || d.iso_name)
+    .forEach((d, i) => {
+      rows.push({
+        key: `cd-${d.iso_name || i}`,
+        icon: 'volumes',
+        label: 'CD/DVD Drive',
+        value: d.iso_name || 'ISO',
+        removeUrl: d.iso_name
+          ? `/v1/vms/${vm.id}/cdrom/${encodeURIComponent(d.iso_name)}`
+          : null,
+        lockedWhileRunning: true,
+      })
+    })
+
+  netsOf(vm).forEach((n, i) => {
+    const net = inv.networks.find((item) => item.id === n.network_id)
+    rows.push({
+      key: `nic-${n.tap || n.mac || i}`,
+      icon: 'network',
+      label: `Network Device (net${i})`,
+      value: [net?.name || n.tap || 'nic', n.ip, n.mac].filter(Boolean).join(', '),
+      removeUrl: n.tap ? `/v1/vms/${vm.id}/nics/${encodeURIComponent(n.tap)}` : null,
+      lockedWhileRunning: true,
+    })
+  })
+
+  const addable = ADD_KINDS.filter((k) => {
+    if (k.key === 'disk') return freeVolumes.length > 0
+    if (k.key === 'cdrom') return inv.isos.length > 0
+    return inv.networks.length > 0
+  })
 
   return (
-    <div className="pve-stack">
+    <div className="pve-hw">
       {canWrite && (
-        <section className="card">
-          <div className="table-meta">General</div>
-          <form
-            className="machine-edit"
-            onSubmit={(e) => {
-              e.preventDefault()
-              const body = { name: edit.name.trim(), ha: edit.ha }
-              if (!running) {
-                body.vcpus = Number(edit.vcpus)
-                body.memory_mib = Number(edit.memory_mib)
-              }
-              inv.mutate(() => api(`/v1/vms/${vm.id}`, { method: 'PATCH', body }))
-            }}
-          >
-            <div className="form-grid">
-              <div className="field">
-                <label htmlFor="edit-name">Name</label>
-                <input
-                  id="edit-name"
-                  required
-                  value={edit.name}
-                  onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="edit-cpu">vCPU</label>
-                <input
-                  id="edit-cpu"
-                  type="number"
-                  min="1"
-                  disabled={running}
-                  value={edit.vcpus}
-                  onChange={(e) => setEdit({ ...edit, vcpus: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="edit-mem">Memory MiB</label>
-                <input
-                  id="edit-mem"
-                  type="number"
-                  min="64"
-                  disabled={running}
-                  value={edit.memory_mib}
-                  onChange={(e) => setEdit({ ...edit, memory_mib: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="machine-edit-row">
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={edit.ha}
-                  onChange={(e) => setEdit({ ...edit, ha: e.target.checked })}
-                />
-                <span className="chk-box" />
-                <span className="chk-label">Restart elsewhere if this node is lost</span>
-              </label>
-              <button type="submit">Save</button>
-            </div>
-          </form>
-          {running && (
-            <p className="muted">
-              vCPU and memory are locked while the guest runs. HA can change at any time.
-            </p>
-          )}
-        </section>
-      )}
-
-      <section className="card">
-        <div className="table-meta">Hard disks</div>
-        {disks.length === 0 && <p className="muted">No data disks.</p>}
-        {disks.map((d) => {
-          const vol = inv.volumes.find((v) => v.id === d.volume_id)
-          return (
-            <div key={d.volume_id || d.path} className="hw-row">
-              <span>{vol?.name || d.path || 'disk'}</span>
-              {canWrite && d.volume_id && (
-                <Btn
-                  variant="secondary"
-                  disabled={running}
-                  onClick={() =>
-                    inv.mutate(() =>
-                      api(`/v1/vms/${vm.id}/disks/${d.volume_id}`, { method: 'DELETE' }),
-                    )
-                  }
-                >
-                  Detach
-                </Btn>
-              )}
-            </div>
-          )
-        })}
-        {canWrite && freeVolumes.length > 0 && (
-          <form
-            className="inline-attach"
-            onSubmit={(e) => {
-              e.preventDefault()
-              inv.mutate(() =>
-                api(`/v1/vms/${vm.id}/disks`, { method: 'POST', body: { volume_id: volumeId } }),
-              )
-            }}
-          >
-            <select value={volumeId} onChange={(e) => setVolumeId(e.target.value)}>
-              {freeVolumes.map((vol) => (
-                <option key={vol.id} value={vol.id}>
-                  {vol.name}
-                </option>
-              ))}
-            </select>
-            <button type="submit" disabled={running}>
-              Attach
+        <div className="pve-hw-bar">
+          <div className="pve-menu" ref={addRef}>
+            <button
+              type="button"
+              className="btn-icon"
+              disabled={running || addable.length === 0}
+              onClick={() => setAddOpen((v) => !v)}
+            >
+              <Icon name="plus" size={15} />
+              <span>Add</span>
+              <Icon name="chevron-down" size={13} />
             </button>
-          </form>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="table-meta">CD/DVD drive</div>
-        {cdroms.length === 0 && <p className="muted">No ISO attached.</p>}
-        {cdroms.map((d) => (
-          <div key={d.iso_name || 'cd'} className="hw-row">
-            <span>{d.iso_name || 'ISO'}</span>
-            {canWrite && d.iso_name && (
-              <Btn
-                variant="secondary"
-                disabled={running}
-                onClick={() =>
-                  inv.mutate(() =>
-                    api(`/v1/vms/${vm.id}/cdrom/${encodeURIComponent(d.iso_name)}`, {
-                      method: 'DELETE',
-                    }),
-                  )
-                }
-              >
-                Detach
-              </Btn>
+            {addOpen && (
+              <div className="pve-menu-list">
+                {addable.map((k) => (
+                  <button key={k.key} type="button" onClick={() => openDialog(k.key)}>
+                    <Icon name={k.icon} size={15} />
+                    {k.label}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
-        ))}
-        {canWrite && inv.isos.length > 0 && (
-          <form
-            className="inline-attach"
-            onSubmit={(e) => {
-              e.preventDefault()
-              inv.mutate(() => api(`/v1/vms/${vm.id}/cdrom`, { method: 'POST', body: { iso } }))
-            }}
-          >
-            <select value={iso} onChange={(e) => setIso(e.target.value)}>
-              {inv.isos.map((item) => (
-                <option key={item.name} value={item.name}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            <button type="submit" disabled={running}>
-              Attach
-            </button>
-          </form>
-        )}
-      </section>
+          {running && (
+            <span className="muted">Stop the guest to change hardware. Name and HA stay editable.</span>
+          )}
+        </div>
+      )}
 
-      <section className="card">
-        <div className="table-meta">Network devices</div>
-        {netsOf(vm).length === 0 && <p className="muted">No NICs.</p>}
-        {netsOf(vm).map((n, i) => {
-          const net = inv.networks.find((item) => item.id === n.network_id)
-          return (
-            <div key={n.tap || n.mac || i} className="hw-row">
-              <span>
-                {net?.name || n.tap || n.mac || 'nic'}
-                {n.ip ? ` · ${n.ip}` : ''}
-                {n.mac ? <span className="muted"> · {n.mac}</span> : null}
-              </span>
-              {canWrite && n.tap && (
-                <Btn
-                  variant="secondary"
-                  disabled={running}
-                  onClick={() =>
-                    inv.mutate(() =>
-                      api(`/v1/vms/${vm.id}/nics/${encodeURIComponent(n.tap)}`, {
-                        method: 'DELETE',
-                      }),
-                    )
-                  }
+      <div className="table-shell">
+        <table className="pve-hw-table">
+          <tbody>
+            {rows.map((row) => {
+              const locked = running && row.lockedWhileRunning
+              return (
+                <tr key={row.key}>
+                  <td className="pve-hw-label">
+                    <span>
+                      <Icon name={row.icon} size={15} />
+                      {row.label}
+                    </span>
+                  </td>
+                  <td className="pve-hw-value">{row.value}</td>
+                  <td className="pve-hw-act">
+                    {canWrite && row.edit && (
+                      <Btn variant="secondary" disabled={locked} onClick={() => openDialog(row.edit)}>
+                        Edit
+                      </Btn>
+                    )}
+                    {canWrite && row.removeUrl && (
+                      <Btn variant="secondary" disabled={locked} onClick={() => remove(row)}>
+                        Remove
+                      </Btn>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {dialog && (
+        <Modal
+          title={
+            {
+              disk: 'Add hard disk',
+              cdrom: 'Add CD/DVD drive',
+              nic: 'Add network device',
+              memory: 'Edit memory',
+              cpu: 'Edit processors',
+              name: 'Edit name and HA',
+            }[dialog]
+          }
+          onClose={() => setDialog(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setDialog(null)}>
+                Cancel
+              </button>
+              <button type="submit" form="hw-form">
+                {dialog === 'disk' || dialog === 'cdrom' || dialog === 'nic' ? 'Add' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="hw-form" onSubmit={submit}>
+            {dialog === 'disk' && (
+              <div className="field">
+                <label htmlFor="hw-vol">Volume</label>
+                <select
+                  id="hw-vol"
+                  value={form.volume_id}
+                  onChange={(e) => setForm({ volume_id: e.target.value })}
                 >
-                  Detach
-                </Btn>
-              )}
-            </div>
-          )
-        })}
-        {canWrite && inv.networks.length > 0 && (
-          <form
-            className="inline-attach"
-            onSubmit={(e) => {
-              e.preventDefault()
-              const ip = nicIp.trim()
-              inv
-                .mutate(() =>
-                  api(`/v1/vms/${vm.id}/nics`, {
-                    method: 'POST',
-                    body: { network_id: networkId, ip: ip || undefined },
-                  }),
-                )
-                .then(() => setNicIp(''))
-            }}
-          >
-            <select value={networkId} onChange={(e) => setNetworkId(e.target.value)}>
-              {inv.networks.map((n) => (
-                <option key={n.id} value={n.id}>
-                  {n.name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={nicIp}
-              onChange={(e) => setNicIp(e.target.value)}
-              placeholder="IP (optional)"
-              aria-label="Static IP"
-            />
-            <button type="submit" disabled={running}>
-              Attach
-            </button>
+                  {freeVolumes.map((vol) => (
+                    <option key={vol.id} value={vol.id}>
+                      {vol.name} · {formatBytes(vol.size_bytes)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {dialog === 'cdrom' && (
+              <div className="field">
+                <label htmlFor="hw-iso">ISO image</label>
+                <select id="hw-iso" value={form.iso} onChange={(e) => setForm({ iso: e.target.value })}>
+                  {inv.isos.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {dialog === 'nic' && (
+              <>
+                <div className="field">
+                  <label htmlFor="hw-net">Network</label>
+                  <select
+                    id="hw-net"
+                    value={form.network_id}
+                    onChange={(e) => setForm({ ...form, network_id: e.target.value })}
+                  >
+                    {inv.networks.map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.name} · {n.cidr}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="hw-ip">Static IP (optional)</label>
+                  <input
+                    id="hw-ip"
+                    value={form.ip}
+                    onChange={(e) => setForm({ ...form, ip: e.target.value })}
+                    placeholder="leave empty for DHCP"
+                  />
+                </div>
+              </>
+            )}
+            {dialog === 'memory' && (
+              <div className="field">
+                <label htmlFor="hw-mem">Memory (MiB)</label>
+                <input
+                  id="hw-mem"
+                  type="number"
+                  min="64"
+                  required
+                  value={form.memory_mib}
+                  onChange={(e) => setForm({ memory_mib: e.target.value })}
+                />
+              </div>
+            )}
+            {dialog === 'cpu' && (
+              <div className="field">
+                <label htmlFor="hw-cpu">vCPU</label>
+                <input
+                  id="hw-cpu"
+                  type="number"
+                  min="1"
+                  required
+                  value={form.vcpus}
+                  onChange={(e) => setForm({ vcpus: e.target.value })}
+                />
+              </div>
+            )}
+            {dialog === 'name' && (
+              <>
+                <div className="field">
+                  <label htmlFor="hw-name">Name</label>
+                  <input
+                    id="hw-name"
+                    required
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  />
+                </div>
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={form.ha}
+                    onChange={(e) => setForm({ ...form, ha: e.target.checked })}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">Restart elsewhere if this node is lost</span>
+                </label>
+              </>
+            )}
           </form>
-        )}
-      </section>
+        </Modal>
+      )}
     </div>
   )
 }

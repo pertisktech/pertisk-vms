@@ -28,24 +28,33 @@ function nodeList(cluster, host) {
 }
 
 function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf }) {
-  const body = (
-    <>
-      <span className="tree-twisty" onClick={leaf ? undefined : onToggle}>
-        {!leaf && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
-      </span>
-      <Icon name={icon} size={14} className="tree-icon" />
-      <span className="tree-label">{label}</span>
-      {status && <span className={`tree-dot ${status}`} />}
-      {badge != null && <span className="tree-badge">{badge}</span>}
-    </>
-  )
   return (
     <NavLink
       to={to}
       className={({ isActive }) => `tree-row${isActive ? ' active' : ''}`}
       style={{ paddingLeft: `${0.4 + depth * 0.85}rem` }}
     >
-      {body}
+      <span
+        className="tree-twisty"
+        role={leaf ? undefined : 'button'}
+        aria-label={leaf ? undefined : open ? 'Collapse' : 'Expand'}
+        onClick={
+          leaf
+            ? undefined
+            : (e) => {
+                // Collapsing a branch must not also select it.
+                e.preventDefault()
+                e.stopPropagation()
+                onToggle()
+              }
+        }
+      >
+        {!leaf && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
+      </span>
+      <Icon name={icon} size={14} className="tree-icon" />
+      <span className="tree-label">{label}</span>
+      {status && <span className={`tree-dot ${status}`} />}
+      {badge != null && <span className="tree-badge">{badge}</span>}
     </NavLink>
   )
 }

@@ -1,4 +1,4 @@
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
 import { api, clearToken, getToken } from './api'
 import { Icon } from './components/Icons'
@@ -89,14 +89,14 @@ export default function Layout() {
         >
           <Icon name="menu" size={18} />
         </button>
-        <div className="pve-brand">
+        <Link to="/dc/summary" className="pve-brand">
           <span className="brand-mark" aria-hidden>
             <Icon name="guests" size={15} />
           </span>
           <span>
             Pertisk <span className="accent">VM</span>
           </span>
-        </div>
+        </Link>
         <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
           <Icon name={quorum ? 'check' : 'alert'} size={13} />
           {quorum ? 'Quorate' : 'No quorum'}
