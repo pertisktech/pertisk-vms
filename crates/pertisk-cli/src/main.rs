@@ -8,11 +8,10 @@ use pertisk_api::{
 };
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
-    ClusterStatus,
-    ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
-    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
-    ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec, VolumeFormat,
-    VolumeId, VolumeRecord, default_home, format_size, parse_size,
+    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN,
+    DiskSpec, HostInfo, ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId,
+    NetworkRecord, ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId,
+    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -123,6 +122,18 @@ enum VmCommand {
         cmdline: Option<String>,
         #[arg(long)]
         disk: Vec<PathBuf>,
+        /// ISO library name, or a host path to import first.
+        #[arg(long)]
+        iso: Option<String>,
+        /// Create and attach a new boot disk (e.g. 32G). Used with --iso.
+        #[arg(long)]
+        disk_size: Option<String>,
+        /// Attach this network (id or name).
+        #[arg(long)]
+        net: Option<String>,
+        /// Start the guest after create (ISO/disk attach included).
+        #[arg(long)]
+        start: bool,
     },
     Start {
         id: VmId,
@@ -559,9 +570,25 @@ async fn run() -> Result<()> {
                 firmware,
                 cmdline,
                 disk,
+                iso,
+                disk_size,
+                net,
+                start,
             } => {
+                let host: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
+                let firmware = firmware.or(host.firmware.clone());
+                if iso.is_some() && kernel.is_none() && firmware.is_none() {
+                    bail!(
+                        "ISO boot needs firmware (hypervisor-fw). Install it or pass --firmware. See scripts/linux-host.sh"
+                    );
+                }
+                let iso_name = if let Some(iso) = iso.as_ref() {
+                    Some(ensure_iso(&client, &cli.url, iso).await?)
+                } else {
+                    None
+                };
                 let spec = VmSpec {
-                    name,
+                    name: name.clone(),
                     vcpus: cpus,
                     memory_mib: memory,
                     kernel,
@@ -582,7 +609,54 @@ async fn run() -> Result<()> {
                     serial_log: None,
                     ha: true,
                 };
-                let record: VmRecord = post_json(&client, &cli.url, "/v1/vms", &spec).await?;
+                let mut record: VmRecord = post_json(&client, &cli.url, "/v1/vms", &spec).await?;
+                if let Some(size) = disk_size {
+                    let vol: VolumeRecord = post_json(
+                        &client,
+                        &cli.url,
+                        "/v1/volumes",
+                        &CreateVolumeRequest {
+                            name: format!("{name}-disk"),
+                            size_bytes: parse_size(&size)?,
+                            format: VolumeFormat::Raw,
+                            replicas: None,
+                        },
+                    )
+                    .await?;
+                    record = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{}/disks", record.id),
+                        &AttachDiskRequest { volume_id: vol.id },
+                    )
+                    .await?;
+                }
+                if let Some(iso_name) = iso_name {
+                    record = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{}/cdrom", record.id),
+                        &AttachIsoRequest { iso: iso_name },
+                    )
+                    .await?;
+                }
+                if let Some(net) = net {
+                    let net_id = resolve_network(&client, &cli.url, &net).await?;
+                    record = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{}/nics", record.id),
+                        &AttachNicRequest {
+                            network_id: net_id,
+                            ip: None,
+                        },
+                    )
+                    .await?;
+                }
+                if start {
+                    record = post_empty(&client, &cli.url, &format!("/v1/vms/{}/start", record.id))
+                        .await?;
+                }
                 print_vm(&record);
             }
             VmCommand::Start { id } => {
@@ -979,6 +1053,38 @@ fn load_token() -> Option<String> {
         .or_else(|| std::fs::read_to_string(token_path()).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+async fn ensure_iso(client: &reqwest::Client, base: &str, iso: &str) -> Result<String> {
+    let path = PathBuf::from(iso);
+    if path.is_file() {
+        let record: IsoRecord = post_json(
+            client,
+            base,
+            "/v1/isos",
+            &ImportIsoRequest { path, name: None },
+        )
+        .await?;
+        return Ok(record.name);
+    }
+    let isos: Vec<IsoRecord> = get_json(client, base, "/v1/isos").await?;
+    if isos.iter().any(|item| item.name == iso) {
+        return Ok(iso.to_string());
+    }
+    bail!(
+        "ISO '{iso}' is not in the library and is not a file. Import it first: pertisk iso import /path/to.iso"
+    )
+}
+
+async fn resolve_network(client: &reqwest::Client, base: &str, net: &str) -> Result<NetworkId> {
+    if let Ok(id) = net.parse::<NetworkId>() {
+        return Ok(id);
+    }
+    let nets: Vec<NetworkRecord> = get_json(client, base, "/v1/networks").await?;
+    nets.into_iter()
+        .find(|n| n.name == net)
+        .map(|n| n.id)
+        .ok_or_else(|| anyhow::anyhow!("network '{net}' not found (id or name)"))
 }
 
 fn with_auth(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

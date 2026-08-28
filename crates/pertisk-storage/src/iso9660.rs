@@ -3,7 +3,10 @@
 const SECTOR: usize = 2048;
 
 pub fn cidata_iso(user_data: &[u8], meta_data: &[u8]) -> Vec<u8> {
-    write_joliet_iso("cidata", &[("user-data", user_data), ("meta-data", meta_data)])
+    write_joliet_iso(
+        "cidata",
+        &[("user-data", user_data), ("meta-data", meta_data)],
+    )
 }
 
 fn write_joliet_iso(volume_id: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -99,7 +102,14 @@ fn write_pvd(
     sector[124..132].copy_from_slice(&both32(pt_size));
     sector[132..136].copy_from_slice(&pt_le.to_le_bytes());
     sector[140..144].copy_from_slice(&pt_be.to_be_bytes());
-    write_dir_record_into(&mut sector[156..190], root_lba, SECTOR as u32, 0x02, &[0], false);
+    write_dir_record_into(
+        &mut sector[156..190],
+        root_lba,
+        SECTOR as u32,
+        0x02,
+        &[0],
+        false,
+    );
     sector[881] = 1; // file structure version
 }
 
@@ -125,7 +135,14 @@ fn write_svd(
     sector[124..132].copy_from_slice(&both32(pt_size));
     sector[132..136].copy_from_slice(&pt_le.to_le_bytes());
     sector[140..144].copy_from_slice(&pt_be.to_be_bytes());
-    write_dir_record_into(&mut sector[156..190], root_lba, SECTOR as u32, 0x02, &[0], true);
+    write_dir_record_into(
+        &mut sector[156..190],
+        root_lba,
+        SECTOR as u32,
+        0x02,
+        &[0],
+        true,
+    );
     sector[881] = 1;
 }
 
@@ -195,7 +212,14 @@ fn dir_record(extent: u32, data_len: u32, flags: u8, name: &[u8], _joliet: bool)
     rec
 }
 
-fn write_dir_record_into(dest: &mut [u8], extent: u32, data_len: u32, flags: u8, name: &[u8], joliet: bool) {
+fn write_dir_record_into(
+    dest: &mut [u8],
+    extent: u32,
+    data_len: u32,
+    flags: u8,
+    name: &[u8],
+    joliet: bool,
+) {
     let rec = dir_record(extent, data_len, flags, name, joliet);
     dest[..rec.len()].copy_from_slice(&rec);
 }
@@ -242,7 +266,10 @@ mod tests {
         let vol = std::str::from_utf8(&iso[32768 + 40..32768 + 46]).unwrap();
         assert_eq!(vol, "CIDATA");
         assert_eq!(&iso[34816..34822], b"\x02CD001");
-        let joliet_user: Vec<u8> = "user-data".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        let joliet_user: Vec<u8> = "user-data"
+            .encode_utf16()
+            .flat_map(|u| u.to_be_bytes())
+            .collect();
         assert!(
             iso.windows(joliet_user.len()).any(|w| w == joliet_user),
             "missing Joliet user-data name"

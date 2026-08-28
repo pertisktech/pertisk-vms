@@ -564,6 +564,7 @@ export default function Guests() {
           isos={isos}
           networks={networks}
           host={host}
+          cluster={cluster}
           onClose={() => {
             setOpenCreate(false)
             if (params.get('new')) {

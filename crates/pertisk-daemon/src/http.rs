@@ -10,15 +10,14 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
+use futures_util::StreamExt;
 use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterSnapshot,
-    ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
-    CloudInitIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
-    UpdateVmRequest, VmId,
-    VmRecord, VmSpec, VolumeId, VolumeRecord,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
+    ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
+    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
+    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec, VolumeId, VolumeRecord,
 };
-use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
@@ -444,13 +443,9 @@ async fn import_iso(
     Ok((
         StatusCode::CREATED,
         Json(
-            tracked(
-                &service,
-                &user,
-                "iso.import",
-                target,
-                async { service.import_iso(req) },
-            )
+            tracked(&service, &user, "iso.import", target, async {
+                service.import_iso(req)
+            })
             .await?,
         ),
     ))
@@ -477,10 +472,9 @@ async fn upload_iso(
             let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
             written += chunk.len() as u64;
             if written > MAX {
-                return Err(pertisk_storage::StorageError::Message(
-                    "iso larger than 8GiB".into(),
-                )
-                .into());
+                return Err(
+                    pertisk_storage::StorageError::Message("iso larger than 8GiB".into()).into(),
+                );
             }
             file.write_all(&chunk).await?;
         }
@@ -498,18 +492,12 @@ async fn upload_iso(
         return Err(pertisk_storage::StorageError::Message("empty iso upload".into()).into());
     }
     let target = q.name.clone().unwrap_or_else(|| "upload.iso".into());
-    let result = tracked(
-        &service,
-        &user,
-        "iso.import",
-        target,
-        async {
-            service.import_iso(ImportIsoRequest {
-                path: tmp.clone(),
-                name: q.name.clone(),
-            })
-        },
-    )
+    let result = tracked(&service, &user, "iso.import", target, async {
+        service.import_iso(ImportIsoRequest {
+            path: tmp.clone(),
+            name: q.name.clone(),
+        })
+    })
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     Ok((StatusCode::CREATED, Json(result?)))
@@ -524,13 +512,9 @@ async fn create_cloudinit_iso(
     Ok((
         StatusCode::CREATED,
         Json(
-            tracked(
-                &service,
-                &user,
-                "iso.cloud-init",
-                target,
-                async { service.create_cloudinit_iso(req) },
-            )
+            tracked(&service, &user, "iso.cloud-init", target, async {
+                service.create_cloudinit_iso(req)
+            })
             .await?,
         ),
     ))
@@ -551,13 +535,9 @@ async fn attach_disk(
     Json(req): Json<AttachDiskRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(
-        tracked(
-            &service,
-            &user,
-            "vm.attach-disk",
-            id.to_string(),
-            async { service.attach_disk(id, req) },
-        )
+        tracked(&service, &user, "vm.attach-disk", id.to_string(), async {
+            service.attach_disk(id, req)
+        })
         .await?,
     ))
 }
@@ -576,13 +556,9 @@ async fn attach_iso(
     Json(req): Json<AttachIsoRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(
-        tracked(
-            &service,
-            &user,
-            "vm.attach-iso",
-            id.to_string(),
-            async { service.attach_iso(id, req) },
-        )
+        tracked(&service, &user, "vm.attach-iso", id.to_string(), async {
+            service.attach_iso(id, req)
+        })
         .await?,
     ))
 }
@@ -613,13 +589,9 @@ async fn attach_nic(
     Json(req): Json<AttachNicRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(
-        tracked(
-            &service,
-            &user,
-            "vm.attach-nic",
-            id.to_string(),
-            async { service.attach_nic(id, req) },
-        )
+        tracked(&service, &user, "vm.attach-nic", id.to_string(), async {
+            service.attach_nic(id, req)
+        })
         .await?,
     ))
 }
@@ -894,7 +866,9 @@ impl IntoResponse for DaemonError {
             Self::Control(crate::control::ControlError::UserNotFound(_)) => StatusCode::NOT_FOUND,
             Self::Control(crate::control::ControlError::UserExists(_)) => StatusCode::CONFLICT,
             Self::Control(crate::control::ControlError::Message(_)) => StatusCode::BAD_REQUEST,
-            Self::NoQuorum | Self::Fenced | Self::Unschedulable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NoQuorum | Self::Fenced | Self::Unschedulable(_) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Peer(_) => StatusCode::BAD_GATEWAY,
             Self::Storage(err) => storage_status(err),
             Self::Net(err) => net_status(err),
@@ -949,7 +923,8 @@ mod tests {
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
         let config = HostConfig::default_for(dir.path());
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
+        let vmm =
+            VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         (
             Service::new(
                 vmm,
@@ -1262,7 +1237,8 @@ mod tests {
         let volumes = VolumePool::open(dir.path().join("storage"), None).unwrap();
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
+        let vmm =
+            VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         let svc = Service::new(
             vmm,
             store,
@@ -1378,7 +1354,9 @@ mod tests {
             "b" => vec![&a, &c],
             _ => vec![&a, &b],
         };
-        let found = wait_running_elsewhere(&survivors, id, &owner).await.is_some();
+        let found = wait_running_elsewhere(&survivors, id, &owner)
+            .await
+            .is_some();
         a.kill();
         b.kill();
         c.kill();

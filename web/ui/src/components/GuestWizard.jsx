@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, parseSize } from '../api'
 import Modal from './Modal'
 
@@ -10,14 +10,26 @@ const STEPS = [
   { id: 'review', label: 'Review' },
 ]
 
+function defaultCpus(host, cluster) {
+  const member = (cluster?.members || []).find((m) => m.id === host?.node_id) || cluster?.members?.[0]
+  const n = Number(member?.cpus) || 2
+  return Math.max(1, Math.min(4, Math.floor(n / 4) || 2))
+}
+
+function defaultMemory(host, cluster) {
+  const member = (cluster?.members || []).find((m) => m.id === host?.node_id) || cluster?.members?.[0]
+  const n = Number(member?.memory_mib) || 2048
+  return Math.max(512, Math.min(4096, Math.floor(n / 16) || 2048))
+}
+
 const EMPTY = {
   name: '',
-  vcpus: 1,
-  memory_mib: 512,
+  vcpus: 2,
+  memory_mib: 2048,
   ha: true,
   diskMode: 'new',
   diskName: '',
-  diskSize: '8G',
+  diskSize: '32G',
   volumeId: '',
   iso: '',
   cloudInit: false,
@@ -29,13 +41,27 @@ const EMPTY = {
   start: true,
 }
 
-export default function GuestWizard({ volumes, isos, networks, host, onClose, onCreated }) {
+export default function GuestWizard({ volumes, isos, networks, host, cluster, onClose, onCreated }) {
   const [step, setStep] = useState(0)
-  const [form, setForm] = useState(EMPTY)
+  const [form, setForm] = useState(() => ({
+    ...EMPTY,
+    vcpus: defaultCpus(host, cluster),
+    memory_mib: defaultMemory(host, cluster),
+    iso: isos[0]?.name || '',
+    networkId: networks[0]?.id || '',
+  }))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [progress, setProgress] = useState([])
   const [taskLog, setTaskLog] = useState([])
+
+  useEffect(() => {
+    setForm((f) => ({
+      ...f,
+      iso: f.iso || isos[0]?.name || '',
+      networkId: f.networkId || networks[0]?.id || '',
+    }))
+  }, [isos, networks])
 
   function set(patch) {
     setForm((f) => ({ ...f, ...patch }))
@@ -160,7 +186,7 @@ export default function GuestWizard({ volumes, isos, networks, host, onClose, on
   return (
     <Modal
       title="Create guest"
-      hint="Name the machine, then optionally attach a disk, ISO, and network."
+      hint="Name the machine, attach a disk and ISO, then start. Console is serial (no VGA)."
       wizard
       onClose={onClose}
       footer={
@@ -324,7 +350,7 @@ export default function GuestWizard({ volumes, isos, networks, host, onClose, on
                 ))}
               </select>
               {isos.length === 0 && (
-                <p className="muted">Import an ISO under Storage if you want to boot an installer.</p>
+                <p className="muted">Import an ISO under Storage first (Upload file or host path).</p>
               )}
               {form.iso && host?.driver === 'cloud-hypervisor' && !host?.firmware && (
                 <p className="muted">

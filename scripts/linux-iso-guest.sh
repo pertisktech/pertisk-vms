@@ -14,6 +14,9 @@ URL="${PERTISK_URL:-http://127.0.0.1:7480}"
 LISTEN="${PERTISK_LISTEN:-0.0.0.0:7480}"
 NAME="${GUEST_NAME:-alpine-iso-$$}"
 ISO_NAME="${ISO_NAME:-alpine-virt.iso}"
+CPUS="${CPUS:-2}"
+MEMORY="${MEMORY:-2048}"
+DISK="${DISK:-8G}"
 
 die() { echo "linux-iso-guest: $*" >&2; exit 1; }
 
@@ -93,20 +96,14 @@ if ! "$pertisk" --url "$URL" iso list | grep -q "^${ISO_NAME}[[:space:]]"; then
   "$pertisk" --url "$URL" iso import "$iso" --name "$ISO_NAME"
 fi
 
-vol="$("$pertisk" --url "$URL" vol create --name "${NAME}-disk" --size 2G)"
-echo "$vol"
-vol_id="$(echo "$vol" | awk '{print $1}')"
-if ! created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus 1 --memory 512 --firmware "$FIRMWARE")"; then
+if ! created="$("$pertisk" --url "$URL" vm create --name "$NAME" --cpus "$CPUS" --memory "$MEMORY" --iso "$ISO_NAME" --disk-size "$DISK" --firmware "$FIRMWARE" --start)"; then
   echo "$created" >&2
   show_capacity
   die "vm create failed. Stop leftover guests: $pertisk --url $URL vm stop <id>"
 fi
 echo "$created"
 id="$(echo "$created" | awk '{print $1}')"
-[[ -n "$id" && -n "$vol_id" ]] || die "create returned no id"
-"$pertisk" --url "$URL" vm disk attach --volume "$vol_id" "$id"
-"$pertisk" --url "$URL" vm cdrom attach --iso "$ISO_NAME" "$id"
-"$pertisk" --url "$URL" vm start "$id"
+[[ -n "$id" ]] || die "create returned no id"
 echo "guest $NAME ($id) started from ISO. serial (Ctrl-C detaches):"
 trap - EXIT
 exec "$pertisk" --url "$URL" vm console "$id" --attach

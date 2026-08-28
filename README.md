@@ -53,13 +53,22 @@ PERTISK_ADMIN_PASSWORD=admin ./scripts/linux-guest.sh
 
 That fetches Alpine virt netboot (`vmlinuz-virt` + `initramfs-virt`), creates the guest with `--kernel` / `--initramfs`, starts it, and attaches serial. This Mac cannot close that gate (`/dev/kvm` is absent; the daemon stays on `mock`).
 
-**Linux ISO guest (v1.0 gate):** same host, plus firmware. Storage → Import ISO (browser upload) then the guest wizard, or:
+**Linux ISO guest (v1.0 gate):** same host, plus firmware. On a test box (e.g. 16c / 64G):
 
 ```bash
+./scripts/linux-host.sh
 PERTISK_ADMIN_PASSWORD=admin ./scripts/linux-iso-guest.sh
 ```
 
-That downloads `hypervisor-fw` and an Alpine virt ISO, creates a disk, attaches the ISO, and boots Cloud Hypervisor with firmware (no kernel).
+`linux-host.sh` checks KVM, fetches Cloud Hypervisor + `hypervisor-fw`, and writes `~/.pertisk/config.toml` (`0.0.0.0:7480`, replica_count 1). Then either the script above, Storage → Import ISO + guest wizard, or:
+
+```bash
+pertisk iso import /path/to/alpine-virt.iso
+pertisk vm create --name alpine --cpus 4 --memory 4096 --iso alpine-virt.iso --disk-size 32G --start
+pertisk vm console <id> --attach
+```
+
+Alpine virt / cloud images use **serial**. Graphical Ubuntu/Windows installers need VGA (not in Cloud Hypervisor).
 
 **Cloud-init ISO** (Linux cloud images, not Proxmox/ESXi installers): Storage → Import ISO → Cloud-init, or:
 

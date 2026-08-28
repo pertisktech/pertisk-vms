@@ -236,11 +236,7 @@ impl Service {
         Ok(record)
     }
 
-    pub async fn update(
-        &self,
-        id: VmId,
-        req: UpdateVmRequest,
-    ) -> Result<VmRecord, DaemonError> {
+    pub async fn update(&self, id: VmId, req: UpdateVmRequest) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let mut vm = self.store.get(id)?;
         if req.vcpus.is_some() || req.memory_mib.is_some() {
@@ -949,12 +945,7 @@ impl Service {
                     .map(|n| {
                         format!(
                             "{} online={} vcpu {}/{} mem {}/{} MiB",
-                            n.id,
-                            n.online,
-                            n.used_vcpus,
-                            n.cpus,
-                            n.used_memory_mib,
-                            n.memory_mib
+                            n.id, n.online, n.used_vcpus, n.cpus, n.used_memory_mib, n.memory_mib
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1504,7 +1495,8 @@ mod tests {
         let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
         let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
         let config = HostConfig::default_for(dir.path());
-        let vmm = VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
+        let vmm =
+            VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
         (
             Service::new(
                 vmm,

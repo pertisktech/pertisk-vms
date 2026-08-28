@@ -508,7 +508,12 @@ fn unix_now() -> u64 {
 }
 
 fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
-    if let Some(raw) = req.userdata.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(raw) = req
+        .userdata
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return raw.to_string();
     }
     let user = req
@@ -540,7 +545,12 @@ fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
             yaml.push('\n');
         }
     }
-    if let Some(password) = req.password.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(password) = req
+        .password
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         yaml.push_str("chpasswd:\n  expire: false\n  list: |\n    ");
         yaml.push_str(user);
         yaml.push(':');
