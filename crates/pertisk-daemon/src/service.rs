@@ -294,6 +294,9 @@ impl Service {
             }
         }
         let boot_spec = self.iso_linux_boot_spec(&record.spec)?;
+        for nic in &record.spec.nets {
+            self.networks.ensure_host_links(nic)?;
+        }
         let socket_missing = record
             .api_socket
             .as_ref()
@@ -914,9 +917,26 @@ impl Service {
             .unwrap_or_else(|| "iso".into());
         let dest = self.config.storage.root.join("iso-boot").join(&name);
         if let Some(boot) = pertisk_storage::prepare_linux_iso_boot(&disk.path, &dest)? {
+            let initrd_mib = std::fs::metadata(&boot.initramfs)
+                .map(|meta| meta.len() / (1024 * 1024))
+                .unwrap_or(0) as u32;
+            // The guest must hold the compressed initramfs plus its unpacked tmpfs copy; too
+            // little RAM makes the kernel skip it and panic with "Unable to mount root fs".
+            let needed = (initrd_mib * 8).max(1024);
+            if spec.memory_mib < needed {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "{name} boots a {initrd_mib} MiB initramfs and needs at least {needed} MiB of \
+                     guest memory (VM has {}); Linux installers realistically want 2048+ MiB",
+                    spec.memory_mib
+                ))
+                .into());
+            }
             tracing::info!(
                 iso = %name,
                 kernel = %boot.kernel.display(),
+                initramfs = %boot.initramfs.display(),
+                initrd_mib,
+                cmdline = %boot.cmdline,
                 "kernel-booting installer ISO (bypassing UEFI shim)"
             );
             spec.kernel = Some(boot.kernel);

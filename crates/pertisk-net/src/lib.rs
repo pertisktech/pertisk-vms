@@ -164,21 +164,41 @@ impl NetworkPool {
         } else {
             None
         };
-        if self.apply_host_links {
-            host::provision_nic(
-                &network.bridge,
-                &tap,
-                network.gateway.as_deref(),
-                net.prefix,
-                network.isolate,
-            )?;
-        }
-        Ok(NetSpec {
+        let spec = NetSpec {
             network_id: Some(network_id),
             tap: Some(tap),
             mac: Some(guest_mac(vm_id, nic_index)),
             ip,
-        })
+        };
+        self.ensure_host_links(&spec)?;
+        Ok(spec)
+    }
+
+    /// Re-create the bridge and TAP for an already-allocated NIC. Both are kernel-only
+    /// state that disappears on host reboot, and both `ip` calls are idempotent.
+    pub fn ensure_host_links(&self, spec: &NetSpec) -> Result<()> {
+        if !self.apply_host_links {
+            return Ok(());
+        }
+        let (Some(network_id), Some(tap)) = (spec.network_id, spec.tap.as_deref()) else {
+            return Ok(());
+        };
+        let network = match self.get(network_id) {
+            Ok(network) => network,
+            // A NIC pointing at a network this node doesn't know (e.g. after HA failover)
+            // has no bridge to rebuild here.
+            Err(NetError::NotFound(_)) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        let net = Ipv4Net::parse(&network.cidr)?;
+        host::ensure_bridge(&network.bridge, network.gateway.as_deref(), net.prefix)?;
+        host::provision_nic(
+            &network.bridge,
+            tap,
+            network.gateway.as_deref(),
+            net.prefix,
+            network.isolate,
+        )
     }
 
     pub fn release_nic(&self, spec: &NetSpec) -> Result<()> {
