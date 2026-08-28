@@ -25,6 +25,14 @@ if [[ "$SKIP_KVM" != "1" ]]; then
   bash "$OVERLAY/usr/sbin/pertisk-kvm-check" || die "KVM not usable (set PERTISK_SKIP_KVM=1 to package only)"
 fi
 
+# The web UI is compiled into pertiskd by rust-embed, so it must be built first.
+if command -v npm >/dev/null 2>&1; then
+  echo "building web ui"
+  (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
+else
+  echo "npm not found; keeping the checked-in web/ui build in crates/pertisk-daemon/static" >&2
+fi
+
 echo "building release pertiskd + pertisk"
 cargo build --release -p pertisk-daemon -p pertisk-cli
 
