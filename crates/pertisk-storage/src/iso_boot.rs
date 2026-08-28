@@ -93,17 +93,12 @@ pub fn prepare_linux_iso_boot(
         let kernel = dest_dir.join("vmlinuz");
         let initramfs = dest_dir.join("initrd");
         let cmd_file = dest_dir.join("cmdline");
-        if cache_fresh(iso, &kernel, &initramfs, &cmd_file) {
-            let cmdline = fs::read_to_string(&cmd_file)?.trim().to_string();
-            return Ok(Some(LinuxIsoBoot {
-                kernel,
-                initramfs,
-                cmdline,
-            }));
-        }
-        image.copy_file(k_lba, k_size, &kernel)?;
-        image.copy_file(i_lba, i_size, &initramfs)?;
         let cmdline = resolve_cmdline(cmdline, &roots.volume_id);
+        if !cache_fresh(iso, &kernel, &initramfs, &cmd_file) {
+            image.copy_file(k_lba, k_size, &kernel)?;
+            image.copy_file(i_lba, i_size, &initramfs)?;
+        }
+        // Always rewritten so a cached extraction still picks up cmdline changes.
         fs::write(&cmd_file, format!("{cmdline}\n"))?;
         return Ok(Some(LinuxIsoBoot {
             kernel,
