@@ -4,7 +4,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7480";
@@ -23,17 +24,26 @@ pub enum TypesError {
     InvalidSpec(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct VmId(Uuid);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum VmId {
+    Numeric(u64),
+    Legacy(Uuid),
+}
 
 impl VmId {
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self::Legacy(Uuid::new_v4())
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        self.0.as_bytes()
+    pub fn as_bytes(&self) -> [u8; 16] {
+        match self {
+            Self::Numeric(id) => {
+                let mut bytes = [0; 16];
+                bytes[8..].copy_from_slice(&id.to_be_bytes());
+                bytes
+            }
+            Self::Legacy(id) => *id.as_bytes(),
+        }
     }
 }
 
@@ -45,7 +55,10 @@ impl Default for VmId {
 
 impl fmt::Display for VmId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        match self {
+            Self::Numeric(id) => id.fmt(f),
+            Self::Legacy(id) => id.fmt(f),
+        }
     }
 }
 
@@ -53,9 +66,67 @@ impl FromStr for VmId {
     type Err = TypesError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() >= 3 && s.len() <= 10 && s.bytes().all(|byte| byte.is_ascii_digit()) {
+            return s
+                .parse()
+                .map(Self::Numeric)
+                .map_err(|_| TypesError::InvalidVmId(s.to_string()));
+        }
         Uuid::parse_str(s)
-            .map(Self)
+            .map(Self::Legacy)
             .map_err(|_| TypesError::InvalidVmId(s.to_string()))
+    }
+}
+
+impl Serialize for VmId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Numeric(id) => serializer.serialize_u64(*id),
+            Self::Legacy(id) => serializer.serialize_str(&id.to_string()),
+        }
+    }
+}
+
+struct VmIdVisitor;
+
+impl<'de> Visitor<'de> for VmIdVisitor {
+    type Value = VmId;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a numeric VM ID with 3 to 10 digits or a legacy UUID")
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        value.to_string().parse().map_err(E::custom)
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        value.parse().map_err(E::custom)
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for VmId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(VmIdVisitor)
     }
 }
 

@@ -160,9 +160,6 @@ export default function Layout() {
             cluster={inv.cluster}
             host={inv.host}
             vms={inv.vms}
-            volumes={inv.volumes}
-            networks={inv.networks}
-            isos={inv.isos}
           />
           <button
             type="button"
@@ -184,6 +181,7 @@ export default function Layout() {
 
       {wizard && (
         <GuestWizard
+          vms={inv.vms}
           volumes={inv.volumes}
           isos={inv.isos}
           networks={inv.networks}
@@ -191,7 +189,6 @@ export default function Layout() {
           cluster={inv.cluster}
           onClose={() => setWizard(false)}
           onCreated={async () => {
-            setWizard(false)
             await inv.refresh()
           }}
         />

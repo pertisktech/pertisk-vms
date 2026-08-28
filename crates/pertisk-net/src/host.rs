@@ -21,6 +21,8 @@ pub fn provision_nic(
 ) -> Result<()> {
     check_name(bridge)?;
     check_name(tap)?;
+    // A failed prior setup can leave this deterministic TAP behind without a VM record.
+    delete_tap(tap)?;
     run_ip(&["tuntap", "add", "dev", tap, "mode", "tap"], true)?;
     run_ip(&["link", "set", "dev", tap, "master", bridge], false)?;
     run_ip(&["link", "set", "dev", tap, "up"], false)?;
@@ -61,7 +63,11 @@ fn run_ip(args: &[&str], ignore_exists: bool) -> Result<()> {
             return Ok(());
         }
         let err = String::from_utf8_lossy(&output.stderr);
-        if ignore_exists && (err.contains("File exists") || err.contains("exists")) {
+        if ignore_exists
+            && (err.contains("File exists")
+                || err.contains("exists")
+                || err.contains("Address already assigned"))
+        {
             return Ok(());
         }
         Err(NetError::Host(format!(

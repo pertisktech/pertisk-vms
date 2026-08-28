@@ -28,8 +28,8 @@ export default function TaskLog({ tasks }) {
         <Icon name="clock" size={14} />
         <span>Tasks</span>
         <span className="tasklog-count">{tasks.length}</span>
-        {failed > 0 && <span className="badge error">{failed} failed</span>}
         <span className="tasklog-spacer" />
+        {failed > 0 && <span className="badge error">{failed} failed</span>}
         <Icon name={open ? 'chevron-down' : 'chevron-up'} size={14} />
       </button>
       {open && (

@@ -22,7 +22,16 @@ function defaultMemory(host, cluster) {
   return Math.max(512, Math.min(4096, Math.floor(n / 16) || 2048))
 }
 
+function nextVmId(vms) {
+  const used = new Set(vms.map((vm) => String(vm.id)).filter((id) => /^\d{3,10}$/.test(id)))
+  for (let id = 100; id <= 9_999_999_999; id += 1) {
+    if (!used.has(String(id))) return String(id)
+  }
+  return ''
+}
+
 const EMPTY = {
+  id: '',
   name: '',
   vcpus: 2,
   memory_mib: 2048,
@@ -41,10 +50,11 @@ const EMPTY = {
   start: true,
 }
 
-export default function GuestWizard({ volumes, isos, networks, host, cluster, onClose, onCreated }) {
+export default function GuestWizard({ vms, volumes, isos, networks, host, cluster, onClose, onCreated }) {
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(() => ({
     ...EMPTY,
+    id: nextVmId(vms),
     vcpus: defaultCpus(host, cluster),
     memory_mib: defaultMemory(host, cluster),
     iso: isos[0]?.name || '',
@@ -52,6 +62,7 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
   }))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [created, setCreated] = useState(false)
   const [progress, setProgress] = useState([])
   const [taskLog, setTaskLog] = useState([])
 
@@ -86,7 +97,7 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
   }
 
   function canNext() {
-    if (step === 0) return form.name.trim().length > 0 && Number(form.vcpus) >= 1 && Number(form.memory_mib) >= 64
+    if (step === 0) return /^\d{3,10}$/.test(form.id) && form.name.trim().length > 0 && Number(form.vcpus) >= 1 && Number(form.memory_mib) >= 64
     if (step === 1 && form.diskMode === 'new') return (form.diskName.trim() || form.name.trim()).length > 0
     if (step === 1 && form.diskMode === 'existing') return Boolean(form.volumeId)
     return true
@@ -96,8 +107,11 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
     e.preventDefault()
     setBusy(true)
     setError('')
+    setCreated(false)
     setProgress([])
     setTaskLog([])
+    let createdVolumeId = ''
+    let createdVmId = ''
     try {
       let volumeId = form.diskMode === 'existing' ? form.volumeId : ''
       if (form.diskMode === 'new') {
@@ -112,11 +126,13 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
           }),
         )
         volumeId = vol.id
+        createdVolumeId = vol.id
       }
       const vm = await run('Define guest', () =>
         api('/v1/vms', {
           method: 'POST',
           body: {
+            id: Number(form.id),
             name: form.name.trim(),
             vcpus: Number(form.vcpus),
             memory_mib: Number(form.memory_mib),
@@ -124,6 +140,7 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
           },
         }),
       )
+      createdVmId = vm.id
       if (volumeId) {
         await run('Attach disk', () =>
           api(`/v1/vms/${vm.id}/disks`, { method: 'POST', body: { volume_id: volumeId } }),
@@ -166,7 +183,23 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
         await run('Start guest', () => api(`/v1/vms/${vm.id}/start`, { method: 'POST' }))
       }
       await onCreated()
+      setCreated(true)
     } catch (err) {
+      if (createdVmId) {
+        try {
+          await api(`/v1/vms/${createdVmId}`, { method: 'DELETE' })
+        } catch {
+          /* Keep the original setup error when cleanup is unavailable. */
+        }
+      }
+      if (createdVolumeId) {
+        try {
+          await api(`/v1/volumes/${createdVolumeId}`, { method: 'DELETE' })
+        } catch {
+          /* Destroying the guest may have already deleted its exclusive volume. */
+        }
+      }
+      await onCreated()
       setError(err.message || String(err))
     } finally {
       setBusy(false)
@@ -181,7 +214,8 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
         : volumes.find((v) => v.id === form.volumeId)?.name || 'Existing volume'
   const isoLabel =
     [form.iso || null, form.cloudInit ? 'cloud-init seed' : null].filter(Boolean).join(' + ') || 'None'
-  const netLabel = networks.find((n) => n.id === form.networkId)?.name || 'None'
+  const selectedNetwork = networks.find((n) => n.id === form.networkId)
+  const netLabel = selectedNetwork?.name || 'None'
 
   return (
     <Modal
@@ -192,23 +226,23 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
       footer={
         <div className="wizard-footer">
           <button type="button" className="secondary" onClick={onClose} disabled={busy}>
-            Cancel
+            {created ? 'Close' : 'Cancel'}
           </button>
           <div className="wizard-footer-right">
-            {step > 0 && (
+            {!created && step > 0 && (
               <button type="button" className="secondary" onClick={() => setStep((s) => s - 1)} disabled={busy}>
                 Back
               </button>
             )}
-            {step < STEPS.length - 1 ? (
+            {!created && step < STEPS.length - 1 ? (
               <button type="button" onClick={() => setStep((s) => s + 1)} disabled={!canNext()}>
                 Next
               </button>
-            ) : (
+            ) : !created ? (
               <button type="submit" form="guest-wizard" disabled={busy || !canNext()}>
                 {busy ? 'Creating…' : form.start ? 'Create and start' : 'Create'}
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       }
@@ -229,11 +263,25 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
       </div>
 
       {error && <div className="error">{error}</div>}
+      {created && <div className="banner success">Guest created successfully.</div>}
 
       <form id="guest-wizard" onSubmit={finish}>
         {step === 0 && (
           <>
             <p className="wizard-section-title">Machine</p>
+            <div className="field">
+              <label htmlFor="guest-id">VM ID</label>
+              <input
+                id="guest-id"
+                required
+                inputMode="numeric"
+                pattern="[0-9]{3,10}"
+                maxLength="10"
+                value={form.id}
+                onChange={(e) => set({ id: e.target.value.replace(/\D/g, '') })}
+                placeholder="100"
+              />
+            </div>
             <div className="field">
               <label htmlFor="guest-name">Name</label>
               <input
@@ -435,7 +483,7 @@ export default function GuestWizard({ volumes, isos, networks, host, cluster, on
                   id="guest-ip"
                   value={form.nicIp}
                   onChange={(e) => set({ nicIp: e.target.value })}
-                  placeholder="leave empty for DHCP"
+                  placeholder={selectedNetwork?.gateway ? `DHCP; gateway ${selectedNetwork.gateway} is reserved` : 'leave empty for DHCP'}
                 />
               </div>
             )}

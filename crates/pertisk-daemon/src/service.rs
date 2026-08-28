@@ -23,6 +23,8 @@ pub enum DaemonError {
     NotFound(VmId),
     #[error("vm name already exists: {0}")]
     NameTaken(String),
+    #[error("vm id already exists: {0}")]
+    IdTaken(VmId),
     #[error("vm {0} must be stopped to {1}")]
     MustBeStopped(VmId, &'static str),
     #[error("volume {0} is attached to a vm")]
@@ -206,13 +208,15 @@ impl Service {
         self.store.get(id)
     }
 
-    pub async fn create(&self, spec: VmSpec) -> Result<VmRecord, DaemonError> {
+    pub async fn create(&self, id: VmId, spec: VmSpec) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         spec.validate()?;
+        if self.store.contains(id) {
+            return Err(DaemonError::IdTaken(id));
+        }
         if self.store.name_taken(&spec.name, None)? {
             return Err(DaemonError::NameTaken(spec.name));
         }
-        let id = VmId::new();
         let mut spec = spec;
         if spec.serial_log.is_none() {
             spec.serial_log = Some(self.config.vmm.run_dir.join(format!("{id}.serial")));
@@ -1562,7 +1566,7 @@ mod tests {
     use crate::control::ControlStore;
     use pertisk_types::{
         AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, UpdateVmRequest, VolumeFormat,
-        parse_size,
+        VmId, parse_size,
     };
     use pertisk_vmm::VmmBackend;
 
@@ -1605,10 +1609,14 @@ mod tests {
         }
     }
 
+    fn vm_id(id: u64) -> VmId {
+        id.to_string().parse().unwrap()
+    }
+
     #[tokio::test]
     async fn create_start_stop_destroy() {
         let (svc, _dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(100), spec("demo")).await.unwrap();
         assert_eq!(vm.state, VmState::Created);
         let vm = svc.start(vm.id).await.unwrap();
         assert_eq!(vm.state, VmState::Running);
@@ -1638,7 +1646,7 @@ mod tests {
     #[tokio::test]
     async fn update_spec_when_stopped() {
         let (svc, _dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(101), spec("demo")).await.unwrap();
         let vm = svc
             .update(
                 vm.id,
@@ -1683,15 +1691,15 @@ mod tests {
     #[tokio::test]
     async fn rejects_duplicate_name() {
         let (svc, _dir) = service();
-        svc.create(spec("demo")).await.unwrap();
-        let err = svc.create(spec("demo")).await.unwrap_err();
+        svc.create(vm_id(102), spec("demo")).await.unwrap();
+        let err = svc.create(vm_id(103), spec("demo")).await.unwrap_err();
         assert!(matches!(err, DaemonError::NameTaken(_)));
     }
 
     #[tokio::test]
     async fn attach_volume_and_iso() {
         let (svc, dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(104), spec("demo")).await.unwrap();
         let vol = svc
             .create_volume(CreateVolumeRequest {
                 name: "root".into(),
@@ -1731,7 +1739,7 @@ mod tests {
     #[tokio::test]
     async fn destroy_deletes_exclusive_volume() {
         let (svc, _dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(105), spec("demo")).await.unwrap();
         let vol = svc
             .create_volume(CreateVolumeRequest {
                 name: "root".into(),
@@ -1750,7 +1758,7 @@ mod tests {
     #[tokio::test]
     async fn destroy_leaves_unattached_volume() {
         let (svc, _dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(106), spec("demo")).await.unwrap();
         let vol = svc
             .create_volume(CreateVolumeRequest {
                 name: "spare".into(),
@@ -1767,7 +1775,7 @@ mod tests {
     #[tokio::test]
     async fn attach_nic_and_console() {
         let (svc, _dir) = service();
-        let vm = svc.create(spec("demo")).await.unwrap();
+        let vm = svc.create(vm_id(107), spec("demo")).await.unwrap();
         let net = svc
             .create_network(CreateNetworkRequest {
                 name: "lan".into(),

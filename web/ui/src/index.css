@@ -1002,8 +1002,9 @@ a.guest-card:hover { color: inherit; }
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
 }
-.pve-tree.collapsed { display: none; }
-.pve-tree.collapsed + .pve-main { grid-column: 1 / -1; }
+.pve-body:has(.pve-tree.collapsed) { grid-template-columns: 1.9rem 1fr; }
+.pve-tree.collapsed .tree { display: none; }
+.pve-tree.collapsed .pve-tree-collapse { height: 100%; }
 
 .tree { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
@@ -1204,7 +1205,7 @@ a.guest-card:hover { color: inherit; }
   min-height: 12rem;
 }
 .pve-console-bar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; font-size: 0.8rem; flex: none; }
-.pve-console { flex: 1 1 auto; min-height: 0; margin: 0; }
+.pve-console { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0; }
 .pve-console-hint { display: flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; flex: none; margin: 0; }
 
 /* Task log */
@@ -1222,21 +1223,29 @@ a.guest-card:hover { color: inherit; }
   align-items: center;
   gap: 0.5rem;
   width: 100%;
+  min-height: 2.25rem;
   padding: 0.35rem 0.9rem;
   background: transparent;
   border: none;
   color: var(--text-secondary);
   font-size: 0.8rem;
+  line-height: 1;
   cursor: pointer;
 }
 .tasklog-head:hover { background: var(--bg-hover); }
 .tasklog-spacer { flex: 1; }
 .tasklog-count {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 1.5rem;
   background: var(--bg-elevated);
   border-radius: 999px;
-  padding: 0 0.4rem;
+  padding: 0 0.45rem;
   font-size: 0.7rem;
+  line-height: 1;
 }
+.tasklog-head .badge { flex: 0 0 auto; line-height: 1; }
 
 .tasklog-body { overflow-y: auto; max-height: 11rem; }
 .tasklog-body table { width: 100%; border-collapse: collapse; font-size: 0.78rem; table-layout: fixed; }
@@ -1280,6 +1289,8 @@ a.guest-card:hover { color: inherit; }
   }
   .pve-tree.open { transform: translateX(0); }
   .pve-tree.collapsed { display: flex; }
+  .pve-tree.collapsed .tree { display: flex; }
+  .pve-tree.collapsed .pve-tree-collapse { height: 1.9rem; }
   .pve-panel-body { grid-template-columns: 1fr; }
   .pve-tabs {
     flex-direction: row;

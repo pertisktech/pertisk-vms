@@ -127,6 +127,7 @@ pub struct AuditEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateVmRequest {
+    pub id: VmId,
     #[serde(flatten)]
     pub spec: VmSpec,
 }

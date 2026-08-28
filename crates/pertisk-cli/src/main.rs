@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pertisk_api::{
-    AuditEvent, CreateUserRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
+    AuditEvent, CreateUserRequest, CreateVmRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
 };
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
@@ -106,6 +106,9 @@ enum ClusterCommand {
 #[derive(Debug, Subcommand)]
 enum VmCommand {
     Create {
+        /// Numeric VM ID (3-10 digits).
+        #[arg(long)]
+        id: VmId,
         #[arg(long)]
         name: String,
         #[arg(long, default_value_t = 1)]
@@ -562,6 +565,7 @@ async fn run() -> Result<()> {
         },
         Command::Vm { command } => match command {
             VmCommand::Create {
+                id,
                 name,
                 cpus,
                 memory,
@@ -609,7 +613,13 @@ async fn run() -> Result<()> {
                     serial_log: None,
                     ha: true,
                 };
-                let mut record: VmRecord = post_json(&client, &cli.url, "/v1/vms", &spec).await?;
+                let mut record: VmRecord = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/vms",
+                    &CreateVmRequest { id, spec },
+                )
+                .await?;
                 if let Some(size) = disk_size {
                     let vol: VolumeRecord = post_json(
                         &client,

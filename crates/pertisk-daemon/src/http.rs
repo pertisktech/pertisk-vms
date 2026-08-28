@@ -11,12 +11,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
 use futures_util::StreamExt;
-use pertisk_api::{CreateUserRequest, LoginRequest, Role, openapi_json};
+use pertisk_api::{CreateUserRequest, CreateVmRequest, LoginRequest, Role, openapi_json};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
     ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
-    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec, VolumeId, VolumeRecord,
+    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -243,14 +243,14 @@ async fn list(State(service): State<Service>) -> Result<impl IntoResponse, Daemo
 async fn create(
     State(service): State<Service>,
     Extension(user): Extension<AuthUser>,
-    Json(spec): Json<VmSpec>,
+    Json(req): Json<CreateVmRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
     let record = tracked(
         &service,
         &user,
         "vm.create",
-        spec.name.clone(),
-        service.create(spec),
+        req.spec.name.clone(),
+        service.create(req.id, req.spec),
     )
     .await?;
     Ok((StatusCode::CREATED, Json(record)))

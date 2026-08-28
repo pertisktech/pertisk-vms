@@ -14,17 +14,17 @@ function loadOpen() {
   }
 }
 
-function guestStatus(vm) {
-  if (vm.state === 'running') return 'running'
-  if (vm.state === 'failed') return 'failed'
-  return 'stopped'
-}
-
 /// Nodes come from the cluster roster; a single-node daemon still reports itself.
 function nodeList(cluster, host) {
   const members = asList(cluster?.members)
   if (members.length) return members
   return [{ id: 'local', name: host?.hostname || 'localhost', online: true }]
+}
+
+function guestStatus(vm) {
+  if (vm.state === 'running') return 'running'
+  if (vm.state === 'failed') return 'failed'
+  return 'stopped'
 }
 
 function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf }) {
@@ -59,7 +59,7 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf })
   )
 }
 
-export default function ResourceTree({ cluster, host, vms, volumes, networks, isos }) {
+export default function ResourceTree({ cluster, host, vms }) {
   const [open, setOpen] = useState(loadOpen)
   const [filter, setFilter] = useState('')
 
@@ -75,18 +75,17 @@ export default function ResourceTree({ cluster, host, vms, volumes, networks, is
   const nodes = useMemo(() => nodeList(cluster, host), [cluster, host])
   const needle = filter.trim().toLowerCase()
   const match = (text) => !needle || String(text || '').toLowerCase().includes(needle)
-
   const guestsByNode = useMemo(() => {
-    const map = new Map()
+    const guests = new Map()
     for (const vm of vms) {
-      const key = vm.node_id || nodes[0]?.id
-      if (!map.has(key)) map.set(key, [])
-      map.get(key).push(vm)
+      const nodeId = vm.node_id || nodes[0]?.id
+      if (!guests.has(nodeId)) guests.set(nodeId, [])
+      guests.get(nodeId).push(vm)
     }
-    for (const list of map.values()) {
-      list.sort((a, b) => (a.spec?.name || '').localeCompare(b.spec?.name || ''))
+    for (const nodeGuests of guests.values()) {
+      nodeGuests.sort((left, right) => (left.spec?.name || '').localeCompare(right.spec?.name || ''))
     }
-    return map
+    return guests
   }, [vms, nodes])
 
   return (
@@ -110,7 +109,7 @@ export default function ResourceTree({ cluster, host, vms, volumes, networks, is
         <Branch
           depth={0}
           icon="datacenter"
-          label={cluster?.name || 'Datacenter'}
+            label="Pertisk"
           to="/dc/summary"
           open={isOpen('dc')}
           onToggle={() => toggle('dc')}
@@ -123,9 +122,8 @@ export default function ResourceTree({ cluster, host, vms, volumes, networks, is
               const guests = (guestsByNode.get(node.id) || []).filter((vm) =>
                 match(vm.spec?.name || vm.id),
               )
+              if (!match(node.name) && guests.length === 0) return null
               const nodeKey = `node:${node.id}`
-              const showNode = match(node.name) || guests.length > 0
-              if (!showNode) return null
               return (
                 <div key={node.id}>
                   <Branch
@@ -152,67 +150,6 @@ export default function ResourceTree({ cluster, host, vms, volumes, networks, is
                 </div>
               )
             })}
-
-            <Branch
-              depth={1}
-              icon="folder"
-              label="Storage"
-              to="/dc/storage"
-              open={isOpen('storage')}
-              onToggle={() => toggle('storage')}
-              badge={volumes.length + isos.length}
-            />
-            {isOpen('storage') && (
-              <>
-                {volumes
-                  .filter((v) => match(v.name))
-                  .map((vol) => (
-                    <Branch
-                      key={vol.id}
-                      depth={2}
-                      leaf
-                      icon="disk"
-                      label={vol.name}
-                      to="/dc/storage"
-                    />
-                  ))}
-                {isos
-                  .filter((i) => match(i.name))
-                  .map((iso) => (
-                    <Branch
-                      key={iso.name}
-                      depth={2}
-                      leaf
-                      icon="volumes"
-                      label={iso.name}
-                      to="/dc/storage"
-                    />
-                  ))}
-              </>
-            )}
-
-            <Branch
-              depth={1}
-              icon="folder"
-              label="Networks"
-              to="/dc/networks"
-              open={isOpen('net')}
-              onToggle={() => toggle('net')}
-              badge={networks.length}
-            />
-            {isOpen('net') &&
-              networks
-                .filter((n) => match(n.name))
-                .map((net) => (
-                  <Branch
-                    key={net.id}
-                    depth={2}
-                    leaf
-                    icon="network"
-                    label={net.name}
-                    to="/dc/networks"
-                  />
-                ))}
           </>
         )}
       </div>

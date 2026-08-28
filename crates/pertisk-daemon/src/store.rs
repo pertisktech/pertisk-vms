@@ -44,6 +44,10 @@ impl Store {
             .ok_or(DaemonError::NotFound(id))
     }
 
+    pub fn contains(&self, id: VmId) -> bool {
+        self.vms.lock().expect("store lock").contains_key(&id)
+    }
+
     pub fn name_taken(&self, name: &str, except: Option<VmId>) -> Result<bool, DaemonError> {
         let vms = self.vms.lock().expect("store lock");
         Ok(vms

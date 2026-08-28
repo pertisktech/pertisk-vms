@@ -153,6 +153,12 @@ impl NetworkPool {
                     network.cidr
                 )));
             }
+            if network.gateway.as_deref() == Some(ip) {
+                return Err(NetError::Invalid(format!(
+                    "{ip} is reserved as the gateway for {}",
+                    network.name
+                )));
+            }
             if used_ips.iter().any(|used| used == ip) {
                 return Err(NetError::Invalid(format!("{ip} already in use")));
             }

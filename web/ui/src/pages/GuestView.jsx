@@ -9,7 +9,7 @@ import { useConfirm } from '../components/Confirm'
 export function useGuest() {
   const { vmId } = useParams()
   const ctx = useOutletContext()
-  const vm = ctx.inv.vms.find((item) => item.id === vmId) || null
+  const vm = ctx.inv.vms.find((item) => String(item.id) === vmId) || null
   return { ...ctx, vmId, vm }
 }
 
