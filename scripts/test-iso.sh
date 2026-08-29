@@ -48,6 +48,9 @@ grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
 grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
   || { echo "FAIL serial root shell"; fail=1; }
+grep -q '^ConditionFirstBoot=no$' \
+  "$OVERLAY/etc/systemd/system/systemd-firstboot.service.d/disable-interactive.conf" \
+  || { echo "FAIL interactive firstboot is disabled"; fail=1; }
 grep -q '^DHCP=yes' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
   || { echo "FAIL wired DHCP configuration"; fail=1; }
 grep -q '^enable systemd-networkd.service$' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
