@@ -121,7 +121,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             body: {
               name: form.diskName.trim() || `${form.name.trim()}-disk`,
               size_bytes: parseSize(form.diskSize),
-              format: 'raw',
+              format: 'qcow2',
             },
           }),
         )
