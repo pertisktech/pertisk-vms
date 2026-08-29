@@ -91,12 +91,12 @@ sudo ./scripts/install-node.sh
 
 That installs `pertiskd` as a systemd service (`0.0.0.0:7480`, home `/var/lib/pertisk`). Admin password is in `/etc/pertisk/admin`.
 
-To build a flashable **ISO** (Linux build host with [mkosi](https://github.com/systemd/mkosi)):
+To build a bootable, flashable **raw disk image** (Linux build host with [mkosi](https://github.com/systemd/mkosi)):
 
 ```bash
 ./scripts/test-iso.sh
 ./scripts/build-iso.sh
-sudo ./scripts/flash.sh --image out/pertisk-node.iso --disk /dev/sdX --yes
+sudo ./scripts/flash.sh --image out/pertisk-node.raw --disk /dev/sdX --yes
 ```
 
 Boot the USB. List disks, then install to NVMe:
@@ -106,4 +106,4 @@ pertisk-install --list
 pertisk-install --disk /dev/nvme0n1 --yes
 ```
 
-Install refuses if `/dev/kvm` is missing. Optional cluster join: put `PERTISK_JOIN=http://<peer>:7480` in `/etc/pertisk/join` before first boot. Raw disk image: `PERTISK_IMAGE_FORMAT=disk ./scripts/build-iso.sh`.
+Install refuses if `/dev/kvm` is missing. Optional cluster join: put `PERTISK_JOIN=http://<peer>:7480` in `/etc/pertisk/join` before first boot.

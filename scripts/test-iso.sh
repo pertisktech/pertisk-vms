@@ -40,9 +40,9 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 [[ -f "$ROOT/iso/mkosi.conf" ]] || { echo "FAIL mkosi.conf"; fail=1; }
-grep -q '^Format=iso' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=iso"; fail=1; }
+grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail=1; }
 grep -q 'pertiskd.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
   || { echo "FAIL preset"; fail=1; }
-echo "ok  mkosi iso + systemd preset"
+echo "ok  mkosi disk image + systemd preset"
 
 exit "$fail"
