@@ -52,6 +52,8 @@ find_ovmf() {
     OVMF_VARS_TEMPLATE="$vars"
     return 0
   done <<'EOF'
+/usr/share/pve-edk2-firmware/OVMF_CODE.fd:/usr/share/pve-edk2-firmware/OVMF_VARS.fd
+/usr/share/pve-edk2-firmware/OVMF_CODE.secboot.fd:/usr/share/pve-edk2-firmware/OVMF_VARS.ms.fd
 /usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd
 /usr/share/edk2/ovmf/OVMF_CODE.secboot.fd:/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd
 /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd
