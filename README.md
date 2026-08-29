@@ -81,7 +81,7 @@ pertisk vm cdrom attach --iso web-1-cidata.iso <id>
 
 Attach that seed last; firmware boots an installer ISO or the OS disk, not the cidata volume.
 
-**Node install / flashable image (phase 7):** not a custom hypervisor — Debian + pertiskd.
+**Node install / flashable image (phase 7):** not a custom hypervisor — Debian Trixie + pertiskd.
 
 On an existing Linux KVM box (9955HX after you install Ubuntu/Debian):
 
