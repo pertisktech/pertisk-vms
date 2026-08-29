@@ -43,6 +43,8 @@ fi
 [[ -f "$ROOT/iso/mkosi.conf" ]] || { echo "FAIL mkosi.conf"; fail=1; }
 grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail=1; }
 grep -q '^Bootloader=grub' "$ROOT/iso/mkosi.conf" || { echo "FAIL Bootloader=grub"; fail=1; }
+grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL serial kernel console"; fail=1; }
 grep -q '^DHCP=yes' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
   || { echo "FAIL wired DHCP configuration"; fail=1; }
 grep -q '^enable systemd-networkd.service$' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
