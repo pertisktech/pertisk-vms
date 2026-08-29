@@ -23,6 +23,10 @@ impl Ipv4Net {
         (ip & self.mask()) == self.network
     }
 
+    pub fn overlaps(self, other: Self) -> bool {
+        self.contains(other.network) || other.contains(self.network)
+    }
+
     pub fn nth(self, n: u32) -> u32 {
         self.network.saturating_add(n)
     }
@@ -112,5 +116,13 @@ mod tests {
             .allocate(Some("10.88.0.1"), &["10.88.0.2".into()])
             .unwrap();
         assert_eq!(ipv4_string(ip), "10.88.0.3");
+    }
+
+    #[test]
+    fn detects_overlapping_networks() {
+        let lan = Ipv4Net::parse("10.1.1.0/24").unwrap();
+        assert!(lan.overlaps(Ipv4Net::parse("10.1.1.0/25").unwrap()));
+        assert!(lan.overlaps(Ipv4Net::parse("10.1.0.0/16").unwrap()));
+        assert!(!lan.overlaps(Ipv4Net::parse("10.88.0.0/24").unwrap()));
     }
 }

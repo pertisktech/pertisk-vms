@@ -111,6 +111,12 @@ impl NetworkPool {
                 "bridge name '{bridge}' already exists on this host; choose a new bridge name"
             )));
         }
+        if self.apply_host_links && host::overlaps_existing_ipv4(net, None)? {
+            return Err(NetError::Invalid(format!(
+                "network {} overlaps an IPv4 subnet already configured on this host",
+                net.to_cidr_string()
+            )));
+        }
         let record = NetworkRecord {
             id,
             name: req.name,
@@ -202,6 +208,12 @@ impl NetworkPool {
             Err(err) => return Err(err),
         };
         let net = Ipv4Net::parse(&network.cidr)?;
+        if host::overlaps_existing_ipv4(net, Some(&network.bridge))? {
+            return Err(NetError::Invalid(format!(
+                "network {} overlaps an IPv4 subnet already configured on this host",
+                network.cidr
+            )));
+        }
         host::ensure_bridge(&network.bridge, network.gateway.as_deref(), net.prefix)?;
         host::provision_nic(
             &network.bridge,

@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::{NetError, Result, valid_ifname};
+use crate::{Ipv4Net, NetError, Result, valid_ifname};
 
 pub fn ensure_bridge(bridge: &str, gateway: Option<&str>, prefix: u8) -> Result<()> {
     check_name(bridge)?;
@@ -14,6 +14,46 @@ pub fn ensure_bridge(bridge: &str, gateway: Option<&str>, prefix: u8) -> Result<
 
 pub fn interface_exists(name: &str) -> bool {
     valid_ifname(name) && std::path::Path::new("/sys/class/net").join(name).exists()
+}
+
+pub fn overlaps_existing_ipv4(network: Ipv4Net, except_interface: Option<&str>) -> Result<bool> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (network, except_interface);
+        Ok(false)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("ip")
+            .args(["-o", "-4", "addr", "show"])
+            .output()
+            .map_err(|err| NetError::Host(format!("ip -o -4 addr show: {err}")))?;
+        if !output.status.success() {
+            return Err(NetError::Host(format!(
+                "ip -o -4 addr show failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let Some(index) = fields.iter().position(|field| *field == "inet") else {
+                continue;
+            };
+            if fields
+                .get(1)
+                .is_some_and(|interface| Some(interface.trim_end_matches(':')) == except_interface)
+            {
+                continue;
+            }
+            let Some(cidr) = fields.get(index + 1) else {
+                continue;
+            };
+            if Ipv4Net::parse(cidr).is_ok_and(|existing| network.overlaps(existing)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 pub fn provision_nic(
