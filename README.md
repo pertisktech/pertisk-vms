@@ -99,7 +99,7 @@ To build a bootable, flashable **raw disk image** (Linux build host with [mkosi]
 sudo ./scripts/flash.sh --image out/pertisk-node.raw --disk /dev/sdX --yes
 ```
 
-Boot the USB. List disks, then install to NVMe:
+Boot the USB in UEFI mode. List disks, then install to NVMe:
 
 ```bash
 pertisk-install --list
