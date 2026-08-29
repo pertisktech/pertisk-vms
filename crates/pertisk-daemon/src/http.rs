@@ -465,7 +465,9 @@ async fn upload_iso(
     body: Body,
 ) -> Result<impl IntoResponse, DaemonError> {
     let tmp = std::env::temp_dir().join(format!("pertisk-iso-{}.iso", uuid::Uuid::new_v4()));
-    let mut file = tokio::fs::File::create(&tmp).await?;
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
     let mut stream = body.into_data_stream();
     let mut written = 0u64;
     const MAX: u64 = 8 * 1024 * 1024 * 1024;
@@ -478,9 +480,13 @@ async fn upload_iso(
                     pertisk_storage::StorageError::Message("iso larger than 8GiB".into()).into(),
                 );
             }
-            file.write_all(&chunk).await?;
+            file.write_all(&chunk)
+                .await
+                .map_err(pertisk_storage::StorageError::Io)?;
         }
-        file.flush().await?;
+        file.flush()
+            .await
+            .map_err(pertisk_storage::StorageError::Io)?;
         Ok::<(), DaemonError>(())
     }
     .await;
@@ -962,6 +968,7 @@ fn storage_status(err: &pertisk_storage::StorageError) -> StatusCode {
         NameTaken(_) | IsoExists(_) | SnapshotExists(_) => StatusCode::CONFLICT,
         InvalidIsoName(_) | CannotShrink { .. } | Message(_) => StatusCode::BAD_REQUEST,
         QemuImgRequired | LinkedRequiresQemu => StatusCode::BAD_REQUEST,
+        Io(err) if err.raw_os_error() == Some(28) => StatusCode::INSUFFICIENT_STORAGE,
         Io(_) | Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
