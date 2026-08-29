@@ -45,9 +45,9 @@ grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail
 grep -q '^Bootloader=grub' "$ROOT/iso/mkosi.conf" || { echo "FAIL Bootloader=grub"; fail=1; }
 grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL serial kernel console"; fail=1; }
-grep -q '^ExecStart=-/sbin/agetty --autologin root ' \
+grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
-  || { echo "FAIL serial root autologin"; fail=1; }
+  || { echo "FAIL serial root shell"; fail=1; }
 grep -q '^DHCP=yes' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
   || { echo "FAIL wired DHCP configuration"; fail=1; }
 grep -q '^enable systemd-networkd.service$' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
