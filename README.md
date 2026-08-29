@@ -91,12 +91,12 @@ sudo ./scripts/install-node.sh
 
 That installs `pertiskd` as a systemd service (`0.0.0.0:7480`, home `/var/lib/pertisk`). Admin password is in `/etc/pertisk/admin`.
 
-To build a bootable, flashable **ISO** (Linux build host with [mkosi](https://github.com/systemd/mkosi) v24.x):
+To build a bootable, flashable **raw disk image** (Linux build host with [mkosi](https://github.com/systemd/mkosi)):
 
 ```bash
 ./scripts/test-iso.sh
 ./scripts/build-iso.sh
-sudo ./scripts/flash.sh --image out/pertisk-node.iso --disk /dev/sdX --yes
+sudo ./scripts/flash.sh --image out/pertisk-node.raw --disk /dev/sdX --yes
 ```
 
 Boot the USB in UEFI mode. List disks, then install to NVMe:
