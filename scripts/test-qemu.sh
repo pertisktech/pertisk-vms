@@ -46,21 +46,21 @@ command -v qemu-system-x86_64 >/dev/null || die "install qemu-system-x86"
 
 find_ovmf() {
   local code vars
-  for code in \
-    /usr/share/edk2/ovmf/OVMF_CODE.fd \
-    /usr/share/edk2/ovmf/OVMF_CODE.secboot.fd \
-    /usr/share/OVMF/OVMF_CODE.fd; do
-    vars="${code/OVMF_CODE/OVMF_VARS}"
+  while IFS=: read -r code vars; do
     [[ -f "$code" && -f "$vars" ]] || continue
-    printf '%s\n%s\n' "$code" "$vars"
+    OVMF_CODE="$code"
+    OVMF_VARS_TEMPLATE="$vars"
     return 0
-  done
+  done <<'EOF'
+/usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd
+/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd:/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd
+/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd
+/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd
+EOF
   return 1
 }
 
-mapfile -t ovmf < <(find_ovmf) || die "install edk2-ovmf (Fedora/AlmaLinux) or ovmf (Debian/Ubuntu)"
-OVMF_CODE="${ovmf[0]}"
-OVMF_VARS_TEMPLATE="${ovmf[1]}"
+find_ovmf || die "OVMF firmware not found; install edk2-ovmf (Fedora/AlmaLinux) or ovmf (Debian/Ubuntu)"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pertisk-qemu.XXXXXX")"
 OVMF_VARS="$RUNTIME_DIR/OVMF_VARS.fd"
 cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
