@@ -231,6 +231,7 @@ impl Service {
             api_socket: None,
             serial_log,
             console_socket: None,
+            graphics_socket: None,
             last_error: None,
             node_id: Some(dest),
         };
@@ -322,6 +323,9 @@ impl Service {
                     }
                     if created.console_socket.is_some() {
                         record.console_socket = created.console_socket;
+                    }
+                    if created.graphics_socket.is_some() {
+                        record.graphics_socket = created.graphics_socket;
                     }
                     self.store.upsert(record.clone())?;
                 }
@@ -423,6 +427,7 @@ impl Service {
         record.pid = None;
         record.api_socket = None;
         record.console_socket = None;
+        record.graphics_socket = None;
         let serial = self
             .config
             .vmm
@@ -836,7 +841,9 @@ impl Service {
             .map(|m| m.len())
             .unwrap_or(0);
         Ok(ConsoleInfo {
+            console_type: vm.spec.console_type,
             serial_log: path,
+            graphics_socket: vm.graphics_socket.clone(),
             size,
             websocket: format!("/v1/vms/{id}/console/ws"),
         })

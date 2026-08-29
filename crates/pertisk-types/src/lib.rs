@@ -379,10 +379,21 @@ pub struct AttachNicRequest {
     pub ip: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleType {
+    #[default]
+    Serial,
+    Graphics,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConsoleInfo {
+    pub console_type: ConsoleType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_log: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_socket: Option<PathBuf>,
     pub size: u64,
     pub websocket: String,
 }
@@ -695,6 +706,9 @@ pub struct VmSpec {
     pub nets: Vec<NetSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_log: Option<PathBuf>,
+    /// Console type: serial or graphics (VGA). Default serial.
+    #[serde(default)]
+    pub console_type: ConsoleType,
     /// Restart on another node if this node is lost. Default true.
     #[serde(default = "default_true")]
     pub ha: bool,
@@ -736,6 +750,8 @@ pub struct VmRecord {
     pub serial_log: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_socket: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_socket: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

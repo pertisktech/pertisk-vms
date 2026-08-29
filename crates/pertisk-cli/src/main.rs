@@ -611,6 +611,7 @@ async fn run() -> Result<()> {
                         .collect(),
                     nets: vec![],
                     serial_log: None,
+                    console_type: Default::default(),
                     ha: true,
                 };
                 let mut record: VmRecord = post_json(

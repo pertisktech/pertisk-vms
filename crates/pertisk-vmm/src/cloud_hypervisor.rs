@@ -38,8 +38,12 @@ impl CloudHypervisorDriver {
         self.run_dir.join(format!("{id}.serial"))
     }
 
-    fn console_socket_path(&self, id: pertisk_types::VmId) -> PathBuf {
-        self.run_dir.join(format!("{id}.console.sock"))
+    fn serial_socket_path(&self, id: pertisk_types::VmId) -> PathBuf {
+        self.run_dir.join(format!("{id}.serial.sock"))
+    }
+
+    fn graphics_socket_path(&self, id: pertisk_types::VmId) -> PathBuf {
+        self.run_dir.join(format!("{id}.graphics.sock"))
     }
 
     pub async fn create(&self, id: pertisk_types::VmId, spec: &VmSpec) -> Result<CreateResult> {
@@ -62,12 +66,16 @@ impl CloudHypervisorDriver {
             .serial_log
             .clone()
             .unwrap_or_else(|| self.serial_path(id));
-        let console_socket = self.console_socket_path(id);
+        let serial_socket = self.serial_socket_path(id);
+        let graphics_socket = self.graphics_socket_path(id);
         if let Some(parent) = serial_log.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        if console_socket.exists() {
-            let _ = tokio::fs::remove_file(&console_socket).await;
+        if serial_socket.exists() {
+            let _ = tokio::fs::remove_file(&serial_socket).await;
+        }
+        if graphics_socket.exists() {
+            let _ = tokio::fs::remove_file(&graphics_socket).await;
         }
 
         info!(vm = %id, socket = %socket.display(), "starting cloud-hypervisor");
@@ -84,7 +92,7 @@ impl CloudHypervisorDriver {
 
         wait_ready(&socket, Duration::from_secs(5)).await?;
 
-        let config = ChVmConfig::from_spec(spec, &console_socket, self.firmware.as_deref());
+        let config = ChVmConfig::from_spec(spec, &serial_socket, &graphics_socket, self.firmware.as_deref());
         let body = serde_json::to_vec(&config)?;
         let (status, resp) = put_json(&socket, "/api/v1/vm.create", Some(&body)).await?;
         expect_ok(status, &resp)?;
@@ -93,7 +101,8 @@ impl CloudHypervisorDriver {
             api_socket: Some(socket),
             pid,
             serial_log: Some(serial_log),
-            console_socket: Some(console_socket),
+            console_socket: Some(serial_socket),
+            graphics_socket: Some(graphics_socket),
         })
     }
 
@@ -135,6 +144,9 @@ impl CloudHypervisorDriver {
             let _ = tokio::fs::remove_file(socket).await;
         }
         if let Some(socket) = &record.console_socket {
+            let _ = tokio::fs::remove_file(socket).await;
+        }
+        if let Some(socket) = &record.graphics_socket {
             let _ = tokio::fs::remove_file(socket).await;
         }
         Ok(())
@@ -180,6 +192,8 @@ struct ChVmConfig {
     net: Option<Vec<ChNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     serial: Option<ChConsole>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    console: Option<ChConsole>,
 }
 
 #[derive(Serialize)]
@@ -229,7 +243,8 @@ struct ChConsole {
 impl ChVmConfig {
     fn from_spec(
         spec: &VmSpec,
-        console_socket: &std::path::Path,
+        serial_socket: &std::path::Path,
+        graphics_socket: &std::path::Path,
         host_firmware: Option<&std::path::Path>,
     ) -> Self {
         let firmware = spec
@@ -283,6 +298,23 @@ impl ChVmConfig {
                     .collect(),
             )
         };
+        
+        // Configure serial and graphics consoles based on console_type
+        let serial = Some(ChConsole {
+            mode: "Socket",
+            file: None,
+            socket: Some(serial_socket.display().to_string()),
+        });
+        
+        let console = match spec.console_type {
+            pertisk_types::ConsoleType::Graphics => Some(ChConsole {
+                mode: "Socket",
+                file: None,
+                socket: Some(graphics_socket.display().to_string()),
+            }),
+            pertisk_types::ConsoleType::Serial => None,
+        };
+        
         Self {
             cpus: ChCpus {
                 boot_vcpus: spec.vcpus,
@@ -294,11 +326,8 @@ impl ChVmConfig {
             payload,
             disks,
             net,
-            serial: Some(ChConsole {
-                mode: "Socket",
-                file: None,
-                socket: Some(console_socket.display().to_string()),
-            }),
+            serial,
+            console,
         }
     }
 }

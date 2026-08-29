@@ -18,9 +18,9 @@ use pertisk_types::{
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
     SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeId, VolumeRecord,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
 
 use crate::control::AuthUser;
 use crate::static_files::static_handler;
@@ -51,6 +51,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/console/serial", get(console_serial))
         .route("/v1/vms/{id}/console/input", post(console_input))
         .route("/v1/vms/{id}/console/ws", get(console_ws))
+        .route("/v1/vms/{id}/graphics/ws", get(graphics_ws))
         .route("/v1/volumes", get(list_volumes).post(create_volume))
         .route("/v1/volumes/{id}", get(show_volume).delete(delete_volume))
         .route("/v1/volumes/{id}/resize", post(resize_volume))
@@ -685,6 +686,78 @@ async fn proxy_console(
             }
         }
     }
+}
+
+async fn graphics_ws(
+    State(service): State<Service>,
+    Path(id): Path<VmId>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, DaemonError> {
+    let console_info = service.console_info(id)?;
+    let graphics_socket = console_info
+        .graphics_socket
+        .ok_or_else(|| DaemonError::Peer("VM has no graphics console".into()))?;
+    Ok(ws.on_upgrade(move |socket| proxy_graphics(socket, graphics_socket)))
+}
+
+async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) {
+    use tokio::net::UnixStream;
+    use futures_util::SinkExt;
+    
+    let unix_socket = match UnixStream::connect(&graphics_socket).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(path = %graphics_socket.display(), %err, "graphics socket connect failed");
+            let _ = ws.close().await;
+            return;
+        }
+    };
+    
+    let (unix_read, unix_write) = unix_socket.into_split();
+    let (mut ws_send, mut ws_recv) = ws.split();
+    
+    // Forward Unix socket → WebSocket (binary)
+    let unix_to_ws = tokio::spawn(async move {
+        let mut unix_read = unix_read;
+        let mut buf = vec![0u8; 65536];
+        loop {
+            match unix_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    if ws_send
+                        .send(Message::Binary(data.into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    
+    // Forward WebSocket → Unix socket
+    let mut unix_write = unix_write;
+    while let Some(msg) = ws_recv.next().await {
+        match msg {
+            Ok(Message::Binary(data)) => {
+                if unix_write.write_all(&data).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Text(text)) => {
+                if unix_write.write_all(text.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Close(_)) => break,
+            _ => {}
+        }
+    }
+    
+    unix_to_ws.abort();
 }
 
 async fn list_networks(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {

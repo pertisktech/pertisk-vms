@@ -103,6 +103,7 @@ pub struct CreateResult {
     pub pid: Option<u32>,
     pub serial_log: Option<PathBuf>,
     pub console_socket: Option<PathBuf>,
+    pub graphics_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

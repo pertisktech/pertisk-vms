@@ -33,6 +33,7 @@ impl MockDriver {
             pid: None,
             serial_log: None,
             console_socket: None,
+            graphics_socket: None,
         })
     }
 
@@ -120,6 +121,7 @@ mod tests {
             api_socket: None,
             serial_log: None,
             console_socket: None,
+            graphics_socket: None,
             last_error: None,
             node_id: None,
         }
