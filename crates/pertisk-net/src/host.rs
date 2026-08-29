@@ -110,7 +110,8 @@ fn run_ip(args: &[&str], ignore_exists: bool) -> Result<()> {
         if ignore_exists
             && (err.contains("File exists")
                 || err.contains("exists")
-                || err.contains("Address already assigned"))
+                || err.contains("Address already assigned")
+                || err.contains("Cannot find device"))
         {
             return Ok(());
         }
