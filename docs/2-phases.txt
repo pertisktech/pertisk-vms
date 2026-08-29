@@ -90,6 +90,19 @@ Skip:  fancy DRS before quorum and fencing
   [x] Live migration via VMM
   [x] Simple scheduler: least-loaded node that fits
 
+Phase 4.5 — Graphics Console (VGA)             → v1.0+ graphical VMs
+-----------------------------------------
+Goal:  Proxmox-like ISO installer experience
+Demo:  Create VM with --graphics; boot installer from ISO; see VGA via web console
+Skip:  advanced graphics features (USB passthrough, GPU sharing)
+
+  [x] ConsoleType: Serial or Graphics (VGA)
+  [x] Cloud Hypervisor graphics console configuration
+  [x] WebSocket graphics (VNC) relay endpoint
+  [x] CLI --graphics flag for VM create
+  [x] Web UI VNC viewer (noVNC integration ready)
+  [x] Graphics socket cleanup on VM destroy
+
 
 Phase 6 — Distributed storage                  (optional, last)
 -----------------------------

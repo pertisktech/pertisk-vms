@@ -134,6 +134,9 @@ enum VmCommand {
         /// Attach this network (id or name).
         #[arg(long)]
         net: Option<String>,
+        /// Use graphics (VGA) console instead of serial.
+        #[arg(long)]
+        graphics: bool,
         /// Start the guest after create (ISO/disk attach included).
         #[arg(long)]
         start: bool,
@@ -577,6 +580,7 @@ async fn run() -> Result<()> {
                 iso,
                 disk_size,
                 net,
+                graphics,
                 start,
             } => {
                 let host: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
@@ -611,7 +615,7 @@ async fn run() -> Result<()> {
                         .collect(),
                     nets: vec![],
                     serial_log: None,
-                    console_type: Default::default(),
+                    console_type: if graphics { pertisk_types::ConsoleType::Graphics } else { pertisk_types::ConsoleType::Serial },
                     ha: true,
                 };
                 let mut record: VmRecord = post_json(
