@@ -105,6 +105,8 @@ Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 
 ./scripts/test-qemu.sh
 ```
 
+To test remote LAN access through a Proxmox bridge, run `sudo ./scripts/test-qemu.sh --bridge vmbr0`. The guest receives an address from the bridge's DHCP network.
+
 Boot the USB in UEFI mode. List disks, then install to NVMe:
 
 ```bash
