@@ -23,6 +23,7 @@ bash -n "$OVERLAY/usr/sbin/pertisk-install"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/flash.sh"
 bash -n "$ROOT/scripts/install-node.sh"
+bash -n "$ROOT/scripts/test-qemu.sh"
 echo "ok  bash -n overlay + scripts"
 
 out="$("$OVERLAY/usr/sbin/pertisk-install" --help)"
@@ -42,6 +43,10 @@ fi
 [[ -f "$ROOT/iso/mkosi.conf" ]] || { echo "FAIL mkosi.conf"; fail=1; }
 grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail=1; }
 grep -q '^Bootloader=grub' "$ROOT/iso/mkosi.conf" || { echo "FAIL Bootloader=grub"; fail=1; }
+grep -q '^DHCP=yes' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
+  || { echo "FAIL wired DHCP configuration"; fail=1; }
+grep -q '^enable systemd-networkd.service$' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
+  || { echo "FAIL systemd-networkd preset"; fail=1; }
 if grep -q '^ *grub-pc$' "$ROOT/iso/mkosi.conf"; then
   echo "FAIL grub-pc conflicts with grub-efi-amd64"
   fail=1

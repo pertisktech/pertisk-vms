@@ -99,6 +99,12 @@ To build a bootable, flashable **raw disk image** (Linux build host with [mkosi]
 sudo ./scripts/flash.sh --image out/pertisk-node.raw --disk /dev/sdX --yes
 ```
 
+Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 edk2-ovmf`):
+
+```bash
+./scripts/test-qemu.sh
+```
+
 Boot the USB in UEFI mode. List disks, then install to NVMe:
 
 ```bash
