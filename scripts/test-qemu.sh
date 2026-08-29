@@ -24,7 +24,7 @@ Options:
 
 Without --bridge, the guest uses QEMU user-mode networking and receives DHCP.
 Bridge mode requires root and lets the guest receive an address from the LAN.
-Exit QEMU with Ctrl-a x from the serial console.
+Press Ctrl-C to stop QEMU from the serial console.
 EOF
 }
 
@@ -101,7 +101,7 @@ if [[ -n "$BRIDGE" ]]; then
 fi
 
 echo "test-qemu: booting $IMAGE"
-echo "test-qemu: serial console is active; exit QEMU with Ctrl-a x"
+echo "test-qemu: serial console is active; press Ctrl-C to stop QEMU"
 qemu-system-x86_64 \
   -machine q35,accel=kvm:tcg \
   "${accel[@]}" \
@@ -111,4 +111,6 @@ qemu-system-x86_64 \
   -drive if=pflash,format=raw,file="$OVMF_VARS" \
   -drive if=virtio,format=raw,file="$IMAGE" \
   "${network[@]}" \
-  -nographic
+  -display none \
+  -monitor none \
+  -serial stdio
