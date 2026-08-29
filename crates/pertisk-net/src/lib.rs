@@ -106,6 +106,11 @@ impl NetworkPool {
                 "invalid bridge name '{bridge}' (max 15 [A-Za-z0-9_-])"
             )));
         }
+        if self.apply_host_links && host::interface_exists(&bridge) {
+            return Err(NetError::Invalid(format!(
+                "bridge name '{bridge}' already exists on this host; choose a new bridge name"
+            )));
+        }
         let record = NetworkRecord {
             id,
             name: req.name,

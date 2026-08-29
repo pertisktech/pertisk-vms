@@ -12,6 +12,10 @@ pub fn ensure_bridge(bridge: &str, gateway: Option<&str>, prefix: u8) -> Result<
     run_ip(&["link", "set", "dev", bridge, "up"], false)
 }
 
+pub fn interface_exists(name: &str) -> bool {
+    valid_ifname(name) && std::path::Path::new("/sys/class/net").join(name).exists()
+}
+
 pub fn provision_nic(
     bridge: &str,
     tap: &str,

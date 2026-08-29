@@ -99,6 +99,8 @@ To build a bootable, flashable **raw disk image** (Linux build host with [mkosi]
 sudo ./scripts/flash.sh --image out/pertisk-node.raw --disk /dev/sdX --yes
 ```
 
+The image has a 12 GiB root filesystem so the ISO library can store installer media. The raw output is sparse on the build host, but flashing needs a USB disk of at least 13 GiB.
+
 Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 edk2-ovmf`):
 
 ```bash

@@ -45,6 +45,8 @@ grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail
 grep -q '^Bootloader=grub' "$ROOT/iso/mkosi.conf" || { echo "FAIL Bootloader=grub"; fail=1; }
 grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL serial kernel console"; fail=1; }
+grep -q '^SizeMinBytes=12G$' "$ROOT/iso/mkosi.repart/10-root.conf" \
+  || { echo "FAIL 12GiB ISO storage root"; fail=1; }
 grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
   || { echo "FAIL serial root shell"; fail=1; }
