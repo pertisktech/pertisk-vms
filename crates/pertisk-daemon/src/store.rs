@@ -20,7 +20,11 @@ impl Store {
         }
         let vms = if path.exists() {
             let text = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&text)?
+            if text.trim().is_empty() {
+                BTreeMap::new()
+            } else {
+                serde_json::from_str(&text)?
+            }
         } else {
             BTreeMap::new()
         };
@@ -122,6 +126,7 @@ mod tests {
                     disks: vec![],
                     nets: vec![],
                     serial_log: None,
+                    console_type: Default::default(),
                     ha: true,
                 },
                 state: VmState::Created,
@@ -129,6 +134,7 @@ mod tests {
                 api_socket: None,
                 serial_log: None,
                 console_socket: None,
+                graphics_socket: None,
                 last_error: None,
                 node_id: None,
             })
@@ -136,5 +142,13 @@ mod tests {
         drop(store);
         let reopened = Store::open(dir.path().join("vms.json")).unwrap();
         assert_eq!(reopened.get(id).unwrap().spec.name, "a");
+    }
+
+    #[test]
+    fn opens_empty_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vms.json");
+        std::fs::write(&path, "\n").unwrap();
+        assert!(Store::open(path).unwrap().list().unwrap().is_empty());
     }
 }

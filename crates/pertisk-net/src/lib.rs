@@ -51,7 +51,12 @@ impl NetworkPool {
         std::fs::create_dir_all(&root)?;
         let inventory_path = root.join("networks.json");
         let inner = if inventory_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&inventory_path)?)?
+            let text = std::fs::read_to_string(&inventory_path)?;
+            if text.trim().is_empty() {
+                Inventory::default()
+            } else {
+                serde_json::from_str(&text)?
+            }
         } else {
             Inventory::default()
         };
@@ -129,6 +134,10 @@ impl NetworkPool {
         if self.apply_host_links {
             let prefix = net.prefix;
             host::ensure_bridge(&record.bridge, record.gateway.as_deref(), prefix)?;
+            if let Err(err) = host::ensure_ipv4_egress(&record.bridge, net) {
+                let _ = host::delete_bridge(&record.bridge);
+                return Err(err);
+            }
         }
         self.upsert(record.clone())?;
         Ok(record)
@@ -215,6 +224,7 @@ impl NetworkPool {
             )));
         }
         host::ensure_bridge(&network.bridge, network.gateway.as_deref(), net.prefix)?;
+        host::ensure_ipv4_egress(&network.bridge, net)?;
         host::provision_nic(
             &network.bridge,
             tap,

@@ -210,7 +210,7 @@ impl Cluster {
         let cpus = default_cpus(config.cluster.cpus);
         let memory_mib = default_memory_mib(config.cluster.memory_mib);
         let now = now_ms();
-        let inner = if path.exists() {
+        let inner = if path.exists() && !std::fs::read_to_string(&path)?.trim().is_empty() {
             let persisted: Persisted = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
             let mut members = BTreeMap::new();
             for record in persisted.members {
@@ -600,6 +600,7 @@ mod tests {
             disks: vec![],
             nets: vec![],
             serial_log: None,
+            console_type: Default::default(),
             ha: true,
         }
     }

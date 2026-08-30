@@ -76,7 +76,12 @@ impl VolumePool {
         std::fs::create_dir_all(root.join("snapshots"))?;
         let inventory_path = root.join("inventory.json");
         let inner = if inventory_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&inventory_path)?)?
+            let text = std::fs::read_to_string(&inventory_path)?;
+            if text.trim().is_empty() {
+                Inventory::default()
+            } else {
+                serde_json::from_str(&text)?
+            }
         } else {
             Inventory::default()
         };

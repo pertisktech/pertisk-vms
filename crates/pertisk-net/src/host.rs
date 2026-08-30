@@ -12,6 +12,42 @@ pub fn ensure_bridge(bridge: &str, gateway: Option<&str>, prefix: u8) -> Result<
     run_ip(&["link", "set", "dev", bridge, "up"], false)
 }
 
+pub fn delete_bridge(bridge: &str) -> Result<()> {
+    check_name(bridge)?;
+    run_ip(&["link", "delete", "dev", bridge, "type", "bridge"], true)
+}
+
+/// Give an isolated guest bridge IPv4 egress through the host's default route.
+pub fn ensure_ipv4_egress(bridge: &str, network: Ipv4Net) -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (bridge, network);
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        check_name(bridge)?;
+        let uplink = default_uplink()?;
+        let cidr = network.to_cidr_string();
+        run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
+        ensure_iptables_rule(&["-t", "nat", "POSTROUTING", "-s", &cidr, "-o", &uplink, "-j", "MASQUERADE"])?;
+        ensure_iptables_rule(&["FORWARD", "-i", bridge, "-o", &uplink, "-j", "ACCEPT"])?;
+        ensure_iptables_rule(&[
+            "FORWARD",
+            "-i",
+            &uplink,
+            "-o",
+            bridge,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
+        ])
+    }
+}
+
 pub fn interface_exists(name: &str) -> bool {
     valid_ifname(name) && std::path::Path::new("/sys/class/net").join(name).exists()
 }
@@ -119,6 +155,67 @@ fn run_ip(args: &[&str], ignore_exists: bool) -> Result<()> {
             "ip {} failed: {}",
             args.join(" "),
             err.trim()
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn default_uplink() -> Result<String> {
+    let output = Command::new("ip")
+        .args(["-o", "-4", "route", "show", "to", "default"])
+        .output()
+        .map_err(|err| NetError::Host(format!("ip route: {err}")))?;
+    if !output.status.success() {
+        return Err(NetError::Host(format!(
+            "ip route failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let route = String::from_utf8_lossy(&output.stdout);
+    let fields: Vec<_> = route.split_whitespace().collect();
+    let dev = fields
+        .windows(2)
+        .find_map(|pair| (pair[0] == "dev").then_some(pair[1]))
+        .filter(|name| valid_ifname(name))
+        .ok_or_else(|| NetError::Host("no IPv4 default-route interface found".into()))?;
+    Ok(dev.into())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_iptables_rule(rule: &[&str]) -> Result<()> {
+    let (prefix, rule) = match rule {
+        ["-t", table, rest @ ..] => (vec!["-t", *table], rest),
+        _ => (Vec::new(), rule),
+    };
+    let mut check = prefix.clone();
+    check.push("-C");
+    check.extend_from_slice(rule);
+    let exists = Command::new("iptables").args(&check).status();
+    match exists {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => {
+            let mut add = prefix;
+            add.push("-A");
+            add.extend_from_slice(rule);
+            run_command("iptables", &add)
+        }
+        Err(err) => Err(NetError::Host(format!("iptables: {err}"))),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_command(command: &str, args: &[&str]) -> Result<()> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|err| NetError::Host(format!("{command}: {err}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(NetError::Host(format!(
+            "{command} {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
         )))
     }
 }
