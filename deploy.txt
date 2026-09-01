@@ -3,9 +3,16 @@
 #
 # Only needed when you change pertisk source code — NOT after every reboot.
 
-sudo ./scripts/deploy-appliance.sh 901
+sudo ./deploy.sh
 
 # UI: http://10.1.1.144:7480/  login admin / admin
 #
 # Do NOT run pertisk-install inside the Proxmox VM — you are already booted from disk.
 # pertisk-install is for copying the live image onto bare-metal NVMe/USB.
+#
+# If deploy was interrupted (mount left active, VM won't boot / fsck errors):
+#   qm stop 901
+#   umount /mnt/pertisk901 /mnt/pertisk-deploy-901 2>/dev/null; sync
+#   e2fsck -f -y /dev/zvol/rpool/data/vm-901-disk-0-part2
+#   fsck.vfat -a /dev/zvol/rpool/data/vm-901-disk-0-part1
+#   qm start 901

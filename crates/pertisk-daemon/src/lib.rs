@@ -68,13 +68,14 @@ pub async fn bind_and_serve(listen: &str, service: Service) -> Result<(), Daemon
             }
         });
     }
+    let shutdown = service.clone();
     axum::serve(listener, router(service))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown))
         .await?;
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(service: Service) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -93,4 +94,6 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
+    tracing::info!("pertiskd stopping; shutting down local guests");
+    service.shutdown_all_local_vms().await;
 }

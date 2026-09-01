@@ -13,6 +13,7 @@ ExecStartPre=/usr/sbin/pertisk-kvm-check
 ExecStart=/usr/bin/pertiskd
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=300
 LimitNOFILE=1048576
 
 # TAP/bridge and /dev/kvm

@@ -133,7 +133,7 @@ impl VmmBackend {
         match self {
             Self::Mock(driver) => driver.is_running(record),
             Self::CloudHypervisor(driver) => driver.is_running(record).await,
-            Self::Qemu(driver) => driver.is_running(record),
+            Self::Qemu(driver) => driver.is_running(record).await,
         }
     }
 }

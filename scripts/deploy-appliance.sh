@@ -28,8 +28,26 @@ if qm status "$VMID" 2>/dev/null | grep -q running; then
 fi
 
 echo "stopping VM $VMID"
-qm stop "$VMID"
-sleep 2
+if qm status "$VMID" 2>/dev/null | grep -q running; then
+  qm stop "$VMID"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    qm status "$VMID" 2>/dev/null | grep -q stopped && break
+    sleep 1
+  done
+fi
+if qm status "$VMID" 2>/dev/null | grep -qv stopped; then
+  die "VM $VMID did not stop — fix manually (qm stop $VMID) before deploying"
+fi
+sleep 1
+
+# Drop stale host mounts from interrupted deploys (causes dirty FS / fsck failures).
+for stale in "$MNT" /mnt/pertisk901; do
+  if mountpoint -q "$stale" 2>/dev/null; then
+    echo "unmounting stale mount $stale"
+    sync
+    umount "$stale"
+  fi
+done
 
 mkdir -p "$MNT"
 mount -o "offset=$((ROOT_PART_START * 512))" "$ZVOL" "$MNT"
@@ -38,19 +56,22 @@ install -m 755 "$ROOT/target/release/pertiskd" "$MNT/usr/bin/pertiskd"
 install -m 755 "$ROOT/target/release/pertisk" "$MNT/usr/bin/pertisk"
 install -m 755 "$ROOT/target/release/pertisk-tui" "$MNT/usr/bin/pertisk-tui"
 
+# systemd unit tweaks (e.g. TimeoutStopSec) ship in the ISO overlay.
+if [[ -f "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" ]]; then
+  install -m 644 "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" \
+    "$MNT/usr/lib/systemd/system/pertiskd.service"
+fi
+
+sync
 if [[ ! -f "$MNT/etc/fstab" ]]; then
-  root_uuid="$(debugfs -R 'stats' "$ZVOL" 2>/dev/null | awk -F\" '/Filesystem UUID/ {print $2; exit}')"
-  if [[ -z "$root_uuid" ]]; then
-    root_uuid="$(tune2fs -l "$ZVOL" 2>/dev/null | awk '/Filesystem UUID/ {print $3}')"
-  fi
+  root_uuid=""
   esp_uuid=""
   if command -v blkid >/dev/null; then
-    mkdir -p /tmp/pertisk-esp-$$ 
-    if mount -o "offset=$((2048 * 512)),sizelimit=$((1048576 * 512))" "$ZVOL" /tmp/pertisk-esp-$$ 2>/dev/null; then
-      esp_uuid="$(blkid -s UUID -o value /tmp/pertisk-esp-$$ 2>/dev/null || true)"
-      umount /tmp/pertisk-esp-$$
-    fi
-    rmdir /tmp/pertisk-esp-$$ 2>/dev/null || true
+    root_uuid="$(blkid -s UUID -o value "${ZVOL}-part2" 2>/dev/null || true)"
+    esp_uuid="$(blkid -s UUID -o value "${ZVOL}-part1" 2>/dev/null || true)"
+  fi
+  if [[ -z "$root_uuid" ]]; then
+    root_uuid="$(tune2fs -l "${ZVOL}-part2" 2>/dev/null | awk '/Filesystem UUID/ {print $3}')"
   fi
   if [[ -n "$root_uuid" ]]; then
     {
@@ -69,9 +90,11 @@ UI:               http://<this-host>:7480/  user admin  password in /etc/pertisk
 EOF
 
 umount "$MNT"
-rmdir "$MNT"
+rmdir "$MNT" 2>/dev/null || true
 
 echo "starting VM $VMID"
 qm start "$VMID"
 
-echo "deploy-appliance: done (VM $VMID). Reboots do not require redeploy unless you change code."
+echo "deploy-appliance: done (VM $VMID)."
+echo "  UI: http://<appliance-ip>:7480/  (admin / admin)"
+echo "  Reboots do not need redeploy unless you change pertisk source."

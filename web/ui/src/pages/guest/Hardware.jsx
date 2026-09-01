@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api, disksOf, formatBytes, netsOf } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
@@ -18,6 +19,8 @@ export default function GuestHardware() {
   const [dialog, setDialog] = useState(null)
   const [form, setForm] = useState({})
   const addRef = useRef(null)
+  const addBtnRef = useRef(null)
+  const [menuPos, setMenuPos] = useState(null)
 
   const running = vm.state === 'running'
   const freeVolumes = useMemo(() => {
@@ -27,13 +30,34 @@ export default function GuestHardware() {
     return inv.volumes.filter((v) => !used.has(v.id))
   }, [inv.vms, inv.volumes])
 
+  function placeAddMenu() {
+    const btn = addBtnRef.current
+    if (!btn) return
+    const rect = btn.getBoundingClientRect()
+    setMenuPos({ top: rect.bottom + 4, left: rect.left })
+  }
+
   useEffect(() => {
-    if (!addOpen) return
+    if (!addOpen) {
+      setMenuPos(null)
+      return
+    }
+    placeAddMenu()
     function onPointerDown(e) {
-      if (addRef.current && !addRef.current.contains(e.target)) setAddOpen(false)
+      if (addRef.current?.contains(e.target) || e.target.closest('.pve-menu-list')) return
+      setAddOpen(false)
+    }
+    function onLayout() {
+      placeAddMenu()
     }
     document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
+    window.addEventListener('resize', onLayout)
+    window.addEventListener('scroll', onLayout, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('resize', onLayout)
+      window.removeEventListener('scroll', onLayout, true)
+    }
   }, [addOpen])
 
   function openDialog(kind) {
@@ -172,6 +196,7 @@ export default function GuestHardware() {
         <div className="pve-hw-bar">
           <div className="pve-menu" ref={addRef}>
             <button
+              ref={addBtnRef}
               type="button"
               className="btn-icon"
               disabled={running || addable.length === 0}
@@ -181,16 +206,19 @@ export default function GuestHardware() {
               <span>Add</span>
               <Icon name="chevron-down" size={13} />
             </button>
-            {addOpen && (
-              <div className="pve-menu-list">
-                {addable.map((k) => (
-                  <button key={k.key} type="button" onClick={() => openDialog(k.key)}>
-                    <Icon name={k.icon} size={15} />
-                    {k.label}
-                  </button>
-                ))}
-              </div>
-            )}
+            {addOpen &&
+              menuPos &&
+              createPortal(
+                <div className="pve-menu-list" style={{ top: menuPos.top, left: menuPos.left }}>
+                  {addable.map((k) => (
+                    <button key={k.key} type="button" onClick={() => openDialog(k.key)}>
+                      <Icon name={k.icon} size={15} />
+                      {k.label}
+                    </button>
+                  ))}
+                </div>,
+                document.body,
+              )}
           </div>
           {running && (
             <span className="muted">Stop the guest to change hardware. Name and HA stay editable.</span>

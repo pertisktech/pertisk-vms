@@ -122,22 +122,41 @@ impl QemuDriver {
         let has_installer_cd = ordered
             .iter()
             .any(|disk| disk.cdrom && !is_cidata(disk));
+        let has_data_disk = ordered.iter().any(|disk| !disk.cdrom);
+        if ordered.iter().any(|disk| disk.cdrom) {
+            cmd.arg("-device").arg("ich9-ahci,id=ahci");
+        }
+        let mut bootindex = 1u8;
+        let mut cd_index = 0u8;
         for (index, disk) in ordered.iter().enumerate() {
             let format = drive_format(disk);
+            let drive_id = format!("disk{index}");
             if disk.cdrom {
                 cmd.arg("-drive").arg(format!(
-                    "file={},if=ide,index={index},media=cdrom,readonly=on,format={format}",
+                    "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",
                     disk.path.display()
                 ));
+                cmd.arg("-device").arg(format!(
+                    "ide-cd,drive={drive_id},bus=ahci.{cd_index}"
+                ));
+                cd_index = cd_index.saturating_add(1);
             } else {
                 cmd.arg("-drive").arg(format!(
-                    "file={},if=virtio,index={index},format={format},discard=unmap",
+                    "file={},if=none,id={drive_id},format={format},cache=none,discard=unmap",
                     disk.path.display()
                 ));
+                let boot = format!(",bootindex={bootindex}");
+                bootindex = bootindex.saturating_add(1);
+                cmd.arg("-device")
+                    .arg(format!("virtio-blk-pci,drive={drive_id}{boot}"));
             }
         }
         if has_installer_cd {
-            cmd.arg("-boot").arg("order=dc");
+            if has_data_disk {
+                cmd.arg("-boot").arg("order=c");
+            } else {
+                cmd.arg("-boot").arg("order=d");
+            }
         }
 
         for (i, net) in spec.nets.iter().enumerate() {
@@ -155,17 +174,45 @@ impl QemuDriver {
         }
 
         info!(vm = %id, qmp = %qmp.display(), "starting qemu");
+        let stderr_log = self.run_dir.join(format!("{id}.qemu.stderr"));
+        let stderr = std::fs::File::create(&stderr_log).ok();
+        let mut cmd = cmd;
+        if let Some(file) = stderr {
+            cmd.stderr(Stdio::from(file));
+        }
         let child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
             .kill_on_drop(false)
-            .spawn()?;
+            .spawn()
+            .map_err(|err| {
+                VmmError::Message(format!(
+                    "qemu spawn: {err} (see {})",
+                    stderr_log.display()
+                ))
+            })?;
         let pid = child.id();
         self.children.lock().await.insert(id, child);
 
-        wait_socket(&qmp, Duration::from_secs(8)).await?;
-        qmp_execute(&qmp, "qmp_capabilities").await?;
+        if let Err(err) = wait_qmp(&qmp, Duration::from_secs(8)).await {
+            let tail = std::fs::read_to_string(&stderr_log)
+                .ok()
+                .map(|s| {
+                    s.lines()
+                        .rev()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|s| !s.is_empty());
+            return Err(VmmError::Message(format!(
+                "{err}{}",
+                tail.map(|t| format!(": {t}")).unwrap_or_default()
+            )));
+        }
 
         Ok(CreateResult {
             api_socket: Some(qmp),
@@ -261,13 +308,32 @@ impl QemuDriver {
         self.wait_or_kill(record, Duration::from_secs(3)).await
     }
 
-    /// True while the QEMU process for this VM is still alive.
-    pub fn is_running(&self, record: &VmRecord) -> bool {
-        if let Some(pid) = record.pid.filter(|pid| *pid > 0) {
-            return std::path::Path::new(&format!("/proc/{pid}")).exists();
+    /// True while the guest OS is running (QEMU alive and QMP status not shutdown).
+    pub async fn is_running(&self, record: &VmRecord) -> bool {
+        let Some(pid) = record.pid.filter(|pid| *pid > 0) else {
+            return false;
+        };
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return false;
         }
-        false
+        let Some(qmp) = record.api_socket.as_ref() else {
+            return true;
+        };
+        if !qmp.exists() {
+            return false;
+        }
+        match qmp_query_status(qmp).await {
+            Ok(status) => guest_qmp_running(&status),
+            Err(_) => false,
+        }
     }
+}
+
+fn guest_qmp_running(status: &str) -> bool {
+    matches!(
+        status.to_ascii_lowercase().as_str(),
+        "running" | "paused" | "prelaunch"
+    )
 }
 
 fn drive_format(disk: &pertisk_types::DiskSpec) -> &'static str {
@@ -338,21 +404,38 @@ fn find_ovmf() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-async fn wait_socket(path: &Path, timeout: Duration) -> Result<()> {
+async fn wait_qmp(path: &Path, timeout: Duration) -> Result<()> {
     let start = std::time::Instant::now();
+    let mut last_err = String::new();
     while start.elapsed() < timeout {
-        if path.exists() {
-            return Ok(());
+        match qmp_execute(path, "qmp_capabilities").await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_err = err.to_string();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Err(VmmError::Message(format!(
-        "timed out waiting for qemu socket {}",
+        "timed out waiting for qmp {} ({last_err})",
         path.display()
     )))
 }
 
 async fn qmp_execute(path: &Path, execute: &str) -> Result<()> {
+    qmp_query(path, execute).await.map(|_| ())
+}
+
+async fn qmp_query_status(path: &Path) -> Result<String> {
+    let resp = qmp_query(path, "query-status").await?;
+    resp.get("return")
+        .and_then(|ret| ret.get("status"))
+        .and_then(|status| status.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| VmmError::Message("query-status missing status".into()))
+}
+
+async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
     let mut stream = UnixStream::connect(path).await.map_err(|err| {
         VmmError::Message(format!("qmp connect {}: {err}", path.display()))
     })?;
@@ -366,15 +449,36 @@ async fn qmp_execute(path: &Path, execute: &str) -> Result<()> {
         let cmd = serde_json::json!({"execute": execute});
         stream.write_all(cmd.to_string().as_bytes()).await?;
         stream.write_all(b"\n").await?;
-        let _ = stream.read(&mut buf).await?;
+        let n = stream.read(&mut buf).await?;
+        let text = std::str::from_utf8(&buf[..n]).unwrap_or("");
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                return Ok(value);
+            }
+        }
+        return Err(VmmError::Message(format!(
+            "qmp {execute} returned no json"
+        )));
     }
-    Ok(())
+    Ok(serde_json::Value::Null)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pertisk_types::DiskSpec;
+
+    #[test]
+    fn guest_qmp_status_running() {
+        assert!(guest_qmp_running("running"));
+        assert!(guest_qmp_running("Running"));
+        assert!(guest_qmp_running("paused"));
+        assert!(!guest_qmp_running("shutdown"));
+        assert!(!guest_qmp_running("guest-panicked"));
+    }
 
     #[test]
     fn qcow2_and_iso_formats() {

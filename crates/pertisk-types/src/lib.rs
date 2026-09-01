@@ -703,6 +703,13 @@ pub struct DiskSpec {
     pub iso_name: Option<String>,
 }
 
+/// Heuristic: qcow2/raw larger than a blank volume usually has an installed OS.
+pub fn disk_likely_bootable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.len() > 64 * 1024 * 1024)
+        .unwrap_or(false)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NetSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]

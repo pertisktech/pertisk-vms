@@ -302,7 +302,7 @@ impl Service {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
         }
-        let boot_spec = self.iso_linux_boot_spec(&record.spec)?;
+        let boot_spec = self.prefer_disk_boot_spec(&self.iso_linux_boot_spec(&record.spec)?);
         for nic in &record.spec.nets {
             self.networks.ensure_host_links(nic)?;
         }
@@ -320,7 +320,7 @@ impl Service {
         } else {
             true
         };
-        let recreate = record.state == VmState::Created
+        let recreate = matches!(record.state, VmState::Created | VmState::Failed)
             || (needs_vmm && (socket_missing || !vmm_alive));
         if recreate {
             match self.vmm.create(record.id, &boot_spec).await {
@@ -398,6 +398,7 @@ impl Service {
         }
         self.vmm.stop(&record).await?;
         record.state = VmState::Stopped;
+        record.pid = None;
         record.last_error = None;
         self.store.upsert(record.clone())?;
         self.cluster.bump()?;
@@ -439,6 +440,7 @@ impl Service {
         }
         self.vmm.shutdown(&record).await?;
         record.state = VmState::Stopped;
+        record.pid = None;
         record.last_error = None;
         self.store.upsert(record.clone())?;
         self.cluster.bump()?;
@@ -469,6 +471,11 @@ impl Service {
         }
         match self.driver() {
             DriverKind::Qemu | DriverKind::Mock => {
+                if self.driver() == DriverKind::Qemu && self.prefer_disk_recreate(&record) {
+                    tracing::info!(vm = %id, "restart: disk installed — stop+start without installer ISO");
+                    self.shutdown_local(id).await?;
+                    return self.start_local(id).await;
+                }
                 self.vmm.restart(&record).await?;
                 self.attach_console(&record).await;
                 Ok(record)
@@ -1073,6 +1080,42 @@ impl Service {
         Ok(spec)
     }
 
+    /// Drop installer ISOs from the boot config once the VM disk looks installed.
+    fn prefer_disk_boot_spec(&self, spec: &VmSpec) -> VmSpec {
+        let mut spec = spec.clone();
+        let installed = spec
+            .disks
+            .iter()
+            .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path));
+        if !installed {
+            return spec;
+        }
+        let before = spec.disks.len();
+        spec.disks
+            .retain(|disk| !disk.cdrom || iso_is_cidata(disk));
+        if spec.disks.len() < before {
+            tracing::info!(
+                vm = %spec.name,
+                "booting from disk; installer ISO omitted (detach ISO in Hardware to remove permanently)"
+            );
+        }
+        spec
+    }
+
+    fn prefer_disk_recreate(&self, record: &VmRecord) -> bool {
+        let has_installer = record
+            .spec
+            .disks
+            .iter()
+            .any(|disk| disk.cdrom && !iso_is_cidata(disk));
+        let bootable = record
+            .spec
+            .disks
+            .iter()
+            .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path));
+        has_installer && bootable
+    }
+
     fn network_users(&self, id: NetworkId) -> Result<Vec<VmId>, DaemonError> {
         Ok(self
             .store
@@ -1304,6 +1347,23 @@ impl Service {
         Ok(())
     }
 
+    /// ACPI shutdown all running guests on this node (used before daemon exit).
+    pub async fn shutdown_all_local_vms(&self) {
+        let Ok(vms) = self.store.list() else {
+            return;
+        };
+        let self_id = self.cluster.self_id();
+        for vm in vms {
+            if vm.state != VmState::Running || vm.node_id != Some(self_id) {
+                continue;
+            }
+            tracing::info!(vm = %vm.id, "shutting down guest before daemon exit");
+            if let Err(err) = self.shutdown_local(vm.id).await {
+                tracing::warn!(vm = %vm.id, error = %err, "guest shutdown on daemon exit failed");
+            }
+        }
+    }
+
     /// Poll the hypervisor until the guest exits, then mark the VM stopped.
     fn spawn_exit_watch(&self, record: &VmRecord) {
         if record.state != VmState::Running {
@@ -1347,6 +1407,7 @@ impl Service {
         }
         tracing::info!(vm = %id, "guest exited; marking stopped");
         self.console.drop_vm(id).await;
+        let _ = self.vmm.stop(&record).await;
         record.state = VmState::Stopped;
         record.pid = None;
         record.last_error = None;

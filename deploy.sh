@@ -1,16 +1,13 @@
-cd /root/pertisk-vms
+#!/usr/bin/env bash
+# Build UI + pertisk binaries and copy into appliance VM 901 on this Proxmox host.
+# Safe wrapper around scripts/deploy-appliance.sh (stop VM, mount offline, sync, start).
+set -euo pipefail
 
-# UI (if you changed web/ui)
-cd web/ui && npm ci && npm run build && cd ../..
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
 
-# Binaries
-cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
+echo "==> UI (baked into pertiskd via rust-embed)"
+(cd web/ui && npm ci && npm run build)
 
-# Copy into appliance VM disk
-qm stop 901
-mount -o offset=$((1050624*512)) /dev/zvol/rpool/data/vm-901-disk-0 /mnt/pertisk901
-install -m 755 target/release/pertiskd /mnt/pertisk901/usr/bin/pertiskd
-install -m 755 target/release/pertisk     /mnt/pertisk901/usr/bin/pertisk
-install -m 755 target/release/pertisk-tui   /mnt/pertisk901/usr/bin/pertisk-tui
-umount /mnt/pertisk901
-qm start 901
+echo "==> Deploy binaries to VM 901"
+exec "$ROOT/scripts/deploy-appliance.sh" 901
