@@ -2,6 +2,7 @@
 
 [daemon]
 listen = "0.0.0.0:7480"
+tls_listen = "0.0.0.0:7443"
 
 [vmm]
 # qemu = serial + VNC (Proxmox-like). cloud-hypervisor = serial only.

@@ -78,5 +78,5 @@ systemctl restart pertiskd.service || true
 echo
 echo "=== installed ==="
 systemctl --no-pager --full status pertiskd.service || true
-echo "UI: http://$(hostname -I 2>/dev/null | awk '{print $1}'):7480/"
+echo "UI: https://$(hostname -I 2>/dev/null | awk '{print $1}'):7443/"
 echo "Admin password: /etc/pertisk/admin (after firstboot) or PERTISK_ADMIN_PASSWORD in /etc/pertisk/daemon.env"

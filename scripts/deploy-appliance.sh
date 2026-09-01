@@ -86,7 +86,7 @@ cat >"$MNT/etc/motd" <<'EOF'
 pertisk-vm node
 Running from disk (no pertisk-install needed on Proxmox VM).
 Console TUI:      pertisk-tui
-UI:               http://<this-host>:7480/  user admin  password in /etc/pertisk/admin
+UI:               https://<this-host>:7443/  user admin  password in /etc/pertisk/admin
 EOF
 
 umount "$MNT"
@@ -96,5 +96,5 @@ echo "starting VM $VMID"
 qm start "$VMID"
 
 echo "deploy-appliance: done (VM $VMID)."
-echo "  UI: http://<appliance-ip>:7480/  (admin / admin)"
+echo "  UI: https://<appliance-ip>:7443/  (admin / admin; self-signed cert)"
 echo "  Reboots do not need redeploy unless you change pertisk source."

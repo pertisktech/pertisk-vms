@@ -96,9 +96,14 @@ fn node_info() -> NodeInfo {
     let password = admin_password();
     let listen = std::env::var("PERTISK_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
     let primary_ip = ips.first().cloned().unwrap_or_else(|| "127.0.0.1".into());
-    let port = listen.split(':').nth(1).unwrap_or("7480");
+    let tls_listen = std::env::var("PERTISK_TLS_LISTEN").unwrap_or_else(|_| "0.0.0.0:7443".into());
+    let tls_port = tls_listen
+        .rsplit(':')
+        .next()
+        .filter(|p| *p != "off" && !p.is_empty())
+        .unwrap_or("7443");
     NodeInfo {
-        ui_url: format!("http://{primary_ip}:{port}/"),
+        ui_url: format!("https://{primary_ip}:{tls_port}/"),
         ips,
         password,
         listen,

@@ -118,7 +118,7 @@ show_install_hint() {
 ensure_fstab
 
 cat >"$ISSUE" <<EOF
-pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
+pertisk-vm  https://${ips}:7443/   user admin   password ${PERTISK_ADMIN_PASSWORD}
 Run pertisk-tui on this console for VM control.
 EOF
 
@@ -130,9 +130,9 @@ EOF
     echo "Running from disk (no pertisk-install needed)."
   fi
   echo "Console TUI:      pertisk-tui"
-  echo "UI:               http://${ips}:7480/  user admin  password ${PERTISK_ADMIN_PASSWORD}"
+  echo "UI:               https://${ips}:7443/  user admin  password ${PERTISK_ADMIN_PASSWORD}"
 } >/etc/motd
 
 touch "$HOME_DIR/.firstboot-done"
-echo "pertisk-firstboot: done. UI http://${ips}:7480/"
+echo "pertisk-firstboot: done. UI https://${ips}:7443/"
 exit 0

@@ -19,6 +19,9 @@ use pertisk_types::{
 struct Cli {
     #[arg(long, env = "PERTISK_URL", default_value = "http://127.0.0.1:7480")]
     url: String,
+    /// Skip TLS certificate verification (self-signed appliance certs).
+    #[arg(long, env = "PERTISK_TLS_INSECURE")]
+    insecure: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -375,7 +378,10 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(cli.insecure)
+        .build()
+        .context("http client")?;
     match cli.command {
         Command::Host => {
             let info: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
@@ -398,6 +404,10 @@ async fn run() -> Result<()> {
                     .unwrap_or_else(|| "not found (kernel boot only)".into())
             );
             println!("listen             {}", info.listen);
+            println!(
+                "tls                {}",
+                info.tls_listen.as_deref().unwrap_or("off")
+            );
             println!("data_dir           {}", info.data_dir.display());
             println!("storage            {}", info.storage_root.display());
             println!(

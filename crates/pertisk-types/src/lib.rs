@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7480";
+pub const DEFAULT_TLS_LISTEN: &str = "0.0.0.0:7443";
 pub const DEFAULT_VCPUS: u8 = 1;
 pub const DEFAULT_MEMORY_MIB: u32 = 512;
 
@@ -848,6 +849,14 @@ pub struct HeartbeatMessage {
 pub struct DaemonConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// HTTPS bind address. Empty/`off` disables TLS. When unset and `listen` is
+    /// `0.0.0.0:…`, defaults to `0.0.0.0:7443`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_listen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<PathBuf>,
 }
 
 fn default_listen() -> String {
@@ -858,6 +867,23 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
+            tls_listen: None,
+            tls_cert: None,
+            tls_key: None,
+        }
+    }
+}
+
+impl DaemonConfig {
+    /// Bind address for HTTPS, if TLS is enabled.
+    pub fn effective_tls_listen(&self) -> Option<String> {
+        match self.tls_listen.as_deref().map(str::trim) {
+            Some("") | Some("off") | Some("disabled") | Some("false") => None,
+            Some(addr) => Some(addr.to_string()),
+            None if self.listen.starts_with("0.0.0.0:") || self.listen.starts_with("[::]:") => {
+                Some(DEFAULT_TLS_LISTEN.to_string())
+            }
+            None => None,
         }
     }
 }
@@ -980,6 +1006,16 @@ impl HostConfig {
         if self.vmm.cloud_hypervisor.is_none() {
             self.vmm.cloud_hypervisor = find_in_path("cloud-hypervisor");
         }
+        if let Some(path) = &mut self.daemon.tls_cert
+            && path.is_relative()
+        {
+            *path = home.join(&*path);
+        }
+        if let Some(path) = &mut self.daemon.tls_key
+            && path.is_relative()
+        {
+            *path = home.join(&*path);
+        }
     }
 }
 
@@ -994,6 +1030,8 @@ pub struct HostInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware: Option<PathBuf>,
     pub listen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_listen: Option<String>,
     pub data_dir: PathBuf,
     #[serde(default)]
     pub storage_root: PathBuf,
@@ -1081,6 +1119,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
             .or_else(|| find_in_path("cloud-hypervisor")),
         firmware: config.vmm.firmware.clone().or_else(find_firmware),
         listen: config.daemon.listen.clone(),
+        tls_listen: config.daemon.effective_tls_listen(),
         data_dir,
         storage_root: config.storage.root.clone(),
         qemu_img: config
@@ -1183,5 +1222,20 @@ mod tests {
         assert_eq!(parse_size("10G").unwrap(), 10 * 1024 * 1024 * 1024);
         assert_eq!(parse_size("512M").unwrap(), 512 * 1024 * 1024);
         assert_eq!(format_size(1024 * 1024 * 1024), "1GiB");
+    }
+
+    #[test]
+    fn tls_listen_defaults_on_public_http() {
+        let mut daemon = DaemonConfig::default();
+        assert_eq!(daemon.effective_tls_listen(), None);
+        daemon.listen = "0.0.0.0:7480".into();
+        assert_eq!(daemon.effective_tls_listen().as_deref(), Some("0.0.0.0:7443"));
+        daemon.tls_listen = Some("off".into());
+        assert_eq!(daemon.effective_tls_listen(), None);
+        daemon.tls_listen = Some("127.0.0.1:8443".into());
+        assert_eq!(
+            daemon.effective_tls_listen().as_deref(),
+            Some("127.0.0.1:8443")
+        );
     }
 }

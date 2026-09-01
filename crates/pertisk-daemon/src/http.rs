@@ -1118,6 +1118,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn https_health_accepts_self_signed() {
+        let (svc, dir) = service();
+        let cert = dir.path().join("tls/cert.pem");
+        let key = dir.path().join("tls/key.pem");
+        crate::tls::ensure_self_signed(&cert, &key).unwrap();
+        crate::install_rustls_provider();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let rustls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+            .await
+            .expect("load pem");
+        let app = router(svc);
+        tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, rustls)
+                .expect("tls listener")
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+        let mut last_err = None;
+        for _ in 0..40 {
+            match client
+                .get(format!("https://127.0.0.1:{}/v1/health", addr.port()))
+                .send()
+                .await
+            {
+                Ok(res) => {
+                    assert_eq!(res.status(), reqwest::StatusCode::OK);
+                    return;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            }
+        }
+        panic!("https health failed: {last_err:?}");
+    }
+
+    #[tokio::test]
     async fn protected_routes_require_token() {
         let (svc, _dir) = service();
         let app = router(svc);

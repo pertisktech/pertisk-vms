@@ -3,6 +3,11 @@
 
 [daemon]
 listen = "127.0.0.1:7480"
+# HTTPS for the UI/API (HTTP/1.1 + HTTP/2). Self-signed certs are created on first start.
+# tls_listen = "0.0.0.0:7443"
+# tls_cert = "tls/cert.pem"
+# tls_key = "tls/key.pem"
+# Set tls_listen = "off" to disable HTTPS.
 
 [vmm]
 # mock | cloud-hypervisor | qemu

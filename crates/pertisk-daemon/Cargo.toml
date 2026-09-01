@@ -11,6 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+rcgen = "0.13"
 futures-util.workspace = true
 clap.workspace = true
 pertisk-types.workspace = true
