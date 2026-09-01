@@ -1,7 +1,8 @@
-//! VMM backends. Phase 1 uses a mock driver on macOS and Cloud Hypervisor on Linux.
+//! VMM backends. Mock on macOS; Cloud Hypervisor or QEMU on Linux.
 
 mod cloud_hypervisor;
 mod mock;
+mod qemu;
 mod unix_http;
 
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use pertisk_types::{DriverKind, VmId, VmRecord, VmSpec, VmState};
 
 pub use cloud_hypervisor::CloudHypervisorDriver;
 pub use mock::MockDriver;
+pub use qemu::QemuDriver;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {
@@ -21,6 +23,8 @@ pub enum VmmError {
     InvalidState { state: VmState, op: &'static str },
     #[error("cloud-hypervisor binary not found")]
     BinaryMissing,
+    #[error("qemu-system-x86_64 binary not found")]
+    QemuBinaryMissing,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("http error: {0}")]
@@ -37,6 +41,7 @@ pub type Result<T> = std::result::Result<T, VmmError>;
 pub enum VmmBackend {
     Mock(MockDriver),
     CloudHypervisor(CloudHypervisorDriver),
+    Qemu(QemuDriver),
 }
 
 impl VmmBackend {
@@ -44,6 +49,7 @@ impl VmmBackend {
         match self {
             Self::Mock(_) => DriverKind::Mock,
             Self::CloudHypervisor(_) => DriverKind::CloudHypervisor,
+            Self::Qemu(_) => DriverKind::Qemu,
         }
     }
 
@@ -65,6 +71,12 @@ impl VmmBackend {
                     firmware.or_else(pertisk_types::find_firmware),
                 )))
             }
+            DriverKind::Qemu => {
+                let binary = pertisk_types::find_in_path("qemu-system-x86_64")
+                    .or_else(|| pertisk_types::find_in_path("qemu-system-x86"))
+                    .ok_or(VmmError::QemuBinaryMissing)?;
+                Ok(Self::Qemu(QemuDriver::new(binary, run_dir)))
+            }
         }
     }
 
@@ -72,6 +84,7 @@ impl VmmBackend {
         match self {
             Self::Mock(driver) => driver.create(id, spec).await,
             Self::CloudHypervisor(driver) => driver.create(id, spec).await,
+            Self::Qemu(driver) => driver.create(id, spec).await,
         }
     }
 
@@ -79,6 +92,7 @@ impl VmmBackend {
         match self {
             Self::Mock(driver) => driver.start(record).await,
             Self::CloudHypervisor(driver) => driver.start(record).await,
+            Self::Qemu(driver) => driver.start(record).await,
         }
     }
 
@@ -86,6 +100,7 @@ impl VmmBackend {
         match self {
             Self::Mock(driver) => driver.stop(record).await,
             Self::CloudHypervisor(driver) => driver.stop(record).await,
+            Self::Qemu(driver) => driver.stop(record).await,
         }
     }
 
@@ -93,6 +108,7 @@ impl VmmBackend {
         match self {
             Self::Mock(driver) => driver.destroy(record).await,
             Self::CloudHypervisor(driver) => driver.destroy(record).await,
+            Self::Qemu(driver) => driver.destroy(record).await,
         }
     }
 }

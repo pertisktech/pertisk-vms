@@ -36,6 +36,7 @@ const EMPTY = {
   vcpus: 2,
   memory_mib: 2048,
   ha: true,
+  graphics: false,
   diskMode: 'new',
   diskName: '',
   diskSize: '32G',
@@ -57,6 +58,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     id: nextVmId(vms),
     vcpus: defaultCpus(host, cluster),
     memory_mib: defaultMemory(host, cluster),
+    graphics: host?.driver === 'qemu',
     iso: isos[0]?.name || '',
     networkId: networks[0]?.id || '',
   }))
@@ -137,6 +139,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             vcpus: Number(form.vcpus),
             memory_mib: Number(form.memory_mib),
             ha: form.ha,
+            console_type: form.graphics ? 'graphics' : 'serial',
           },
         }),
       )
@@ -220,7 +223,11 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
   return (
     <Modal
       title="Create guest"
-      hint="Name the machine, attach a disk and ISO, then start. Console is serial (no VGA)."
+      hint={
+        host?.driver === 'qemu'
+          ? 'QEMU guests get serial and VNC. Prefer Display for graphical installers.'
+          : 'Name the machine, attach a disk and ISO, then start. Cloud Hypervisor is serial-only; use driver=qemu for VGA.'
+      }
       wizard
       onClose={onClose}
       footer={
@@ -319,6 +326,18 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               <input type="checkbox" checked={form.ha} onChange={(e) => set({ ha: e.target.checked })} />
               <span className="chk-box" />
               <span className="chk-label">Restart elsewhere if this node is lost</span>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.graphics}
+                onChange={(e) => set({ graphics: e.target.checked })}
+                disabled={host?.driver && host.driver !== 'qemu'}
+              />
+              <span className="chk-box" />
+              <span className="chk-label">
+                Prefer graphics console (VNC) — requires QEMU driver
+              </span>
             </label>
           </>
         )}

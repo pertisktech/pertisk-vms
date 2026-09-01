@@ -249,6 +249,8 @@ enum NetCommand {
         gateway: Option<String>,
         #[arg(long)]
         bridge: Option<String>,
+        #[arg(long, default_value = "nat")]
+        mode: String,
         #[arg(long, default_value_t = true)]
         dhcp: bool,
         #[arg(long, default_value_t = true)]
@@ -985,9 +987,18 @@ async fn run() -> Result<()> {
                 cidr,
                 gateway,
                 bridge,
+                mode,
                 dhcp,
                 isolate,
             } => {
+                let mode = match mode.as_str() {
+                    "bridge" => pertisk_types::NetworkMode::Bridge,
+                    "nat" => pertisk_types::NetworkMode::Nat,
+                    other => bail!("unknown network mode '{other}' (nat | bridge)"),
+                };
+                if mode == pertisk_types::NetworkMode::Bridge && bridge.is_none() {
+                    bail!("--mode bridge requires --bridge NAME (existing host bridge)");
+                }
                 let net: NetworkRecord = post_json(
                     &client,
                     &cli.url,
@@ -997,12 +1008,24 @@ async fn run() -> Result<()> {
                         cidr,
                         gateway,
                         bridge,
-                        dhcp,
-                        isolate,
+                        dhcp: if mode == pertisk_types::NetworkMode::Bridge {
+                            false
+                        } else {
+                            dhcp
+                        },
+                        isolate: if mode == pertisk_types::NetworkMode::Bridge {
+                            false
+                        } else {
+                            isolate
+                        },
+                        mode,
                     },
                 )
                 .await?;
-                println!("{} {} {} {}", net.id, net.name, net.bridge, net.cidr);
+                println!(
+                    "{} {} {} {} {}",
+                    net.id, net.name, net.mode, net.bridge, net.cidr
+                );
             }
             NetCommand::List => {
                 let nets: Vec<NetworkRecord> = get_json(&client, &cli.url, "/v1/networks").await?;
@@ -1011,13 +1034,13 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
                 println!(
-                    "{:<38} {:<12} {:<8} {:<18} {}",
-                    "ID", "NAME", "BRIDGE", "CIDR", "DHCP"
+                    "{:<38} {:<12} {:<8} {:<8} {:<18} {}",
+                    "ID", "NAME", "MODE", "BRIDGE", "CIDR", "DHCP"
                 );
                 for net in nets {
                     println!(
-                        "{:<38} {:<12} {:<8} {:<18} {}",
-                        net.id, net.name, net.bridge, net.cidr, net.dhcp
+                        "{:<38} {:<12} {:<8} {:<8} {:<18} {}",
+                        net.id, net.name, net.mode, net.bridge, net.cidr, net.dhcp
                     );
                 }
             }

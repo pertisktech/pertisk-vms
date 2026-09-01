@@ -108,6 +108,7 @@ mod tests {
             disks: vec![],
             nets: vec![],
             serial_log: None,
+            console_type: Default::default(),
             ha: true,
         }
     }

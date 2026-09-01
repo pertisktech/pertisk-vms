@@ -4,7 +4,8 @@
 listen = "0.0.0.0:7480"
 
 [vmm]
-driver = "cloud-hypervisor"
+# qemu = serial + VNC (Proxmox-like). cloud-hypervisor = serial only.
+driver = "qemu"
 run_dir = "/var/lib/pertisk/run"
 cloud_hypervisor = "/usr/bin/cloud-hypervisor"
 firmware = "/usr/lib/cloud-hypervisor/hypervisor-fw"

@@ -5,13 +5,14 @@
 listen = "127.0.0.1:7480"
 
 [vmm]
-# mock | cloud-hypervisor
-# macOS defaults to mock (no /dev/kvm). Linux defaults to cloud-hypervisor.
+# mock | cloud-hypervisor | qemu
+# macOS defaults to mock (no /dev/kvm). Linux defaults to qemu (serial + VNC).
 driver = "mock"
 run_dir = "/tmp/pertisk-run"
 # cloud_hypervisor = "/usr/bin/cloud-hypervisor"
-# Disk/ISO boot: rust-hypervisor-firmware binary (hypervisor-fw)
+# Disk/ISO boot for cloud-hypervisor: rust-hypervisor-firmware (hypervisor-fw)
 # firmware = "/usr/lib/cloud-hypervisor/hypervisor-fw"
+# QEMU uses OVMF from the ovmf package when present.
 
 [storage]
 root = "storage"

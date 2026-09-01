@@ -1,27 +1,53 @@
 import { useEffect, useRef, useState } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import RFB from '@novnc/novnc'
+import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useGuest } from '../GuestView'
 
 export default function GuestConsole() {
   const { vm, vmId } = useGuest()
-  const [text, setText] = useState('')
   const [connected, setConnected] = useState(false)
-  const [consoleType, setConsoleType] = useState('serial')
+  const [tab, setTab] = useState('serial')
+  const hasGraphics = Boolean(vm?.graphics_socket)
+  const termRef = useRef(null)
+  const termHostRef = useRef(null)
+  const fitRef = useRef(null)
   const wsRef = useRef(null)
-  const preRef = useRef(null)
-  const canvasRef = useRef(null)
-  const vncRef = useRef(null)
+  const screenRef = useRef(null)
+  const rfbRef = useRef(null)
 
-  // Detect console type from API
   useEffect(() => {
-    const type = vm?.spec?.console_type || 'serial'
-    setConsoleType(type)
-  }, [vm])
+    if (hasGraphics && vm?.spec?.console_type === 'graphics') {
+      setTab('display')
+    } else {
+      setTab('serial')
+    }
+  }, [vmId, hasGraphics, vm?.spec?.console_type])
 
-  // Serial console WebSocket
+  // Serial: xterm.js over websocket
   useEffect(() => {
-    if (consoleType !== 'serial') return
+    if (tab !== 'serial' || !termHostRef.current) return
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 13,
+      theme: {
+        background: '#0b0d12',
+        foreground: '#c8c9de',
+        cursor: '#c8c9de',
+      },
+      convertEol: true,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(termHostRef.current)
+    fit.fit()
+    termRef.current = term
+    fitRef.current = fit
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(
@@ -30,129 +56,109 @@ export default function GuestConsole() {
     wsRef.current = socket
     socket.onopen = () => setConnected(true)
     socket.onclose = () => setConnected(false)
-    socket.onmessage = (e) => setText((t) => t + e.data)
+    socket.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data))
+    term.onData((data) => {
+      if (socket.readyState === 1) socket.send(data)
+    })
+
+    const onResize = () => fit.fit()
+    window.addEventListener('resize', onResize)
+
     return () => {
+      window.removeEventListener('resize', onResize)
       socket.onclose = null
       socket.close()
       wsRef.current = null
+      term.dispose()
+      termRef.current = null
+      fitRef.current = null
+      setConnected(false)
     }
-  }, [vmId, consoleType])
+  }, [vmId, tab])
 
-  // Graphics console VNC
+  // Display: noVNC over graphics websocket
   useEffect(() => {
-    if (consoleType !== 'graphics') return
+    if (tab !== 'display' || !hasGraphics || !screenRef.current) return
 
-    // Dynamically load noVNC if not already loaded
-    if (typeof RFB === 'undefined') {
-      const script = document.createElement('script')
-      script.src = 'https://cdn.jsdelivr.net/npm/novnc/core/rfb.js'
-      script.onload = initVNC
-      document.head.appendChild(script)
-    } else {
-      initVNC()
-    }
-
-    function initVNC() {
-      try {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const rfb = new RFB(canvasRef.current, 
-          `${proto}//${location.host}/v1/vms/${vmId}/graphics/ws?token=${encodeURIComponent(getToken())}`,
-          { shared: true }
-        )
-        vncRef.current = rfb
-        rfb.addEventListener('connect', () => setConnected(true))
-        rfb.addEventListener('disconnect', () => setConnected(false))
-        rfb.addEventListener('securityfailure', (e) => console.error('VNC security error', e))
-        setConnected(true)
-      } catch (e) {
-        console.error('VNC init error', e)
-      }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const url = `${proto}//${location.host}/v1/vms/${vmId}/graphics/ws?token=${encodeURIComponent(getToken())}`
+    let rfb
+    try {
+      rfb = new RFB(screenRef.current, url, { shared: true })
+      rfb.scaleViewport = true
+      rfb.resizeSession = false
+      rfbRef.current = rfb
+      rfb.addEventListener('connect', () => setConnected(true))
+      rfb.addEventListener('disconnect', () => setConnected(false))
+    } catch (err) {
+      console.error('VNC init error', err)
+      setConnected(false)
     }
 
     return () => {
-      if (vncRef.current) {
+      if (rfbRef.current) {
         try {
-          vncRef.current.disconnect()
-        } catch (e) {
-          console.error('VNC disconnect error', e)
+          rfbRef.current.disconnect()
+        } catch {
+          /* ignore */
         }
-        vncRef.current = null
+        rfbRef.current = null
       }
+      setConnected(false)
     }
-  }, [vmId, consoleType])
-
-  // Scroll serial console
-  useEffect(() => {
-    if (preRef.current && consoleType === 'serial') {
-      preRef.current.scrollTop = preRef.current.scrollHeight
-    }
-  }, [text, consoleType])
-
-  function sendKey(e) {
-    if (consoleType !== 'serial') return
-
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== 1) return
-    if (e.key === 'Enter') {
-      ws.send('\n')
-      e.preventDefault()
-    } else if (e.key === 'Backspace') {
-      ws.send('\x7f')
-      e.preventDefault()
-    } else if (e.key === 'Tab') {
-      ws.send('\t')
-      e.preventDefault()
-    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      ws.send(e.key)
-      e.preventDefault()
-    }
-  }
+  }, [vmId, tab, hasGraphics])
 
   return (
     <div className="pve-console-wrap">
       <div className="pve-console-bar">
+        <div className="console-tabs">
+          <button
+            type="button"
+            className={`console-tab${tab === 'serial' ? ' active' : ''}`}
+            onClick={() => setTab('serial')}
+          >
+            Serial
+          </button>
+          <button
+            type="button"
+            className={`console-tab${tab === 'display' ? ' active' : ''}`}
+            onClick={() => setTab('display')}
+            disabled={!hasGraphics}
+            title={hasGraphics ? 'VGA / VNC' : 'Needs QEMU driver (vmm.driver = qemu)'}
+          >
+            Display
+          </button>
+        </div>
         <span className={`badge ${connected ? 'ready' : 'unknown'}`}>
           {connected ? 'connected' : 'disconnected'}
         </span>
         <span className="muted">
-          {consoleType === 'graphics' 
-            ? 'Graphics console. Use VNC client or keyboard/mouse in the canvas below.'
+          {tab === 'display'
+            ? 'Graphics (VNC). Click the screen to focus keyboard and mouse.'
             : vm.state === 'running'
-            ? 'Click the pane and type. Enter, Tab, and Backspace are forwarded.'
-            : 'Guest is not running; output is the last serial log.'}
+              ? 'Serial console (xterm). Anaconda text UI works here.'
+              : 'Guest is not running; serial shows the last log.'}
         </span>
         <span className="pve-header-spacer" />
-        {consoleType === 'serial' && (
-          <Btn icon="trash" variant="secondary" onClick={() => setText('')}>
+        {tab === 'serial' && (
+          <Btn icon="trash" variant="secondary" onClick={() => termRef.current?.clear()}>
             Clear
           </Btn>
         )}
       </div>
 
-      {consoleType === 'graphics' ? (
+      {tab === 'display' ? (
         <>
-          <canvas
-            ref={canvasRef}
-            className="console-pane pve-console"
-            style={{ width: '100%', height: '600px', cursor: 'none' }}
-          />
+          <div ref={screenRef} className="console-pane pve-console console-vnc" />
           <p className="muted pve-console-hint">
-            <Icon name="tv" size={13} /> Graphics (VNC) console over websocket. Requires noVNC support.
+            <Icon name="tv" size={13} /> Display over websocket (noVNC). Requires QEMU VMM.
           </p>
         </>
       ) : (
         <>
-          <pre
-            ref={preRef}
-            className="console-pane pve-console"
-            tabIndex={0}
-            onKeyDown={sendKey}
-            onClick={() => preRef.current?.focus()}
-          >
-            {text || 'Waiting for serial output…'}
-          </pre>
+          <div ref={termHostRef} className="console-pane pve-console console-xterm" />
           <p className="muted pve-console-hint">
-            <Icon name="terminal" size={13} /> Serial console over websocket.
+            <Icon name="terminal" size={13} /> Serial over websocket (xterm.js).
           </p>
         </>
       )}

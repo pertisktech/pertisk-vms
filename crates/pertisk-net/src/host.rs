@@ -52,6 +52,14 @@ pub fn interface_exists(name: &str) -> bool {
     valid_ifname(name) && std::path::Path::new("/sys/class/net").join(name).exists()
 }
 
+pub fn is_bridge(name: &str) -> bool {
+    valid_ifname(name)
+        && std::path::Path::new("/sys/class/net")
+            .join(name)
+            .join("bridge")
+            .exists()
+}
+
 pub fn overlaps_existing_ipv4(network: Ipv4Net, except_interface: Option<&str>) -> Result<bool> {
     #[cfg(not(target_os = "linux"))]
     {

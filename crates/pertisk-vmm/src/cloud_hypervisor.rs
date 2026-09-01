@@ -42,10 +42,6 @@ impl CloudHypervisorDriver {
         self.run_dir.join(format!("{id}.serial.sock"))
     }
 
-    fn graphics_socket_path(&self, id: pertisk_types::VmId) -> PathBuf {
-        self.run_dir.join(format!("{id}.graphics.sock"))
-    }
-
     pub async fn create(&self, id: pertisk_types::VmId, spec: &VmSpec) -> Result<CreateResult> {
         if spec.kernel.is_none() && spec.disks.is_empty() {
             return Err(VmmError::Message(
@@ -67,15 +63,11 @@ impl CloudHypervisorDriver {
             .clone()
             .unwrap_or_else(|| self.serial_path(id));
         let serial_socket = self.serial_socket_path(id);
-        let graphics_socket = self.graphics_socket_path(id);
         if let Some(parent) = serial_log.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         if serial_socket.exists() {
             let _ = tokio::fs::remove_file(&serial_socket).await;
-        }
-        if graphics_socket.exists() {
-            let _ = tokio::fs::remove_file(&graphics_socket).await;
         }
 
         info!(vm = %id, socket = %socket.display(), "starting cloud-hypervisor");
@@ -92,7 +84,7 @@ impl CloudHypervisorDriver {
 
         wait_ready(&socket, Duration::from_secs(5)).await?;
 
-        let config = ChVmConfig::from_spec(spec, &serial_socket, &graphics_socket, self.firmware.as_deref());
+        let config = ChVmConfig::from_spec(spec, &serial_socket, self.firmware.as_deref());
         let body = serde_json::to_vec(&config)?;
         let (status, resp) = put_json(&socket, "/api/v1/vm.create", Some(&body)).await?;
         expect_ok(status, &resp)?;
@@ -102,7 +94,7 @@ impl CloudHypervisorDriver {
             pid,
             serial_log: Some(serial_log),
             console_socket: Some(serial_socket),
-            graphics_socket: Some(graphics_socket),
+            graphics_socket: None,
         })
     }
 
@@ -244,7 +236,6 @@ impl ChVmConfig {
     fn from_spec(
         spec: &VmSpec,
         serial_socket: &std::path::Path,
-        graphics_socket: &std::path::Path,
         host_firmware: Option<&std::path::Path>,
     ) -> Self {
         let firmware = spec
@@ -305,15 +296,8 @@ impl ChVmConfig {
             file: None,
             socket: Some(serial_socket.display().to_string()),
         });
-        
-        let console = match spec.console_type {
-            pertisk_types::ConsoleType::Graphics => Some(ChConsole {
-                mode: "Socket",
-                file: None,
-                socket: Some(graphics_socket.display().to_string()),
-            }),
-            pertisk_types::ConsoleType::Serial => None,
-        };
+        // Cloud Hypervisor has no VGA; use the QEMU driver for graphical consoles.
+        let console = None;
         
         Self {
             cpus: ChCpus {
@@ -397,6 +381,7 @@ mod tests {
             ],
             nets: vec![],
             serial_log: None,
+            console_type: Default::default(),
             ha: true,
         }
     }

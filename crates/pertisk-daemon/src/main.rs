@@ -13,7 +13,7 @@ struct Args {
     /// Override PERTISK_HOME (~/.pertisk by default).
     #[arg(long, env = "PERTISK_HOME")]
     home: Option<PathBuf>,
-    /// Override VMM driver (mock | cloud-hypervisor).
+    /// Override VMM driver (mock | cloud-hypervisor | qemu).
     #[arg(long, env = "PERTISK_DRIVER")]
     driver: Option<pertisk_types::DriverKind>,
     /// rust-hypervisor-firmware path for disk/ISO boot.

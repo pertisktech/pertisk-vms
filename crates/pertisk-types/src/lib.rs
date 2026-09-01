@@ -343,6 +343,29 @@ fn default_cidr() -> String {
     "10.88.0.0/24".into()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkMode {
+    #[default]
+    Nat,
+    Bridge,
+}
+
+impl NetworkMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nat => "nat",
+            Self::Bridge => "bridge",
+        }
+    }
+}
+
+impl fmt::Display for NetworkMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NetworkRecord {
     pub id: NetworkId,
@@ -355,6 +378,8 @@ pub struct NetworkRecord {
     pub dhcp: bool,
     #[serde(default = "default_true")]
     pub isolate: bool,
+    #[serde(default)]
+    pub mode: NetworkMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -370,6 +395,8 @@ pub struct CreateNetworkRequest {
     pub dhcp: bool,
     #[serde(default = "default_true")]
     pub isolate: bool,
+    #[serde(default)]
+    pub mode: NetworkMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -396,6 +423,8 @@ pub struct ConsoleInfo {
     pub graphics_socket: Option<PathBuf>,
     pub size: u64,
     pub websocket: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_websocket: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -598,12 +627,13 @@ pub struct CloudInitIsoRequest {
 pub enum DriverKind {
     Mock,
     CloudHypervisor,
+    Qemu,
 }
 
 impl DriverKind {
     pub fn default_for_platform() -> Self {
         if cfg!(target_os = "linux") {
-            Self::CloudHypervisor
+            Self::Qemu
         } else {
             Self::Mock
         }
@@ -613,6 +643,7 @@ impl DriverKind {
         match self {
             Self::Mock => "mock",
             Self::CloudHypervisor => "cloud-hypervisor",
+            Self::Qemu => "qemu",
         }
     }
 }
@@ -630,8 +661,9 @@ impl FromStr for DriverKind {
         match s {
             "mock" => Ok(Self::Mock),
             "cloud-hypervisor" | "ch" => Ok(Self::CloudHypervisor),
+            "qemu" | "kvm" => Ok(Self::Qemu),
             other => Err(TypesError::InvalidSpec(format!(
-                "unknown driver '{other}' (mock | cloud-hypervisor)"
+                "unknown driver '{other}' (mock | cloud-hypervisor | qemu)"
             ))),
         }
     }
@@ -1103,6 +1135,7 @@ mod tests {
             disks: vec![],
             nets: vec![],
             serial_log: None,
+            console_type: Default::default(),
             ha: true,
         };
         assert!(spec.validate().is_err());

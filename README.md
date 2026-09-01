@@ -104,7 +104,13 @@ The image has a 12 GiB root filesystem so the ISO library can store installer me
 Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 edk2-ovmf`):
 
 ```bash
-./scripts/test-qemu.sh
+ip link add name br0 type bridge
+ip link set br0 up
+ip addr flush dev eth0
+ip link set eth0 master br0
+ip addr add 10.1.1.16/24 dev br0
+ip route add default via 10.1.1.10 dev br0
+./scripts/test-qemu.sh --bridge br0
 ```
 
 The appliance opens a local root shell on its physical or QEMU serial console. Debian's interactive first-boot wizard is disabled; Pertisk initializes itself automatically. The Pertisk web account remains `admin`; its password is in `/etc/pertisk/admin`.

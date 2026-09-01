@@ -36,13 +36,20 @@ fi
 echo "building release pertiskd + pertisk"
 cargo build --release -p pertisk-daemon -p pertisk-cli
 
+if command -v apt-get >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils || true
+fi
+
 ensure_cloud_hypervisor
 ensure_firmware
 
 install -d /usr/bin /usr/sbin /usr/lib/systemd/system /usr/lib/cloud-hypervisor /etc/pertisk /var/lib/pertisk
 install -m 755 "$ROOT/target/release/pertiskd" /usr/bin/pertiskd
 install -m 755 "$ROOT/target/release/pertisk" /usr/bin/pertisk
-install -m 755 "$(command -v cloud-hypervisor)" /usr/bin/cloud-hypervisor
+ch_src="$(command -v cloud-hypervisor)"
+if [[ "$(readlink -f "$ch_src")" != "$(readlink -f /usr/bin/cloud-hypervisor)" ]]; then
+  install -m 755 "$ch_src" /usr/bin/cloud-hypervisor
+fi
 install -m 644 "$FIRMWARE" /usr/lib/cloud-hypervisor/hypervisor-fw
 
 cp -a "$OVERLAY/." /
@@ -50,8 +57,16 @@ chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot /usr/sbin/pert
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 
-if [[ ! -f /var/lib/pertisk/config.toml ]]; then
-  cp /etc/pertisk/config.toml /var/lib/pertisk/config.toml
+# Always refresh node config from overlay so driver defaults stay current.
+cp /etc/pertisk/config.toml /var/lib/pertisk/config.toml
+# Keep existing admin password in daemon.env if present; otherwise use overlay.
+if [[ -f /etc/pertisk/daemon.env ]]; then
+  # Prefer qemu for VGA; override legacy cloud-hypervisor env.
+  if grep -q '^PERTISK_DRIVER=' /etc/pertisk/daemon.env; then
+    sed -i 's/^PERTISK_DRIVER=.*/PERTISK_DRIVER=qemu/' /etc/pertisk/daemon.env
+  else
+    printf 'PERTISK_DRIVER=qemu\n' >>/etc/pertisk/daemon.env
+  fi
 fi
 
 systemctl daemon-reload

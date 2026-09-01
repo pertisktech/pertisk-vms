@@ -3,7 +3,7 @@ name = "pertisk-vmm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "VMM adapters: mock driver and Cloud Hypervisor"
+description = "VMM adapters: mock, Cloud Hypervisor, and QEMU"
 
 [dependencies]
 bytes.workspace = true

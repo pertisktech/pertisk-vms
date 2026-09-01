@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkRecord, VmId};
+use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, NetworkRecord, VmId};
 use serde::{Deserialize, Serialize};
 
 pub use host::{delete_tap, provision_nic};
@@ -90,11 +90,6 @@ impl NetworkPool {
         if req.name.trim().is_empty() {
             return Err(NetError::Invalid("network name is required".into()));
         }
-        let net = Ipv4Net::parse(&req.cidr)?;
-        let gateway = match req.gateway {
-            Some(gw) => Some(parse_ipv4(&gw)?),
-            None => Some(net.nth(1)),
-        };
         {
             let inner = self.inner.lock().expect("net lock");
             if inner.networks.values().any(|n| n.name == req.name) {
@@ -105,12 +100,48 @@ impl NetworkPool {
         let existing = inner_count(self)?;
         let bridge = req
             .bridge
+            .clone()
             .unwrap_or_else(|| default_bridge(&req.name, existing));
         if !valid_ifname(&bridge) {
             return Err(NetError::Invalid(format!(
                 "invalid bridge name '{bridge}' (max 15 [A-Za-z0-9_-])"
             )));
         }
+
+        if req.mode == NetworkMode::Bridge {
+            if self.apply_host_links && !host::interface_exists(&bridge) {
+                return Err(NetError::Invalid(format!(
+                    "host bridge '{bridge}' not found; create it first (e.g. br0 on the LAN NIC)"
+                )));
+            }
+            if self.apply_host_links && !host::is_bridge(&bridge) {
+                return Err(NetError::Invalid(format!(
+                    "'{bridge}' is a network interface, not a Linux bridge; bridge mode needs br0 (or another existing bridge), not a plain NIC like enp0s2"
+                )));
+            }
+            let record = NetworkRecord {
+                id,
+                name: req.name,
+                bridge,
+                cidr: if req.cidr.trim().is_empty() {
+                    "0.0.0.0/0".into()
+                } else {
+                    req.cidr
+                },
+                gateway: req.gateway,
+                dhcp: req.dhcp,
+                isolate: req.isolate,
+                mode: NetworkMode::Bridge,
+            };
+            self.upsert(record.clone())?;
+            return Ok(record);
+        }
+
+        let net = Ipv4Net::parse(&req.cidr)?;
+        let gateway = match req.gateway {
+            Some(gw) => Some(parse_ipv4(&gw)?),
+            None => Some(net.nth(1)),
+        };
         if self.apply_host_links && host::interface_exists(&bridge) {
             return Err(NetError::Invalid(format!(
                 "bridge name '{bridge}' already exists on this host; choose a new bridge name"
@@ -130,6 +161,7 @@ impl NetworkPool {
             gateway: gateway.map(ipam::ipv4_string),
             dhcp: req.dhcp,
             isolate: req.isolate,
+            mode: NetworkMode::Nat,
         };
         if self.apply_host_links {
             let prefix = net.prefix;
@@ -160,18 +192,25 @@ impl NetworkPool {
         used_ips: &[String],
     ) -> Result<NetSpec> {
         let network = self.get(network_id)?;
-        let net = Ipv4Net::parse(&network.cidr)?;
         let tap = tap_name(vm_id, nic_index);
         if !valid_ifname(&tap) {
             return Err(NetError::Invalid(format!("invalid tap name '{tap}'")));
         }
+        let bridged = network.mode == NetworkMode::Bridge;
+        let net = if bridged {
+            None
+        } else {
+            Some(Ipv4Net::parse(&network.cidr)?)
+        };
         let ip = if let Some(ip) = requested_ip {
             let addr = parse_ipv4(ip)?;
-            if !net.contains(addr) {
-                return Err(NetError::Invalid(format!(
-                    "{ip} is not in {}",
-                    network.cidr
-                )));
+            if let Some(net) = net {
+                if !net.contains(addr) {
+                    return Err(NetError::Invalid(format!(
+                        "{ip} is not in {}",
+                        network.cidr
+                    )));
+                }
             }
             if network.gateway.as_deref() == Some(ip) {
                 return Err(NetError::Invalid(format!(
@@ -183,10 +222,11 @@ impl NetworkPool {
                 return Err(NetError::Invalid(format!("{ip} already in use")));
             }
             Some(ipam::ipv4_string(addr))
-        } else if network.dhcp {
-            Some(ipam::ipv4_string(
-                net.allocate(network.gateway.as_deref(), used_ips)?,
-            ))
+        } else if network.dhcp && !bridged {
+            Some(ipam::ipv4_string(net.unwrap().allocate(
+                network.gateway.as_deref(),
+                used_ips,
+            )?))
         } else {
             None
         };
@@ -211,11 +251,30 @@ impl NetworkPool {
         };
         let network = match self.get(network_id) {
             Ok(network) => network,
-            // A NIC pointing at a network this node doesn't know (e.g. after HA failover)
-            // has no bridge to rebuild here.
             Err(NetError::NotFound(_)) => return Ok(()),
             Err(err) => return Err(err),
         };
+        if network.mode == NetworkMode::Bridge {
+            if !host::interface_exists(&network.bridge) {
+                return Err(NetError::Invalid(format!(
+                    "host bridge '{}' not found",
+                    network.bridge
+                )));
+            }
+            if !host::is_bridge(&network.bridge) {
+                return Err(NetError::Invalid(format!(
+                    "'{}' is not a Linux bridge (plain NICs like enp0s2 cannot enslave guest TAPs)",
+                    network.bridge
+                )));
+            }
+            return host::provision_nic(
+                &network.bridge,
+                tap,
+                None,
+                0,
+                network.isolate,
+            );
+        }
         let net = Ipv4Net::parse(&network.cidr)?;
         if host::overlaps_existing_ipv4(net, Some(&network.bridge))? {
             return Err(NetError::Invalid(format!(
@@ -322,6 +381,7 @@ mod tests {
                 bridge: Some("vmbr0".into()),
                 dhcp: true,
                 isolate: true,
+                mode: Default::default(),
             })
             .unwrap();
         let vm = VmId::new();
@@ -332,5 +392,27 @@ mod tests {
             .allocate_nic(net.id, vm, 1, None, &[nic.ip.clone().unwrap()])
             .unwrap();
         assert_eq!(nic2.ip.as_deref(), Some("10.88.0.3"));
+    }
+
+    #[test]
+    fn bridge_mode_allows_lan_cidr() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = NetworkPool::open(dir.path(), false).unwrap();
+        let net = pool
+            .create(CreateNetworkRequest {
+                name: "lan".into(),
+                cidr: "10.1.1.0/24".into(),
+                gateway: None,
+                bridge: Some("br0".into()),
+                dhcp: false,
+                isolate: false,
+                mode: pertisk_types::NetworkMode::Bridge,
+            })
+            .unwrap();
+        assert_eq!(net.mode, pertisk_types::NetworkMode::Bridge);
+        assert_eq!(net.bridge, "br0");
+        let vm = VmId::new();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[]).unwrap();
+        assert!(nic.ip.is_none());
     }
 }

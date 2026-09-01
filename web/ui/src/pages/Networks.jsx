@@ -8,6 +8,7 @@ import { useInventory } from '../useInventory'
 
 const EMPTY = {
   name: '',
+  mode: 'nat',
   cidr: '10.90.0.0/24',
   gateway: '',
   bridge: '',
@@ -27,6 +28,28 @@ export default function Networks() {
     return vms.filter((vm) => netsOf(vm).some((n) => n.network_id === netId)).length
   }
 
+  function setMode(mode) {
+    if (mode === 'bridge') {
+      setForm({
+        ...form,
+        mode,
+        dhcp: false,
+        isolate: false,
+        cidr: '0.0.0.0/0',
+        gateway: '',
+        bridge: form.bridge || 'br0',
+      })
+    } else {
+      setForm({
+        ...form,
+        mode,
+        dhcp: true,
+        isolate: true,
+        cidr: form.cidr === '0.0.0.0/0' ? '10.90.0.0/24' : form.cidr,
+      })
+    }
+  }
+
   async function createNet(e) {
     e.preventDefault()
     setBusy(true)
@@ -36,6 +59,7 @@ export default function Networks() {
           method: 'POST',
           body: {
             name: form.name.trim(),
+            mode: form.mode,
             cidr: form.cidr.trim(),
             gateway: form.gateway.trim() || undefined,
             bridge: form.bridge.trim() || undefined,
@@ -61,7 +85,9 @@ export default function Networks() {
             <Icon name="network" size={20} />
             Networks
           </h1>
-          <p className="dash-lead muted">Guest networks and DHCP pools on this node.</p>
+          <p className="dash-lead muted">
+            NAT pools for isolated guests, or bridge mode to attach to an existing LAN bridge (e.g. br0).
+          </p>
         </div>
         {canWrite && (
           <Btn icon="plus" onClick={() => setOpen(true)}>
@@ -86,6 +112,7 @@ export default function Networks() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Mode</th>
                   <th>CIDR</th>
                   <th>Gateway</th>
                   <th>Bridge</th>
@@ -99,6 +126,7 @@ export default function Networks() {
                 {networks.map((n) => (
                   <tr key={n.id}>
                     <td>{n.name}</td>
+                    <td className="mono-inline">{n.mode || 'nat'}</td>
                     <td className="mono-inline">{n.cidr}</td>
                     <td className="mono-inline">{n.gateway || '—'}</td>
                     <td className="mono-inline">{n.bridge || '—'}</td>
@@ -142,7 +170,11 @@ export default function Networks() {
       {open && (
         <Modal
           title="Create network"
-          hint="DHCP assigns addresses from the CIDR. Isolation keeps guests from seeing each other on the bridge."
+          hint={
+            form.mode === 'bridge'
+              ? 'Bridge mode attaches guest TAPs to an existing host bridge (LAN DHCP). No CIDR overlap check.'
+              : 'NAT mode creates an isolated bridge and DHCP pool. CIDR must not overlap the host LAN.'
+          }
           onClose={() => setOpen(false)}
           footer={
             <>
@@ -165,53 +197,67 @@ export default function Networks() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
             </div>
-            <div className="form-grid">
-              <div className="field">
-                <label htmlFor="net-cidr">CIDR</label>
-                <input
-                  id="net-cidr"
-                  required
-                  value={form.cidr}
-                  onChange={(e) => setForm({ ...form, cidr: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="net-gw">Gateway</label>
-                <input
-                  id="net-gw"
-                  value={form.gateway}
-                  onChange={(e) => setForm({ ...form, gateway: e.target.value })}
-                  placeholder="optional"
-                />
-              </div>
+            <div className="field">
+              <label htmlFor="net-mode">Mode</label>
+              <select id="net-mode" value={form.mode} onChange={(e) => setMode(e.target.value)}>
+                <option value="nat">NAT (isolated)</option>
+                <option value="bridge">Bridge (existing LAN)</option>
+              </select>
             </div>
+            {form.mode === 'nat' && (
+              <div className="form-grid">
+                <div className="field">
+                  <label htmlFor="net-cidr">CIDR</label>
+                  <input
+                    id="net-cidr"
+                    required
+                    value={form.cidr}
+                    onChange={(e) => setForm({ ...form, cidr: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="net-gw">Gateway</label>
+                  <input
+                    id="net-gw"
+                    value={form.gateway}
+                    onChange={(e) => setForm({ ...form, gateway: e.target.value })}
+                    placeholder="optional"
+                  />
+                </div>
+              </div>
+            )}
             <div className="field">
               <label htmlFor="net-bridge">Bridge</label>
               <input
                 id="net-bridge"
+                required={form.mode === 'bridge'}
                 value={form.bridge}
                 onChange={(e) => setForm({ ...form, bridge: e.target.value })}
-                placeholder="vmbr0 (optional)"
+                placeholder={form.mode === 'bridge' ? 'br0' : 'vmbr0 (optional)'}
               />
             </div>
-            <label className="chk">
-              <input
-                type="checkbox"
-                checked={form.dhcp}
-                onChange={(e) => setForm({ ...form, dhcp: e.target.checked })}
-              />
-              <span className="chk-box" />
-              <span className="chk-label">DHCP pool from this CIDR</span>
-            </label>
-            <label className="chk">
-              <input
-                type="checkbox"
-                checked={form.isolate}
-                onChange={(e) => setForm({ ...form, isolate: e.target.checked })}
-              />
-              <span className="chk-box" />
-              <span className="chk-label">Isolate guests on this bridge</span>
-            </label>
+            {form.mode === 'nat' && (
+              <>
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={form.dhcp}
+                    onChange={(e) => setForm({ ...form, dhcp: e.target.checked })}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">DHCP pool from this CIDR</span>
+                </label>
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={form.isolate}
+                    onChange={(e) => setForm({ ...form, isolate: e.target.checked })}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">Isolate guests on this bridge</span>
+                </label>
+              </>
+            )}
           </form>
         </Modal>
       )}

@@ -312,7 +312,10 @@ impl Service {
             .map(|p| !p.exists())
             .unwrap_or(true);
         let recreate = record.state == VmState::Created
-            || (self.driver() == DriverKind::CloudHypervisor && socket_missing);
+            || (matches!(
+                self.driver(),
+                DriverKind::CloudHypervisor | DriverKind::Qemu
+            ) && socket_missing);
         if recreate {
             match self.vmm.create(record.id, &boot_spec).await {
                 Ok(created) => {
@@ -846,6 +849,10 @@ impl Service {
             graphics_socket: vm.graphics_socket.clone(),
             size,
             websocket: format!("/v1/vms/{id}/console/ws"),
+            graphics_websocket: vm
+                .graphics_socket
+                .as_ref()
+                .map(|_| format!("/v1/vms/{id}/graphics/ws")),
         })
     }
 
@@ -1800,6 +1807,7 @@ mod tests {
                 bridge: Some("vmbr0".into()),
                 dhcp: true,
                 isolate: true,
+                mode: Default::default(),
             })
             .unwrap();
         let vm = svc

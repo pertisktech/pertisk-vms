@@ -50,7 +50,7 @@ if [[ ! -f "$cfg" ]]; then
 listen = "$LISTEN"
 
 [vmm]
-driver = "cloud-hypervisor"
+driver = "qemu"
 run_dir = "$HOME_DIR/run"
 cloud_hypervisor = "$(command -v cloud-hypervisor)"
 firmware = "$FIRMWARE"
