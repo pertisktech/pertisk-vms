@@ -183,7 +183,9 @@ pub fn openapi_json() -> serde_json::Value {
                 "delete": { "summary": "Destroy VM" }
             },
             "/v1/vms/{id}/start": { "post": { "summary": "Start VM" } },
-            "/v1/vms/{id}/stop": { "post": { "summary": "Stop VM" } },
+            "/v1/vms/{id}/stop": { "post": { "summary": "Stop VM (force power off)" } },
+            "/v1/vms/{id}/shutdown": { "post": { "summary": "Shutdown VM (ACPI)" } },
+            "/v1/vms/{id}/restart": { "post": { "summary": "Restart VM (hard reset or reboot)" } },
             "/v1/vms/{id}/console": { "get": { "summary": "Console metadata (websocket path)" } },
             "/v1/vms/{id}/console/serial": { "get": { "summary": "Serial log chunk" } },
             "/v1/vms/{id}/console/input": { "post": { "summary": "Write to guest serial" } },

@@ -104,6 +104,22 @@ impl VmmBackend {
         }
     }
 
+    pub async fn shutdown(&self, record: &VmRecord) -> Result<()> {
+        match self {
+            Self::Mock(driver) => driver.shutdown(record).await,
+            Self::CloudHypervisor(driver) => driver.shutdown(record).await,
+            Self::Qemu(driver) => driver.shutdown(record).await,
+        }
+    }
+
+    pub async fn restart(&self, record: &VmRecord) -> Result<()> {
+        match self {
+            Self::Mock(driver) => driver.restart(record).await,
+            Self::CloudHypervisor(driver) => driver.restart(record).await,
+            Self::Qemu(driver) => driver.restart(record).await,
+        }
+    }
+
     pub async fn destroy(&self, record: &VmRecord) -> Result<()> {
         match self {
             Self::Mock(driver) => driver.destroy(record).await,

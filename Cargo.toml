@@ -8,8 +8,9 @@ members = [
     "crates/pertisk-daemon",
     "crates/pertisk-api",
     "crates/pertisk-cli",
+    "crates/pertisk-tui",
 ]
-default-members = ["crates/pertisk-cli", "crates/pertisk-daemon"]
+default-members = ["crates/pertisk-cli", "crates/pertisk-daemon", "crates/pertisk-tui"]
 
 [workspace.package]
 version = "0.1.0"

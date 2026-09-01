@@ -69,6 +69,14 @@ impl MockDriver {
     }
 
     pub async fn stop(&self, record: &VmRecord) -> Result<()> {
+        self.set_stopped(record, "stop").await
+    }
+
+    pub async fn shutdown(&self, record: &VmRecord) -> Result<()> {
+        self.set_stopped(record, "shutdown").await
+    }
+
+    pub async fn restart(&self, record: &VmRecord) -> Result<()> {
         let mut vms = self.vms.lock().expect("mock vmm lock");
         let vm = vms
             .get_mut(&record.id)
@@ -76,7 +84,21 @@ impl MockDriver {
         if vm.state != VmState::Running {
             return Err(VmmError::InvalidState {
                 state: vm.state,
-                op: "stop",
+                op: "restart",
+            });
+        }
+        Ok(())
+    }
+
+    async fn set_stopped(&self, record: &VmRecord, op: &'static str) -> Result<()> {
+        let mut vms = self.vms.lock().expect("mock vmm lock");
+        let vm = vms
+            .get_mut(&record.id)
+            .ok_or(VmmError::NotFound(record.id))?;
+        if vm.state != VmState::Running {
+            return Err(VmmError::InvalidState {
+                state: vm.state,
+                op,
             });
         }
         vm.state = VmState::Stopped;

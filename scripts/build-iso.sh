@@ -28,9 +28,10 @@ echo "building web ui"
 (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
 
 echo "building release binaries"
-cargo build --release -p pertisk-daemon -p pertisk-cli
+cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
 install -m 755 "$ROOT/target/release/pertiskd" "$OVERLAY/usr/bin/pertiskd"
 install -m 755 "$ROOT/target/release/pertisk" "$OVERLAY/usr/bin/pertisk"
+install -m 755 "$ROOT/target/release/pertisk-tui" "$OVERLAY/usr/bin/pertisk-tui"
 
 ensure_cloud_hypervisor
 ensure_firmware

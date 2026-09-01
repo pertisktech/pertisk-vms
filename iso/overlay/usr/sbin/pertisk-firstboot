@@ -52,15 +52,14 @@ if [[ -r /etc/pertisk/join ]]; then
 fi
 
 if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
-  PERTISK_ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
-  if [[ -z "$PERTISK_ADMIN_PASSWORD" ]]; then
-    PERTISK_ADMIN_PASSWORD="admin"
-  fi
-  umask 077
-  printf 'PERTISK_ADMIN_PASSWORD=%s\n' "$PERTISK_ADMIN_PASSWORD" >>"$ENV_FILE"
-  echo "pertisk-firstboot: generated admin password"
+  PERTISK_ADMIN_PASSWORD="admin"
+  echo "pertisk-firstboot: using default admin password (set PERTISK_ADMIN_PASSWORD to override)"
 fi
 umask 077
+touch "$ENV_FILE"
+if ! grep -q '^PERTISK_ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
+  printf 'PERTISK_ADMIN_PASSWORD=%s\n' "$PERTISK_ADMIN_PASSWORD" >>"$ENV_FILE"
+fi
 printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
 chmod 600 "$ENV_FILE" "$PASS_FILE"
 
@@ -77,7 +76,8 @@ fi
 ips="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ips="${ips:-<this-host>}"
 cat >"$ISSUE" <<EOF
-pertisk-vm  http://${ips}:7480/   user admin   password in $PASS_FILE
+pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
+Run pertisk-tui on this console for VM control.
 EOF
 
 touch "$HOME_DIR/.firstboot-done"

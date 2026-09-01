@@ -147,6 +147,14 @@ enum VmCommand {
     Stop {
         id: VmId,
     },
+    /// ACPI shutdown (guest OS powers off when possible).
+    Shutdown {
+        id: VmId,
+    },
+    /// Hard reset while running (QEMU) or stop+start (Cloud Hypervisor).
+    Restart {
+        id: VmId,
+    },
     Migrate {
         id: VmId,
         #[arg(long)]
@@ -687,6 +695,16 @@ async fn run() -> Result<()> {
             VmCommand::Stop { id } => {
                 let record: VmRecord =
                     post_empty(&client, &cli.url, &format!("/v1/vms/{id}/stop")).await?;
+                print_vm(&record);
+            }
+            VmCommand::Shutdown { id } => {
+                let record: VmRecord =
+                    post_empty(&client, &cli.url, &format!("/v1/vms/{id}/shutdown")).await?;
+                print_vm(&record);
+            }
+            VmCommand::Restart { id } => {
+                let record: VmRecord =
+                    post_empty(&client, &cli.url, &format!("/v1/vms/{id}/restart")).await?;
                 print_vm(&record);
             }
             VmCommand::Migrate { id, target } => {

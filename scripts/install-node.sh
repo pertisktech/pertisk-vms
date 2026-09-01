@@ -33,8 +33,8 @@ else
   echo "npm not found; keeping the checked-in web/ui build in crates/pertisk-daemon/static" >&2
 fi
 
-echo "building release pertiskd + pertisk"
-cargo build --release -p pertisk-daemon -p pertisk-cli
+echo "building release pertiskd + pertisk + pertisk-tui"
+cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
 
 if command -v apt-get >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils || true
@@ -46,6 +46,7 @@ ensure_firmware
 install -d /usr/bin /usr/sbin /usr/lib/systemd/system /usr/lib/cloud-hypervisor /etc/pertisk /var/lib/pertisk
 install -m 755 "$ROOT/target/release/pertiskd" /usr/bin/pertiskd
 install -m 755 "$ROOT/target/release/pertisk" /usr/bin/pertisk
+install -m 755 "$ROOT/target/release/pertisk-tui" /usr/bin/pertisk-tui
 ch_src="$(command -v cloud-hypervisor)"
 if [[ "$(readlink -f "$ch_src")" != "$(readlink -f /usr/bin/cloud-hypervisor)" ]]; then
   install -m 755 "$ch_src" /usr/bin/cloud-hypervisor

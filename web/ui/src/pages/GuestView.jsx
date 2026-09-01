@@ -88,9 +88,17 @@ export default function GuestView() {
                 </Btn>
               )}
               {running && (
-                <Btn icon="stop" variant="secondary" onClick={() => act('stop')}>
-                  Stop
-                </Btn>
+                <>
+                  <Btn icon="stop" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
+                    Shutdown
+                  </Btn>
+                  <Btn icon="refresh" variant="secondary" onClick={() => act('restart')} title="Hard reset">
+                    Restart
+                  </Btn>
+                  <Btn icon="stop" variant="secondary" onClick={() => act('stop')} title="Force power off">
+                    Stop
+                  </Btn>
+                </>
               )}
               {running && peers.length > 0 && (
                 <Btn

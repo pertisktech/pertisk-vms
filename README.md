@@ -41,6 +41,10 @@ Vite dev (proxies `/v1` to the daemon): `cd web/ui && npm run dev`.
 
 Serial console is a websocket at `/v1/vms/{id}/console/ws?token=...`. The UI attaches after you click **console**. CLI: `pertisk vm console <id> --attach`.
 
+Guest power: `POST /v1/vms/{id}/start|stop|shutdown|restart`. **Stop** force-kills the hypervisor; **shutdown** sends ACPI (waits up to 120s); **restart** hard-resets (QEMU) or stop+start (Cloud Hypervisor). CLI: `pertisk vm shutdown|restart <id>`.
+
+**Terminal console:** on the node, run `pertisk-tui` (serial/SSH). It shows LAN IP(s), the admin password, and lets you start/stop/shutdown/restart guests. Default bootstrap password is **`admin`** unless `PERTISK_ADMIN_PASSWORD` is set before first boot.
+
 Default bootstrap user is `admin`. Password is `PERTISK_ADMIN_PASSWORD` if set, otherwise `admin`. Restart `pertiskd` after upgrades.
 
 Home directory: `~/.pertisk`. On Linux, `apply_host_links = true` creates bridge/TAP devices with `ip`. qcow2 needs `qemu-img`.

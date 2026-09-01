@@ -109,6 +109,21 @@ impl CloudHypervisorDriver {
     }
 
     pub async fn stop(&self, record: &VmRecord) -> Result<()> {
+        self.shutdown_wait(record, Duration::from_secs(3)).await
+    }
+
+    pub async fn shutdown(&self, record: &VmRecord) -> Result<()> {
+        self.shutdown_wait(record, Duration::from_secs(120)).await
+    }
+
+    pub async fn restart(&self, record: &VmRecord) -> Result<()> {
+        let _ = record;
+        Err(VmmError::Message(
+            "cloud-hypervisor restart is handled by stop+start".into(),
+        ))
+    }
+
+    async fn shutdown_wait(&self, record: &VmRecord, timeout: Duration) -> Result<()> {
         if let Some(socket) = &record.api_socket
             && socket.exists()
         {
@@ -121,7 +136,7 @@ impl CloudHypervisorDriver {
                 Err(err) => warn!(vm = %record.id, %err, "vm.shutdown request failed"),
             }
         }
-        self.reap_or_kill(record).await
+        self.reap_or_kill(record, timeout).await
     }
 
     pub async fn destroy(&self, record: &VmRecord) -> Result<()> {
@@ -131,7 +146,7 @@ impl CloudHypervisorDriver {
             let _ = put_json(socket, "/api/v1/vm.delete", None).await;
             let _ = put_json(socket, "/api/v1/vmm.shutdown", None).await;
         }
-        self.reap_or_kill(record).await?;
+        self.reap_or_kill(record, Duration::from_secs(3)).await?;
         if let Some(socket) = &record.api_socket {
             let _ = tokio::fs::remove_file(socket).await;
         }
@@ -144,10 +159,10 @@ impl CloudHypervisorDriver {
         Ok(())
     }
 
-    async fn reap_or_kill(&self, record: &VmRecord) -> Result<()> {
+    async fn reap_or_kill(&self, record: &VmRecord, timeout: Duration) -> Result<()> {
         let mut children = self.children.lock().await;
         if let Some(mut child) = children.remove(&record.id) {
-            match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+            match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(err)) => Err(err.into()),
                 Err(_) => {

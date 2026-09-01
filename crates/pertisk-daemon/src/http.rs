@@ -34,6 +34,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}", get(show).patch(update_vm).delete(destroy))
         .route("/v1/vms/{id}/start", post(start))
         .route("/v1/vms/{id}/stop", post(stop))
+        .route("/v1/vms/{id}/shutdown", post(shutdown))
+        .route("/v1/vms/{id}/restart", post(restart))
         .route("/v1/vms/{id}/migrate", post(migrate))
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
@@ -82,6 +84,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/peer/accept", post(peer_accept))
         .route("/v1/peer/run", post(peer_run))
         .route("/v1/peer/stop", post(peer_stop))
+        .route("/v1/peer/shutdown", post(peer_shutdown))
+        .route("/v1/peer/restart", post(peer_restart))
         .route("/v1/peer/drop", post(peer_drop))
         .route("/v1/peer/volumes/ensure", post(peer_volume_ensure))
         .route(
@@ -307,6 +311,40 @@ async fn stop(
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(
         tracked(&service, &user, "vm.stop", id.to_string(), service.stop(id)).await?,
+    ))
+}
+
+async fn shutdown(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.shutdown",
+            id.to_string(),
+            service.shutdown(id),
+        )
+        .await?,
+    ))
+}
+
+async fn restart(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.restart",
+            id.to_string(),
+            service.restart(id),
+        )
+        .await?,
     ))
 }
 
@@ -879,6 +917,20 @@ async fn peer_stop(
     Json(record): Json<VmRecord>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.apply_stop(record).await?))
+}
+
+async fn peer_shutdown(
+    State(service): State<Service>,
+    Json(record): Json<VmRecord>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.apply_shutdown(record).await?))
+}
+
+async fn peer_restart(
+    State(service): State<Service>,
+    Json(record): Json<VmRecord>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.apply_restart(record).await?))
 }
 
 async fn peer_drop(

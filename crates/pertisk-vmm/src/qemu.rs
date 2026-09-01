@@ -196,6 +196,27 @@ impl QemuDriver {
         self.reap_or_kill(record).await
     }
 
+    /// ACPI shutdown; waits for the guest to power off, then force-kills on timeout.
+    pub async fn shutdown(&self, record: &VmRecord) -> Result<()> {
+        if let Some(qmp) = &record.api_socket
+            && qmp.exists()
+        {
+            if let Err(err) = qmp_execute(qmp, "system_powerdown").await {
+                warn!(vm = %record.id, %err, "qemu system_powerdown failed");
+            }
+        }
+        self.wait_or_kill(record, Duration::from_secs(120)).await
+    }
+
+    /// Hard reset while the guest keeps running.
+    pub async fn restart(&self, record: &VmRecord) -> Result<()> {
+        let qmp = record
+            .api_socket
+            .as_ref()
+            .ok_or_else(|| VmmError::Message("missing qemu qmp socket".into()))?;
+        qmp_execute(qmp, "system_reset").await
+    }
+
     pub async fn destroy(&self, record: &VmRecord) -> Result<()> {
         let _ = self.stop(record).await;
         for path in [
@@ -213,10 +234,10 @@ impl QemuDriver {
         Ok(())
     }
 
-    async fn reap_or_kill(&self, record: &VmRecord) -> Result<()> {
+    async fn wait_or_kill(&self, record: &VmRecord, timeout: Duration) -> Result<()> {
         let mut children = self.children.lock().await;
         if let Some(mut child) = children.remove(&record.id) {
-            match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+            match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(err)) => Err(err.into()),
                 Err(_) => {
@@ -234,6 +255,10 @@ impl QemuDriver {
         } else {
             Ok(())
         }
+    }
+
+    async fn reap_or_kill(&self, record: &VmRecord) -> Result<()> {
+        self.wait_or_kill(record, Duration::from_secs(3)).await
     }
 }
 

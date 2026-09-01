@@ -389,6 +389,70 @@ impl Service {
         Ok(record)
     }
 
+    pub async fn shutdown(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let record = self.store.get(id)?;
+        if let Some(dest) = record.node_id
+            && dest != self.cluster.self_id()
+        {
+            return self.peer_shutdown(dest, record).await;
+        }
+        self.shutdown_local(id).await
+    }
+
+    pub async fn shutdown_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        let mut record = self.store.get(id)?;
+        if record.state != VmState::Running {
+            return Err(pertisk_vmm::VmmError::InvalidState {
+                state: record.state,
+                op: "shutdown",
+            }
+            .into());
+        }
+        self.console.drop_vm(id).await;
+        self.vmm.shutdown(&record).await?;
+        record.state = VmState::Stopped;
+        record.last_error = None;
+        self.store.upsert(record.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        self.sync_vm_volumes(&record).await;
+        Ok(record)
+    }
+
+    pub async fn restart(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let record = self.store.get(id)?;
+        if let Some(dest) = record.node_id
+            && dest != self.cluster.self_id()
+        {
+            return self.peer_restart(dest, record).await;
+        }
+        self.restart_local(id).await
+    }
+
+    pub async fn restart_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        let record = self.store.get(id)?;
+        if record.state != VmState::Running {
+            return Err(pertisk_vmm::VmmError::InvalidState {
+                state: record.state,
+                op: "restart",
+            }
+            .into());
+        }
+        match self.driver() {
+            DriverKind::Qemu | DriverKind::Mock => {
+                self.vmm.restart(&record).await?;
+                self.attach_console(&record).await;
+                Ok(record)
+            }
+            DriverKind::CloudHypervisor => {
+                self.shutdown_local(id).await?;
+                self.start_local(id).await
+            }
+        }
+    }
+
     pub async fn destroy(&self, id: VmId) -> Result<(), DaemonError> {
         self.require_quorum()?;
         let record = self.store.get(id)?;
@@ -453,6 +517,18 @@ impl Service {
         let id = record.id;
         self.store.upsert(record)?;
         self.stop_local(id).await
+    }
+
+    pub async fn apply_shutdown(&self, record: VmRecord) -> Result<VmRecord, DaemonError> {
+        let id = record.id;
+        self.store.upsert(record)?;
+        self.shutdown_local(id).await
+    }
+
+    pub async fn apply_restart(&self, record: VmRecord) -> Result<VmRecord, DaemonError> {
+        let id = record.id;
+        self.store.upsert(record)?;
+        self.restart_local(id).await
     }
 
     pub async fn apply_drop(&self, record: &VmRecord) -> Result<(), DaemonError> {
@@ -1321,6 +1397,22 @@ impl Service {
         record: VmRecord,
     ) -> Result<VmRecord, DaemonError> {
         self.peer_json(dest, "/v1/peer/stop", &record).await
+    }
+
+    async fn peer_shutdown(
+        &self,
+        dest: pertisk_types::NodeId,
+        record: VmRecord,
+    ) -> Result<VmRecord, DaemonError> {
+        self.peer_json(dest, "/v1/peer/shutdown", &record).await
+    }
+
+    async fn peer_restart(
+        &self,
+        dest: pertisk_types::NodeId,
+        record: VmRecord,
+    ) -> Result<VmRecord, DaemonError> {
+        self.peer_json(dest, "/v1/peer/restart", &record).await
     }
 
     async fn peer_drop(

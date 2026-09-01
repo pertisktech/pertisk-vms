@@ -79,9 +79,17 @@ export default function NodeGuests() {
                     </Btn>
                   )}
                   {canWrite && vm.state === 'running' && (
-                    <Btn icon="stop" variant="secondary" onClick={() => act('stop', vm)}>
-                      Stop
-                    </Btn>
+                    <>
+                      <Btn icon="stop" variant="secondary" onClick={() => act('shutdown', vm)} title="ACPI shutdown">
+                        Shutdown
+                      </Btn>
+                      <Btn icon="refresh" variant="secondary" onClick={() => act('restart', vm)} title="Hard reset">
+                        Restart
+                      </Btn>
+                      <Btn icon="stop" variant="secondary" onClick={() => act('stop', vm)} title="Force off">
+                        Stop
+                      </Btn>
+                    </>
                   )}
                   <Link to={`/vm/${vm.id}/console`} className="btn-icon secondary">
                     <Icon name="terminal" size={16} />
