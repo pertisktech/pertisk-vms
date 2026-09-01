@@ -110,6 +110,7 @@ EOF
 chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
 
 rm -f "$mnt/var/lib/pertisk/.firstboot-done"
+touch "$mnt/var/lib/pertisk/.installed-to-disk"
 umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
 echo "pertisk-install: done. Remove the USB and reboot from $DISK."
 echo "UI will be http://<host>:7480/  (admin password in /etc/pertisk/admin after first boot)"

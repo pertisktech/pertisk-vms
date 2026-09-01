@@ -52,6 +52,10 @@ pub async fn bind_and_serve(listen: &str, service: Service) -> Result<(), Daemon
             }
         }
     });
+    let recon = service.clone();
+    tokio::spawn(async move {
+        recon.reconcile_local_vms().await;
+    });
     if let Some(peer) = service.join_peer() {
         let joiner = service.clone();
         tokio::spawn(async move {

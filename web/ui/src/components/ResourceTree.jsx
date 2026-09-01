@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { asList } from '../api'
 import { Icon } from './Icons'
+import { parseResourceRoute, resourceLink } from '../resourceRoutes'
 
 const OPEN_KEY = 'pertisk_vm_tree_open'
 
@@ -60,6 +61,8 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf })
 }
 
 export default function ResourceTree({ cluster, host, vms }) {
+  const location = useLocation()
+  const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
   const [open, setOpen] = useState(loadOpen)
   const [filter, setFilter] = useState('')
 
@@ -109,8 +112,8 @@ export default function ResourceTree({ cluster, host, vms }) {
         <Branch
           depth={0}
           icon="datacenter"
-            label="Pertisk"
-          to="/dc/summary"
+          label="Pertisk"
+          to={resourceLink('dc', null, currentRoute)}
           open={isOpen('dc')}
           onToggle={() => toggle('dc')}
           status={cluster?.quorum === false ? 'failed' : undefined}
@@ -130,7 +133,7 @@ export default function ResourceTree({ cluster, host, vms }) {
                     depth={1}
                     icon="worker"
                     label={node.name}
-                    to={`/node/${node.id}/summary`}
+                    to={resourceLink('node', node.id, currentRoute)}
                     open={isOpen(nodeKey)}
                     onToggle={() => toggle(nodeKey)}
                     status={node.online ? 'running' : 'failed'}
@@ -143,7 +146,7 @@ export default function ResourceTree({ cluster, host, vms }) {
                         leaf
                         icon="guests"
                         label={vm.spec?.name || vm.id}
-                        to={`/vm/${vm.id}/summary`}
+                        to={resourceLink('vm', vm.id, currentRoute)}
                         status={guestStatus(vm)}
                       />
                     ))}

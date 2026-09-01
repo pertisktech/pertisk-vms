@@ -9,7 +9,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::unix_http::{expect_ok, put_json, wait_ready};
+use crate::unix_http::{expect_ok, get, put_json, wait_ready};
 use crate::{CreateResult, Result, StartResult, VmmError};
 
 #[derive(Debug)]
@@ -177,6 +177,28 @@ impl CloudHypervisorDriver {
         } else {
             Ok(())
         }
+    }
+
+    /// True while cloud-hypervisor reports the guest as running.
+    pub async fn is_running(&self, record: &VmRecord) -> bool {
+        let Some(socket) = record.api_socket.as_ref() else {
+            return false;
+        };
+        if !socket.exists() {
+            return false;
+        }
+        let Ok((status, body)) = get(socket, "/api/v1/vm.info").await else {
+            return false;
+        };
+        if !(200..300).contains(&status) {
+            return false;
+        }
+        let Ok(info) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return false;
+        };
+        info.get("state")
+            .and_then(|state| state.as_str())
+            .is_some_and(|state| state.eq_ignore_ascii_case("running"))
     }
 }
 

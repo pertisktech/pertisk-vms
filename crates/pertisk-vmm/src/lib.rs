@@ -127,6 +127,15 @@ impl VmmBackend {
             Self::Qemu(driver) => driver.destroy(record).await,
         }
     }
+
+    /// Whether the hypervisor still has this guest running (process or API state).
+    pub async fn is_running(&self, record: &VmRecord) -> bool {
+        match self {
+            Self::Mock(driver) => driver.is_running(record),
+            Self::CloudHypervisor(driver) => driver.is_running(record).await,
+            Self::Qemu(driver) => driver.is_running(record),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

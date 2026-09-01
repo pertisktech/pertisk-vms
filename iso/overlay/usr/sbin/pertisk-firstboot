@@ -75,10 +75,63 @@ fi
 
 ips="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ips="${ips:-<this-host>}"
+
+ensure_fstab() {
+  [[ -f /etc/fstab ]] && return 0
+  command -v findmnt >/dev/null || return 0
+  command -v blkid >/dev/null || return 0
+  local root_src root_uuid esp_dev esp_uuid
+  root_src="$(findmnt -n -o SOURCE / || true)"
+  root_uuid="$(findmnt -n -o UUID / 2>/dev/null || blkid -s UUID -o value "$root_src" 2>/dev/null || true)"
+  [[ -n "$root_uuid" ]] || return 0
+  esp_dev=""
+  if findmnt -n /boot/efi >/dev/null 2>&1; then
+    esp_dev="$(findmnt -n -o SOURCE /boot/efi)"
+  elif [[ -n "$root_src" ]]; then
+    local base="${root_src%%[0-9]}"
+    base="${base%p}"
+    [[ -b "${base}p1" ]] && esp_dev="${base}p1"
+    [[ -z "$esp_dev" && -b "${base}1" ]] && esp_dev="${base}1"
+  fi
+  esp_uuid=""
+  if [[ -n "$esp_dev" ]]; then
+    esp_uuid="$(blkid -s UUID -o value "$esp_dev" 2>/dev/null || true)"
+  fi
+  {
+    echo "UUID=$root_uuid / ext4 defaults 0 1"
+    if [[ -n "$esp_uuid" ]]; then
+      echo "UUID=$esp_uuid /boot/efi vfat umask=0077 0 2"
+    fi
+  } >/etc/fstab
+}
+
+show_install_hint() {
+  [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 1
+  local root_src
+  root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+  case "$root_src" in
+    /dev/{vd,sd,hd,xvd,nvme}*) return 1 ;;
+  esac
+  return 0
+}
+
+ensure_fstab
+
 cat >"$ISSUE" <<EOF
 pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
 Run pertisk-tui on this console for VM control.
 EOF
+
+{
+  echo "pertisk-vm node"
+  if show_install_hint; then
+    echo "Install to disk:  pertisk-install --disk /dev/nvme0n1 --yes"
+  else
+    echo "Running from disk (no pertisk-install needed)."
+  fi
+  echo "Console TUI:      pertisk-tui"
+  echo "UI:               http://${ips}:7480/  user admin  password ${PERTISK_ADMIN_PASSWORD}"
+} >/etc/motd
 
 touch "$HOME_DIR/.firstboot-done"
 echo "pertisk-firstboot: done. UI http://${ips}:7480/"

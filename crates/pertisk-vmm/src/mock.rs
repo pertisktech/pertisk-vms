@@ -111,6 +111,12 @@ impl MockDriver {
             .ok_or(VmmError::NotFound(record.id))?;
         Ok(())
     }
+
+    pub fn is_running(&self, record: &VmRecord) -> bool {
+        let vms = self.vms.lock().expect("mock vmm lock");
+        vms.get(&record.id)
+            .is_some_and(|vm| vm.state == VmState::Running)
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, clearToken, getToken } from './api'
 import { Icon } from './components/Icons'
 import { applyTheme } from './theme'
@@ -8,6 +8,7 @@ import { useInventory } from './useInventory'
 import ResourceTree from './components/ResourceTree'
 import TaskLog from './components/TaskLog'
 import GuestWizard from './components/GuestWizard'
+import { parseResourceRoute, resourceLink } from './resourceRoutes'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
 
@@ -77,6 +78,7 @@ export default function Layout() {
   const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
   const canWrite = user?.role && user.role !== 'viewer'
   const quorum = inv.cluster?.quorum !== false
+  const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
 
   return (
     <div className="pve-shell">
@@ -89,7 +91,7 @@ export default function Layout() {
         >
           <Icon name="menu" size={18} />
         </button>
-        <Link to="/dc/summary" className="pve-brand">
+        <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
           <span className="brand-mark" aria-hidden>
             <Icon name="guests" size={15} />
           </span>

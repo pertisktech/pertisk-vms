@@ -297,7 +297,7 @@ impl Service {
         self.localize_disks(&mut record)?;
         self.store.upsert(record.clone())?;
         match record.state {
-            VmState::Created | VmState::Stopped => {}
+            VmState::Created | VmState::Stopped | VmState::Failed => {}
             state => {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
@@ -311,11 +311,17 @@ impl Service {
             .as_ref()
             .map(|p| !p.exists())
             .unwrap_or(true);
+        let needs_vmm = matches!(
+            self.driver(),
+            DriverKind::CloudHypervisor | DriverKind::Qemu
+        );
+        let vmm_alive = if needs_vmm {
+            self.vmm.is_running(&record).await
+        } else {
+            true
+        };
         let recreate = record.state == VmState::Created
-            || (matches!(
-                self.driver(),
-                DriverKind::CloudHypervisor | DriverKind::Qemu
-            ) && socket_missing);
+            || (needs_vmm && (socket_missing || !vmm_alive));
         if recreate {
             match self.vmm.create(record.id, &boot_spec).await {
                 Ok(created) => {
@@ -352,6 +358,7 @@ impl Service {
                 }
                 self.store.upsert(record.clone())?;
                 self.attach_console(&record).await;
+                self.spawn_exit_watch(&record);
                 self.cluster.bump()?;
                 self.replicate().await;
                 Ok(record)
@@ -379,6 +386,16 @@ impl Service {
     pub async fn stop_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         let mut record = self.store.get(id)?;
         self.console.drop_vm(id).await;
+        if !self.vmm.is_running(&record).await {
+            record.state = VmState::Stopped;
+            record.pid = None;
+            record.last_error = None;
+            self.store.upsert(record.clone())?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            self.sync_vm_volumes(&record).await;
+            return Ok(record);
+        }
         self.vmm.stop(&record).await?;
         record.state = VmState::Stopped;
         record.last_error = None;
@@ -410,6 +427,16 @@ impl Service {
             .into());
         }
         self.console.drop_vm(id).await;
+        if !self.vmm.is_running(&record).await {
+            record.state = VmState::Stopped;
+            record.pid = None;
+            record.last_error = None;
+            self.store.upsert(record.clone())?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            self.sync_vm_volumes(&record).await;
+            return Ok(record);
+        }
         self.vmm.shutdown(&record).await?;
         record.state = VmState::Stopped;
         record.last_error = None;
@@ -1266,6 +1293,7 @@ impl Service {
         if quorum {
             self.recover_ha().await?;
         }
+        self.reconcile_local_vms().await;
         self.send_heartbeats().await;
         if self.cluster.has_quorum()
             && self.cluster.is_leader()
@@ -1274,6 +1302,77 @@ impl Service {
             self.rebuild_volumes().await;
         }
         Ok(())
+    }
+
+    /// Poll the hypervisor until the guest exits, then mark the VM stopped.
+    fn spawn_exit_watch(&self, record: &VmRecord) {
+        if record.state != VmState::Running {
+            return;
+        }
+        let self_id = self.cluster.self_id();
+        if record.node_id != Some(self_id) {
+            return;
+        }
+        let vmm = self.vmm.clone();
+        let service = self.clone();
+        let id = record.id;
+        let snapshot = record.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let Ok(current) = service.store.get(id) else {
+                    break;
+                };
+                if current.state != VmState::Running {
+                    break;
+                }
+                if !vmm.is_running(&snapshot).await {
+                    if let Err(err) = service.on_guest_exited(id).await {
+                        tracing::warn!(vm = %id, error = %err, "guest exit cleanup failed");
+                    }
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Mark a VM stopped after the guest or hypervisor process exits without an API stop.
+    async fn on_guest_exited(&self, id: VmId) -> Result<(), DaemonError> {
+        let mut record = self.store.get(id)?;
+        if record.state != VmState::Running {
+            return Ok(());
+        }
+        if record.node_id != Some(self.cluster.self_id()) {
+            return Ok(());
+        }
+        tracing::info!(vm = %id, "guest exited; marking stopped");
+        self.console.drop_vm(id).await;
+        record.state = VmState::Stopped;
+        record.pid = None;
+        record.last_error = None;
+        self.store.upsert(record.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        self.sync_vm_volumes(&record).await;
+        Ok(())
+    }
+
+    /// Correct stale Running state when the hypervisor process is already gone.
+    pub(crate) async fn reconcile_local_vms(&self) {
+        let self_id = self.cluster.self_id();
+        let Ok(vms) = self.store.list() else {
+            return;
+        };
+        for vm in vms {
+            if vm.state != VmState::Running || vm.node_id != Some(self_id) {
+                continue;
+            }
+            if !self.vmm.is_running(&vm).await
+                && let Err(err) = self.on_guest_exited(vm.id).await
+            {
+                tracing::warn!(vm = %vm.id, error = %err, "reconcile stop failed");
+            }
+        }
     }
 
     async fn fence_local(&self) {

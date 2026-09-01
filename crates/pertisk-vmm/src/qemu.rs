@@ -260,6 +260,14 @@ impl QemuDriver {
     async fn reap_or_kill(&self, record: &VmRecord) -> Result<()> {
         self.wait_or_kill(record, Duration::from_secs(3)).await
     }
+
+    /// True while the QEMU process for this VM is still alive.
+    pub fn is_running(&self, record: &VmRecord) -> bool {
+        if let Some(pid) = record.pid.filter(|pid| *pid > 0) {
+            return std::path::Path::new(&format!("/proc/{pid}")).exists();
+        }
+        false
+    }
 }
 
 fn drive_format(disk: &pertisk_types::DiskSpec) -> &'static str {
