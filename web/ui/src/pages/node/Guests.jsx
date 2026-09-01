@@ -52,6 +52,7 @@ export default function NodeGuests() {
               <th>Disks</th>
               <th>NICs</th>
               <th>HA</th>
+              <th>Boot</th>
               <th />
             </tr>
           </thead>
@@ -72,6 +73,7 @@ export default function NodeGuests() {
                 <td>{disksOf(vm).length}</td>
                 <td>{netsOf(vm).length}</td>
                 <td>{vm.spec?.ha !== false ? 'yes' : 'no'}</td>
+                <td>{vm.spec?.autostart ? 'yes' : 'no'}</td>
                 <td className="row-actions">
                   {canWrite && vm.state !== 'running' && (
                     <Btn icon="play" variant="secondary" onClick={() => act('start', vm)}>

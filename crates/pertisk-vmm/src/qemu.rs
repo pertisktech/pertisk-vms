@@ -95,16 +95,21 @@ impl QemuDriver {
             cmd.arg("-enable-kvm").arg("-cpu").arg("host");
         }
 
-        if let Some((code, vars_template)) = find_ovmf() {
-            let vars = self.run_dir.join(format!("{id}.OVMF_VARS.fd"));
-            tokio::fs::copy(&vars_template, &vars).await?;
-            cmd.arg("-drive")
-                .arg(format!(
-                    "if=pflash,format=raw,readonly=on,file={}",
-                    code.display()
-                ))
-                .arg("-drive")
-                .arg(format!("if=pflash,format=raw,file={}", vars.display()));
+        if spec.kernel.is_none() {
+            if let Some((code, vars_template)) = find_ovmf() {
+                let vars = self.run_dir.join(format!("{id}.OVMF_VARS.fd"));
+                // Always start from the template. A previous failed Talos/UKI boot stores
+                // Boot0001=empty virtio + Boot0002=EFI shell in NVRAM, which then wins forever.
+                tokio::fs::copy(&vars_template, &vars).await?;
+                info!(vm = %id, firmware = %code.display(), "ovmf");
+                cmd.arg("-drive")
+                    .arg(format!(
+                        "if=pflash,format=raw,readonly=on,file={}",
+                        code.display()
+                    ))
+                    .arg("-drive")
+                    .arg(format!("if=pflash,format=raw,file={}", vars.display()));
+            }
         }
 
         if let Some(kernel) = &spec.kernel {
@@ -122,7 +127,9 @@ impl QemuDriver {
         let has_installer_cd = ordered
             .iter()
             .any(|disk| disk.cdrom && !is_cidata(disk));
-        let has_data_disk = ordered.iter().any(|disk| !disk.cdrom);
+        let disk_bootable = ordered.iter().any(|disk| {
+            !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path)
+        });
         if ordered.iter().any(|disk| disk.cdrom) {
             cmd.arg("-device").arg("ich9-ahci,id=ahci");
         }
@@ -131,13 +138,14 @@ impl QemuDriver {
         for (index, disk) in ordered.iter().enumerate() {
             let format = drive_format(disk);
             let drive_id = format!("disk{index}");
+            let boot = drive_bootindex(disk, disk_bootable, &mut bootindex);
             if disk.cdrom {
                 cmd.arg("-drive").arg(format!(
                     "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",
                     disk.path.display()
                 ));
                 cmd.arg("-device").arg(format!(
-                    "ide-cd,drive={drive_id},bus=ahci.{cd_index}"
+                    "ide-cd,drive={drive_id},bus=ahci.{cd_index}{boot}"
                 ));
                 cd_index = cd_index.saturating_add(1);
             } else {
@@ -145,14 +153,12 @@ impl QemuDriver {
                     "file={},if=none,id={drive_id},format={format},cache=none,discard=unmap",
                     disk.path.display()
                 ));
-                let boot = format!(",bootindex={bootindex}");
-                bootindex = bootindex.saturating_add(1);
                 cmd.arg("-device")
                     .arg(format!("virtio-blk-pci,drive={drive_id}{boot}"));
             }
         }
         if has_installer_cd {
-            if has_data_disk {
+            if disk_bootable {
                 cmd.arg("-boot").arg("order=c");
             } else {
                 cmd.arg("-boot").arg("order=d");
@@ -375,11 +381,33 @@ fn boot_rank(disk: &pertisk_types::DiskSpec) -> u8 {
     }
 }
 
+/// Assign firmware bootindex. An empty disk must not outrank the installer CD
+/// (Talos/metal EFI ISOs otherwise drop to the OVMF shell).
+fn drive_bootindex(
+    disk: &pertisk_types::DiskSpec,
+    disk_bootable: bool,
+    bootindex: &mut u8,
+) -> String {
+    if is_cidata(disk) {
+        return String::new();
+    }
+    if disk.cdrom && disk_bootable {
+        return String::new();
+    }
+    let idx = *bootindex;
+    *bootindex = bootindex.saturating_add(1);
+    format!(",bootindex={idx}")
+}
+
 fn find_ovmf() -> Option<(PathBuf, PathBuf)> {
     const PAIRS: &[(&str, &str)] = &[
         (
             "/usr/share/OVMF/OVMF_CODE_4M.fd",
             "/usr/share/OVMF/OVMF_VARS_4M.fd",
+        ),
+        (
+            "/usr/share/edk2/ovmf/OVMF_CODE_4M.fd",
+            "/usr/share/edk2/ovmf/OVMF_VARS_4M.fd",
         ),
         (
             "/usr/share/OVMF/OVMF_CODE.fd",
@@ -500,5 +528,29 @@ mod tests {
         assert_eq!(drive_format(&iso), "raw");
         assert_eq!(boot_rank(&iso), 0);
         assert_eq!(boot_rank(&disk), 1);
+    }
+
+    #[test]
+    fn installer_cd_boots_before_empty_disk() {
+        let iso = DiskSpec {
+            path: PathBuf::from("/var/metal-amd64.iso"),
+            readonly: true,
+            cdrom: true,
+            volume_id: None,
+            iso_name: Some("metal-amd64.iso".into()),
+        };
+        let disk = DiskSpec {
+            path: PathBuf::from("/var/empty.qcow2"),
+            readonly: false,
+            cdrom: false,
+            volume_id: None,
+            iso_name: None,
+        };
+        let mut idx = 1u8;
+        assert_eq!(drive_bootindex(&iso, false, &mut idx), ",bootindex=1");
+        assert_eq!(drive_bootindex(&disk, false, &mut idx), ",bootindex=2");
+        let mut idx = 1u8;
+        assert_eq!(drive_bootindex(&iso, true, &mut idx), "");
+        assert_eq!(drive_bootindex(&disk, true, &mut idx), ",bootindex=1");
     }
 }

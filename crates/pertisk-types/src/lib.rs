@@ -333,6 +333,15 @@ pub struct UpdateVmRequest {
     pub memory_mib: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ha: Option<bool>,
+    /// Start this guest when the node boots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart: Option<bool>,
+    /// Seconds to wait after node boot before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart_delay: Option<u64>,
+    /// Relative start order among autostart guests (lower first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart_order: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -704,9 +713,10 @@ pub struct DiskSpec {
 }
 
 /// Heuristic: qcow2/raw larger than a blank volume usually has an installed OS.
+/// Keep this high — a few failed boots allocate far more than 64 MiB without an OS.
 pub fn disk_likely_bootable(path: &Path) -> bool {
     std::fs::metadata(path)
-        .map(|meta| meta.len() > 64 * 1024 * 1024)
+        .map(|meta| meta.len() > 512 * 1024 * 1024)
         .unwrap_or(false)
 }
 
@@ -751,6 +761,23 @@ pub struct VmSpec {
     /// Restart on another node if this node is lost. Default true.
     #[serde(default = "default_true")]
     pub ha: bool,
+    /// Start this guest when the owning node boots. Independent of last power state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autostart: bool,
+    /// Seconds after node boot to wait before starting (stagger).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub autostart_delay: u64,
+    /// Relative start order among autostart guests (lower first).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub autostart_order: u32,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 fn default_vcpus() -> u8 {
@@ -1144,6 +1171,9 @@ mod tests {
             serial_log: None,
             console_type: Default::default(),
             ha: true,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
         };
         assert!(spec.validate().is_err());
     }

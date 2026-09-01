@@ -420,6 +420,9 @@ mod tests {
             serial_log: None,
             console_type: Default::default(),
             ha: true,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
         }
     }
 

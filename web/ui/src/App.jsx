@@ -16,6 +16,7 @@ import NodeGuests from './pages/node/Guests'
 import GuestSummary from './pages/guest/Summary'
 import GuestConsole from './pages/guest/Console'
 import GuestHardware from './pages/guest/Hardware'
+import GuestOptions from './pages/guest/Options'
 
 export default function App() {
   return (
@@ -44,6 +45,7 @@ export default function App() {
               <Route path="summary" element={<GuestSummary />} />
               <Route path="console" element={<GuestConsole />} />
               <Route path="hardware" element={<GuestHardware />} />
+              <Route path="options" element={<GuestOptions />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/dc/summary" replace />} />

@@ -140,6 +140,15 @@ enum VmCommand {
         /// Start the guest after create (ISO/disk attach included).
         #[arg(long)]
         start: bool,
+        /// Start this guest when the node boots.
+        #[arg(long)]
+        autostart: bool,
+        /// Seconds to wait after node boot before autostart.
+        #[arg(long, default_value_t = 0)]
+        autostart_delay: u64,
+        /// Relative autostart order (lower first).
+        #[arg(long, default_value_t = 0)]
+        autostart_order: u32,
     },
     Start {
         id: VmId,
@@ -168,7 +177,7 @@ enum VmCommand {
     Show {
         id: VmId,
     },
-    /// Change name, vCPU, memory, or HA while the guest is defined.
+    /// Change name, vCPU, memory, HA, or autostart while the guest is defined.
     Update {
         id: VmId,
         #[arg(long)]
@@ -179,6 +188,12 @@ enum VmCommand {
         memory: Option<u32>,
         #[arg(long)]
         ha: Option<bool>,
+        #[arg(long)]
+        autostart: Option<bool>,
+        #[arg(long)]
+        autostart_delay: Option<u64>,
+        #[arg(long)]
+        autostart_order: Option<u32>,
     },
     Disk {
         #[command(subcommand)]
@@ -592,6 +607,9 @@ async fn run() -> Result<()> {
                 net,
                 graphics,
                 start,
+                autostart,
+                autostart_delay,
+                autostart_order,
             } => {
                 let host: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
                 let firmware = firmware.or(host.firmware.clone());
@@ -627,6 +645,9 @@ async fn run() -> Result<()> {
                     serial_log: None,
                     console_type: if graphics { pertisk_types::ConsoleType::Graphics } else { pertisk_types::ConsoleType::Serial },
                     ha: true,
+                    autostart,
+                    autostart_delay,
+                    autostart_order,
                 };
                 let mut record: VmRecord = post_json(
                     &client,
@@ -756,6 +777,9 @@ async fn run() -> Result<()> {
                 cpus,
                 memory,
                 ha,
+                autostart,
+                autostart_delay,
+                autostart_order,
             } => {
                 let record: VmRecord = patch_json(
                     &client,
@@ -766,6 +790,9 @@ async fn run() -> Result<()> {
                         vcpus: cpus,
                         memory_mib: memory,
                         ha,
+                        autostart,
+                        autostart_delay,
+                        autostart_order,
                     },
                 )
                 .await?;

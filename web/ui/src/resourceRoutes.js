@@ -1,7 +1,7 @@
 /** Valid tab segments per resource type (HashRouter paths). */
 export const DC_TABS = ['summary', 'storage', 'networks', 'cluster', 'tasks', 'users']
 export const NODE_TABS = ['summary', 'guests', 'tasks']
-export const VM_TABS = ['summary', 'console', 'hardware']
+export const VM_TABS = ['summary', 'console', 'hardware', 'options']
 
 export function parseResourceRoute(pathname) {
   const parts = pathname.split('/').filter(Boolean)

@@ -17,7 +17,24 @@ pub struct LinuxIsoBoot {
     pub cmdline: String,
 }
 
+const TALOS_CMDLINE: &str = "talos.platform=metal console=tty0 console=ttyS0 talos.halt_if_installed=1 init_on_alloc=1 slab_nomerge pti=on consoleblank=0 nvme_core.io_timeout=4294967295 printk.devkmsg=on selinux=1 module.sig_enforce=1 proc_mem.force_override=never";
+
 const KERNEL_CANDIDATES: &[(&[&str], &[&str], &str)] = &[
+    (
+        &["usr", "install", "amd64", "vmlinuz"],
+        &["usr", "install", "amd64", "initramfs.xz"],
+        TALOS_CMDLINE,
+    ),
+    (
+        &["usr", "install", "arm64", "vmlinuz"],
+        &["usr", "install", "arm64", "initramfs.xz"],
+        TALOS_CMDLINE,
+    ),
+    (
+        &["boot", "vmlinuz"],
+        &["boot", "initramfs.xz"],
+        "console=tty0 console=ttyS0",
+    ),
     (
         &["casper", "vmlinuz"],
         &["casper", "initrd"],
@@ -93,7 +110,7 @@ pub fn prepare_linux_iso_boot(
         let kernel = dest_dir.join("vmlinuz");
         let initramfs = dest_dir.join("initrd");
         let cmd_file = dest_dir.join("cmdline");
-        let cmdline = resolve_cmdline(cmdline, &roots.volume_id);
+        let cmdline = resolve_cmdline(cmdline, &roots.volume_id, iso);
         if !cache_fresh(iso, &kernel, &initramfs, &cmd_file) {
             image.copy_file(k_lba, k_size, &kernel)?;
             image.copy_file(i_lba, i_size, &initramfs)?;
@@ -116,9 +133,24 @@ pub fn prepare_linux_iso_boot(
     Ok(None)
 }
 
+fn is_talos_iso(iso: &Path, volume_id: &str) -> bool {
+    let name = iso
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    volume_id.to_ascii_uppercase().contains("TALOS")
+        || name.contains("talos")
+        || name.contains("metal-amd64")
+        || name.contains("metal-arm64")
+}
+
 /// Anaconda's initrd (`inst.*` cmdlines) only finds the install tree when `inst.stage2`
-/// points at the ISO volume label.
-fn resolve_cmdline(base: &str, volume_id: &str) -> String {
+/// points at the ISO volume label. Talos metal ISOs always get the metal platform cmdline.
+fn resolve_cmdline(base: &str, volume_id: &str, iso: &Path) -> String {
+    if is_talos_iso(iso, volume_id) || base.contains("talos.platform=") {
+        return TALOS_CMDLINE.to_string();
+    }
     if volume_id.is_empty() || !base.contains("inst.") || base.contains("inst.stage2") {
         return base.to_string();
     }
@@ -395,6 +427,42 @@ mod tests {
         assert_eq!(std::fs::read(&boot.kernel).unwrap(), b"kernel-bytes");
         assert_eq!(std::fs::read(&boot.initramfs).unwrap(), b"initrd-bytes");
         assert!(boot.cmdline.contains("console=ttyS0"));
+    }
+
+    #[test]
+    fn extracts_talos_metal_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("metal-amd64.iso");
+        std::fs::write(
+            &iso,
+            tree_iso(&[
+                ("usr/install/amd64/vmlinuz", b"talos-kernel"),
+                ("usr/install/amd64/initramfs.xz", b"talos-initrd"),
+            ]),
+        )
+        .unwrap();
+        let boot = prepare_linux_iso_boot(&iso, &dir.path().join("out"))
+            .unwrap()
+            .expect("talos kernel");
+        assert_eq!(std::fs::read(&boot.kernel).unwrap(), b"talos-kernel");
+        assert_eq!(std::fs::read(&boot.initramfs).unwrap(), b"talos-initrd");
+        assert!(boot.cmdline.contains("talos.platform=metal"));
+        assert!(boot.cmdline.contains("console=tty0"));
+    }
+
+    #[test]
+    fn extracts_published_talos_metal_iso() {
+        let iso = std::path::Path::new("/tmp/talos-iso/metal-amd64.iso");
+        if !iso.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let boot = prepare_linux_iso_boot(iso, &dir.path().join("out"))
+            .unwrap()
+            .expect("talos metal iso should expose /boot/vmlinuz");
+        assert!(boot.kernel.metadata().unwrap().len() > 1_000_000);
+        assert!(boot.initramfs.metadata().unwrap().len() > 1_000_000);
+        assert!(boot.cmdline.contains("talos.platform=metal"));
     }
 
     #[test]

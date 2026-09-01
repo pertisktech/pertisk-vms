@@ -43,6 +43,14 @@ export default function GuestSummary() {
           <dd className="mono-inline">{vm.id}</dd>
           <dt>High availability</dt>
           <dd>{vm.spec?.ha !== false ? 'restart on node loss' : 'off'}</dd>
+          <dt>Start at boot</dt>
+          <dd>
+            {vm.spec?.autostart
+              ? `yes${vm.spec?.autostart_order ? `, order ${vm.spec.autostart_order}` : ''}${
+                  vm.spec?.autostart_delay ? `, delay ${vm.spec.autostart_delay}s` : ''
+                }`
+              : 'no'}
+          </dd>
           <dt>Disks</dt>
           <dd>
             {disks.length === 0

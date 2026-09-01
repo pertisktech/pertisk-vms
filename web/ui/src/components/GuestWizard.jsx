@@ -10,16 +10,12 @@ const STEPS = [
   { id: 'review', label: 'Review' },
 ]
 
-function defaultCpus(host, cluster) {
-  const member = (cluster?.members || []).find((m) => m.id === host?.node_id) || cluster?.members?.[0]
-  const n = Number(member?.cpus) || 2
-  return Math.max(1, Math.min(4, Math.floor(n / 4) || 2))
+function defaultCpus() {
+  return 1
 }
 
-function defaultMemory(host, cluster) {
-  const member = (cluster?.members || []).find((m) => m.id === host?.node_id) || cluster?.members?.[0]
-  const n = Number(member?.memory_mib) || 2048
-  return Math.max(512, Math.min(4096, Math.floor(n / 16) || 2048))
+function defaultMemory() {
+  return 1024
 }
 
 function nextVmId(vms) {
@@ -33,9 +29,10 @@ function nextVmId(vms) {
 const EMPTY = {
   id: '',
   name: '',
-  vcpus: 2,
-  memory_mib: 2048,
+  vcpus: 1,
+  memory_mib: 1024,
   ha: true,
+  autostart: false,
   graphics: false,
   diskMode: 'new',
   diskName: '',
@@ -56,8 +53,8 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
   const [form, setForm] = useState(() => ({
     ...EMPTY,
     id: nextVmId(vms),
-    vcpus: defaultCpus(host, cluster),
-    memory_mib: defaultMemory(host, cluster),
+    vcpus: defaultCpus(),
+    memory_mib: defaultMemory(),
     graphics: host?.driver === 'qemu',
     iso: isos[0]?.name || '',
     networkId: networks[0]?.id || '',
@@ -139,6 +136,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             vcpus: Number(form.vcpus),
             memory_mib: Number(form.memory_mib),
             ha: form.ha,
+            autostart: form.autostart,
             console_type: form.graphics ? 'graphics' : 'serial',
           },
         }),
@@ -276,29 +274,31 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
         {step === 0 && (
           <>
             <p className="wizard-section-title">Machine</p>
-            <div className="field">
-              <label htmlFor="guest-id">VM ID</label>
-              <input
-                id="guest-id"
-                required
-                inputMode="numeric"
-                pattern="[0-9]{3,10}"
-                maxLength="10"
-                value={form.id}
-                onChange={(e) => set({ id: e.target.value.replace(/\D/g, '') })}
-                placeholder="100"
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="guest-name">Name</label>
-              <input
-                id="guest-name"
-                required
-                autoFocus
-                value={form.name}
-                onChange={(e) => set({ name: e.target.value })}
-                placeholder="web-1"
-              />
+            <div className="form-grid">
+              <div className="field">
+                <label htmlFor="guest-id">VM ID</label>
+                <input
+                  id="guest-id"
+                  required
+                  inputMode="numeric"
+                  pattern="[0-9]{3,10}"
+                  maxLength="10"
+                  value={form.id}
+                  onChange={(e) => set({ id: e.target.value.replace(/\D/g, '') })}
+                  placeholder="100"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="guest-name">Name</label>
+                <input
+                  id="guest-name"
+                  required
+                  autoFocus
+                  value={form.name}
+                  onChange={(e) => set({ name: e.target.value })}
+                  placeholder="web-1"
+                />
+              </div>
             </div>
             <div className="form-grid">
               <div className="field">
@@ -312,33 +312,54 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 />
               </div>
               <div className="field">
-                <label htmlFor="guest-mem">Memory MiB</label>
+                <label htmlFor="guest-mem">Memory (MiB)</label>
                 <input
                   id="guest-mem"
                   type="number"
                   min="64"
+                  step="256"
                   value={form.memory_mib}
                   onChange={(e) => set({ memory_mib: e.target.value })}
                 />
+                <p className="field-hint">{Number(form.memory_mib) === 1024 ? '1 GiB' : `${form.memory_mib} MiB`}</p>
               </div>
             </div>
-            <label className="chk">
-              <input type="checkbox" checked={form.ha} onChange={(e) => set({ ha: e.target.checked })} />
-              <span className="chk-box" />
-              <span className="chk-label">Restart elsewhere if this node is lost</span>
-            </label>
-            <label className="chk">
-              <input
-                type="checkbox"
-                checked={form.graphics}
-                onChange={(e) => set({ graphics: e.target.checked })}
-                disabled={host?.driver && host.driver !== 'qemu'}
-              />
-              <span className="chk-box" />
-              <span className="chk-label">
-                Prefer graphics console (VNC) — requires QEMU driver
-              </span>
-            </label>
+            <p className="wizard-section-title">Options</p>
+            <div className="wizard-options">
+              <label className="chk">
+                <input type="checkbox" checked={form.ha} onChange={(e) => set({ ha: e.target.checked })} />
+                <span className="chk-box" />
+                <span className="chk-label">
+                  Restart on another node if this one is lost
+                  <small>High availability</small>
+                </span>
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.autostart}
+                  onChange={(e) => set({ autostart: e.target.checked })}
+                />
+                <span className="chk-box" />
+                <span className="chk-label">
+                  Start at boot
+                  <small>Power on when this node starts</small>
+                </span>
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.graphics}
+                  onChange={(e) => set({ graphics: e.target.checked })}
+                  disabled={host?.driver && host.driver !== 'qemu'}
+                />
+                <span className="chk-box" />
+                <span className="chk-label">
+                  Prefer graphics console
+                  <small>VNC display — requires the QEMU driver</small>
+                </span>
+              </label>
+            </div>
           </>
         )}
 
@@ -432,14 +453,17 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 </p>
               )}
             </div>
-            <label className="chk" style={{ marginTop: '1rem' }}>
+            <label className="chk">
               <input
                 type="checkbox"
                 checked={form.cloudInit}
                 onChange={(e) => set({ cloudInit: e.target.checked })}
               />
               <span className="chk-box" />
-              <span className="chk-label">Cloud-init seed (NoCloud ISO for a cloud disk image)</span>
+              <span className="chk-label">
+                Cloud-init seed
+                <small>NoCloud ISO for a cloud disk image</small>
+              </span>
             </label>
             {form.cloudInit && (
               <>
@@ -528,6 +552,10 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <dd>{form.ha ? 'Restart on node loss' : 'Pinned to this node'}</dd>
               </div>
               <div>
+                <dt>Start at boot</dt>
+                <dd>{form.autostart ? 'Yes' : 'No'}</dd>
+              </div>
+              <div>
                 <dt>Disk</dt>
                 <dd>{diskLabel}</dd>
               </div>
@@ -543,10 +571,13 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 </dd>
               </div>
             </dl>
-            <label className="chk" style={{ marginTop: '1rem' }}>
+            <label className="chk">
               <input type="checkbox" checked={form.start} onChange={(e) => set({ start: e.target.checked })} />
               <span className="chk-box" />
-              <span className="chk-label">Start after create</span>
+              <span className="chk-label">
+                Start after create
+                <small>Boot the guest as soon as it is defined</small>
+              </span>
             </label>
             {(progress.length > 0 || taskLog.length > 0) && (
               <div className="wizard-progress">

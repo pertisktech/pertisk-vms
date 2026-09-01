@@ -72,12 +72,14 @@ export default function GuestView() {
           <>
             <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
             {vm.spec?.ha !== false && <span className="badge pending">HA</span>}
+            {vm.spec?.autostart && <span className="badge pending">boot</span>}
           </>
         }
         tabs={[
           { to: 'summary', label: 'Summary', icon: 'summary' },
           { to: 'console', label: 'Console', icon: 'terminal' },
           { to: 'hardware', label: 'Hardware', icon: 'hardware' },
+          { to: 'options', label: 'Options', icon: 'options' },
         ]}
         actions={
           canWrite && (

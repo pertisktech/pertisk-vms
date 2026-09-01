@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool};
@@ -74,6 +76,9 @@ pub struct Service {
     rebuild: Arc<tokio::sync::Mutex<()>>,
     config: HostConfig,
     data_dir: std::path::PathBuf,
+    started_at: Instant,
+    autostarted: Arc<Mutex<HashSet<VmId>>>,
+    created_this_boot: Arc<Mutex<HashSet<VmId>>>,
 }
 
 impl Service {
@@ -105,6 +110,9 @@ impl Service {
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
             config,
             data_dir,
+            started_at: Instant::now(),
+            autostarted: Arc::new(Mutex::new(HashSet::new())),
+            created_this_boot: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -236,6 +244,10 @@ impl Service {
             node_id: Some(dest),
         };
         self.store.upsert(record.clone())?;
+        self.created_this_boot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(id);
         self.cluster.bump()?;
         self.replicate().await;
         Ok(record)
@@ -262,6 +274,15 @@ impl Service {
         }
         if let Some(ha) = req.ha {
             vm.spec.ha = ha;
+        }
+        if let Some(autostart) = req.autostart {
+            vm.spec.autostart = autostart;
+        }
+        if let Some(autostart_delay) = req.autostart_delay {
+            vm.spec.autostart_delay = autostart_delay;
+        }
+        if let Some(autostart_order) = req.autostart_order {
+            vm.spec.autostart_order = autostart_order;
         }
         vm.spec.validate()?;
         self.store.upsert(vm.clone())?;
@@ -1030,8 +1051,12 @@ impl Service {
 
     fn iso_linux_boot_spec(&self, spec: &VmSpec) -> Result<VmSpec, DaemonError> {
         let mut spec = spec.clone();
-        if self.driver() != DriverKind::CloudHypervisor || spec.kernel.is_some() {
+        if spec.kernel.is_some() {
             return Ok(spec);
+        }
+        match self.driver() {
+            DriverKind::CloudHypervisor | DriverKind::Qemu => {}
+            DriverKind::Mock => return Ok(spec),
         }
         let Some(disk) = spec
             .disks
@@ -1040,6 +1065,17 @@ impl Service {
         else {
             return Ok(spec);
         };
+        let metal_iso = iso_is_metal(disk);
+        // Installed disks boot via firmware — except Talos/metal ISOs, whose UKI is ~100MiB
+        // and OVMF drops to the EFI shell instead of loading it.
+        if !metal_iso
+            && spec
+                .disks
+                .iter()
+                .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path))
+        {
+            return Ok(spec);
+        }
         let name = disk
             .iso_name
             .as_deref()
@@ -1054,7 +1090,12 @@ impl Service {
                 .unwrap_or(0) as u32;
             // The guest must hold the compressed initramfs plus its unpacked tmpfs copy; too
             // little RAM makes the kernel skip it and panic with "Unable to mount root fs".
-            let needed = (initrd_mib * 8).max(1024);
+            let talos = boot.cmdline.contains("talos.platform=");
+            let needed = if talos {
+                2048
+            } else {
+                (initrd_mib * 8).max(1024)
+            };
             if spec.memory_mib < needed {
                 return Err(pertisk_types::TypesError::InvalidSpec(format!(
                     "{name} boots a {initrd_mib} MiB initramfs and needs at least {needed} MiB of \
@@ -1076,6 +1117,12 @@ impl Service {
             if spec.cmdline.is_none() {
                 spec.cmdline = Some(boot.cmdline);
             }
+        } else if metal_iso {
+            return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                "{name} is a Talos/metal ISO but no /boot/vmlinuz was found to kernel-boot; \
+                 OVMF cannot load the ~100MiB UKI and drops to the EFI shell"
+            ))
+            .into());
         }
         Ok(spec)
     }
@@ -1091,8 +1138,13 @@ impl Service {
             return spec;
         }
         let before = spec.disks.len();
-        spec.disks
-            .retain(|disk| !disk.cdrom || iso_is_cidata(disk));
+        spec.disks.retain(|disk| {
+            if !disk.cdrom || iso_is_cidata(disk) {
+                return true;
+            }
+            // Talos metal ISO must stay attached so we can kernel-boot it; OVMF cannot load the UKI.
+            iso_is_metal(disk)
+        });
         if spec.disks.len() < before {
             tracing::info!(
                 vm = %spec.name,
@@ -1333,10 +1385,11 @@ impl Service {
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
         }
+        self.reconcile_local_vms().await;
         if quorum {
             self.recover_ha().await?;
+            self.autostart_local().await;
         }
-        self.reconcile_local_vms().await;
         self.send_heartbeats().await;
         if self.cluster.has_quorum()
             && self.cluster.is_leader()
@@ -1497,6 +1550,63 @@ impl Service {
         }
         self.replicate().await;
         Ok(())
+    }
+
+    /// Start local guests with `autostart` once per daemon lifetime, after `autostart_delay`.
+    /// Guests created while this process is running are skipped (use Start after create).
+    async fn autostart_local(&self) {
+        if self.cluster.is_fenced() {
+            return;
+        }
+        let self_id = self.cluster.self_id();
+        let elapsed = self.started_at.elapsed().as_secs();
+        let Ok(vms) = self.store.list() else {
+            return;
+        };
+        let created: HashSet<VmId> = self
+            .created_this_boot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        let mut candidates: Vec<_> = vms
+            .into_iter()
+            .filter(|vm| {
+                vm.spec.autostart && vm.node_id == Some(self_id) && !created.contains(&vm.id)
+            })
+            .collect();
+        candidates.sort_by_key(|vm| (vm.spec.autostart_order, vm.spec.autostart_delay, vm.id));
+        for vm in candidates {
+            if elapsed < vm.spec.autostart_delay {
+                continue;
+            }
+            {
+                let mut done = self
+                    .autostarted
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                if !done.insert(vm.id) {
+                    continue;
+                }
+            }
+            if vm.state == VmState::Running {
+                continue;
+            }
+            if !matches!(
+                vm.state,
+                VmState::Created | VmState::Stopped | VmState::Failed
+            ) {
+                continue;
+            }
+            tracing::info!(
+                vm = %vm.id,
+                delay = vm.spec.autostart_delay,
+                order = vm.spec.autostart_order,
+                "autostart"
+            );
+            if let Err(err) = self.start_local(vm.id).await {
+                tracing::warn!(vm = %vm.id, error = %err, "autostart failed");
+            }
+        }
     }
 
     async fn send_heartbeats(&self) {
@@ -1834,6 +1944,16 @@ fn iso_is_cidata(disk: &DiskSpec) -> bool {
             .contains("cidata")
 }
 
+fn iso_is_metal(disk: &DiskSpec) -> bool {
+    let name = disk
+        .iso_name
+        .as_deref()
+        .or_else(|| disk.path.file_name().and_then(|n| n.to_str()))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.contains("talos") || name.contains("metal-amd") || name.contains("metal-arm")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1881,6 +2001,9 @@ mod tests {
             serial_log: None,
             console_type: Default::default(),
             ha: true,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
         }
     }
 
@@ -1930,6 +2053,7 @@ mod tests {
                     vcpus: Some(2),
                     memory_mib: Some(1024),
                     ha: Some(false),
+                    ..Default::default()
                 },
             )
             .await
@@ -1961,6 +2085,39 @@ mod tests {
             .await
             .unwrap();
         assert!(running.spec.ha);
+    }
+
+    #[tokio::test]
+    async fn autostart_starts_existing_vm_on_tick() {
+        let (svc, _dir) = service();
+        let mut spec = spec("boot");
+        spec.autostart = true;
+        let vm = svc.create(vm_id(200), spec).await.unwrap();
+        svc.created_this_boot.lock().unwrap().remove(&vm.id);
+        svc.cluster_tick().await.unwrap();
+        assert_eq!(svc.get(vm.id).unwrap().state, VmState::Running);
+    }
+
+    #[tokio::test]
+    async fn autostart_skips_vm_created_this_boot() {
+        let (svc, _dir) = service();
+        let mut spec = spec("new");
+        spec.autostart = true;
+        let vm = svc.create(vm_id(201), spec).await.unwrap();
+        svc.cluster_tick().await.unwrap();
+        assert_eq!(svc.get(vm.id).unwrap().state, VmState::Created);
+    }
+
+    #[tokio::test]
+    async fn autostart_respects_delay() {
+        let (svc, _dir) = service();
+        let mut spec = spec("later");
+        spec.autostart = true;
+        spec.autostart_delay = 3600;
+        let vm = svc.create(vm_id(202), spec).await.unwrap();
+        svc.created_this_boot.lock().unwrap().remove(&vm.id);
+        svc.cluster_tick().await.unwrap();
+        assert_eq!(svc.get(vm.id).unwrap().state, VmState::Created);
     }
 
     #[tokio::test]

@@ -67,7 +67,6 @@ export default function GuestHardware() {
     if (kind === 'nic') setForm({ network_id: inv.networks[0]?.id || '', ip: '' })
     if (kind === 'memory') setForm({ memory_mib: vm.spec?.memory_mib || 512 })
     if (kind === 'cpu') setForm({ vcpus: vm.spec?.vcpus || 1 })
-    if (kind === 'name') setForm({ name: vm.spec?.name || '', ha: vm.spec?.ha !== false })
     setDialog(kind)
   }
 
@@ -92,11 +91,7 @@ export default function GuestHardware() {
         })
       }
       const body =
-        kind === 'memory'
-          ? { memory_mib: Number(form.memory_mib) }
-          : kind === 'cpu'
-            ? { vcpus: Number(form.vcpus) }
-            : { name: form.name.trim(), ha: form.ha }
+        kind === 'memory' ? { memory_mib: Number(form.memory_mib) } : { vcpus: Number(form.vcpus) }
       return api(`/v1/vms/${vm.id}`, { method: 'PATCH', body })
     })
   }
@@ -113,13 +108,6 @@ export default function GuestHardware() {
 
   const rows = []
   rows.push({
-    key: 'name',
-    icon: 'guests',
-    label: 'Name',
-    value: vm.spec?.name || '—',
-    edit: 'name',
-  })
-  rows.push({
     key: 'memory',
     icon: 'memory',
     label: 'Memory',
@@ -134,13 +122,6 @@ export default function GuestHardware() {
     value: `${vm.spec?.vcpus || 1} vCPU`,
     edit: 'cpu',
     lockedWhileRunning: true,
-  })
-  rows.push({
-    key: 'ha',
-    icon: 'cluster',
-    label: 'High Availability',
-    value: vm.spec?.ha !== false ? 'restart on node loss' : 'off',
-    edit: 'name',
   })
 
   disksOf(vm)
@@ -221,7 +202,7 @@ export default function GuestHardware() {
               )}
           </div>
           {running && (
-            <span className="muted">Stop the guest to change hardware. Name and HA stay editable.</span>
+            <span className="muted">Stop the guest to change hardware. Name, HA, and start-at-boot are under Options.</span>
           )}
         </div>
       )}
@@ -268,7 +249,6 @@ export default function GuestHardware() {
               nic: 'Add network device',
               memory: 'Edit memory',
               cpu: 'Edit processors',
-              name: 'Edit name and HA',
             }[dialog]
           }
           onClose={() => setDialog(null)}
@@ -364,28 +344,6 @@ export default function GuestHardware() {
                   onChange={(e) => setForm({ vcpus: e.target.value })}
                 />
               </div>
-            )}
-            {dialog === 'name' && (
-              <>
-                <div className="field">
-                  <label htmlFor="hw-name">Name</label>
-                  <input
-                    id="hw-name"
-                    required
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  />
-                </div>
-                <label className="chk">
-                  <input
-                    type="checkbox"
-                    checked={form.ha}
-                    onChange={(e) => setForm({ ...form, ha: e.target.checked })}
-                  />
-                  <span className="chk-box" />
-                  <span className="chk-label">Restart elsewhere if this node is lost</span>
-                </label>
-              </>
             )}
           </form>
         </Modal>
