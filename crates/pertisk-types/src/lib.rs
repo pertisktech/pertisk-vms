@@ -12,6 +12,7 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7480";
 pub const DEFAULT_TLS_LISTEN: &str = "0.0.0.0:7443";
 pub const DEFAULT_VCPUS: u8 = 1;
 pub const DEFAULT_MEMORY_MIB: u32 = 512;
+pub const VERSION: &str = env!("pertisk_vms_VERSION");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TypesError {
@@ -1135,7 +1136,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         storage_backend: config.storage.backend,
         replica_count: config.storage.replica_count.max(1),
         rbd: find_in_path("rbd").is_some(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: VERSION.to_string(),
     }
 }
 

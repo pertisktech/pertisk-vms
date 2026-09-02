@@ -19,7 +19,8 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
     ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
-    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
+    SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId,
+    VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -128,7 +129,7 @@ pub fn router(service: Service) -> Router {
 }
 
 async fn health() -> impl IntoResponse {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+    Json(json!({ "ok": true, "version": VERSION }))
 }
 
 async fn openapi() -> impl IntoResponse {

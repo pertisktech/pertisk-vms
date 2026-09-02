@@ -4,6 +4,8 @@
 /.pertisk
 /data
 /out
+/release
+iso/overlay/etc/pertisk/version
 *.swp
 web/ui/node_modules
 web/ui/dist
