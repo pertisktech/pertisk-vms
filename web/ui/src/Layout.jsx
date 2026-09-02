@@ -107,7 +107,7 @@ export default function Layout() {
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            {collapsed ? 'Expand' : 'Collapse'}
+            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={16} />
           </button>
         </div>
         <ResourceTree

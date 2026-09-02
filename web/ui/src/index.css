@@ -1170,20 +1170,18 @@ a.guest-card:hover { color: inherit; }
   display: none;
   align-items: center;
   justify-content: center;
-  width: auto;
+  width: 1.75rem;
   min-width: 1.75rem;
   height: 1.75rem;
-  padding: 0 0.5rem;
+  padding: 0;
   flex: none;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
 }
+.pve-tree-collapse svg { flex: none; }
 .pve-tree-collapse:hover {
   color: var(--accent);
   background: var(--bg-hover);
@@ -1383,9 +1381,6 @@ a.guest-card:hover { color: inherit; }
     height: 100%;
     border: none;
     border-radius: 0;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    letter-spacing: 0.08em;
   }
 }
 
