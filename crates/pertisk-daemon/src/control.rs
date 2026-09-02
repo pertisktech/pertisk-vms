@@ -166,6 +166,90 @@ impl ControlStore {
         }
     }
 
+    pub fn change_password(
+        &self,
+        user_id: &str,
+        current_password: &str,
+        new_password: &str,
+        keep_token: Option<&str>,
+    ) -> Result<(), ControlError> {
+        if new_password.len() < 4 {
+            return Err(ControlError::Message(
+                "password must be at least 4 characters".into(),
+            ));
+        }
+        let hash = {
+            let conn = self.conn.lock().expect("control lock");
+            match conn.query_row(
+                "SELECT password_hash FROM users WHERE id = ?1",
+                params![user_id],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(hash) => hash,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    return Err(ControlError::UserNotFound(user_id.into()));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
+        verify_password(current_password, &hash)?;
+        self.write_password(user_id, new_password, keep_token)
+    }
+
+    pub fn set_password(
+        &self,
+        user_id: &str,
+        new_password: &str,
+        keep_token: Option<&str>,
+    ) -> Result<(), ControlError> {
+        {
+            let conn = self.conn.lock().expect("control lock");
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )?;
+            if n == 0 {
+                return Err(ControlError::UserNotFound(user_id.into()));
+            }
+        }
+        self.write_password(user_id, new_password, keep_token)
+    }
+
+    fn write_password(
+        &self,
+        user_id: &str,
+        new_password: &str,
+        keep_token: Option<&str>,
+    ) -> Result<(), ControlError> {
+        if new_password.len() < 4 {
+            return Err(ControlError::Message(
+                "password must be at least 4 characters".into(),
+            ));
+        }
+        let hash = hash_password(new_password)?;
+        let conn = self.conn.lock().expect("control lock");
+        let n = conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![hash, user_id],
+        )?;
+        if n == 0 {
+            return Err(ControlError::UserNotFound(user_id.into()));
+        }
+        match keep_token {
+            Some(token) => {
+                conn.execute(
+                    "DELETE FROM tokens WHERE user_id = ?1 AND token != ?2",
+                    params![user_id, token],
+                )?;
+            }
+            None => {
+                conn.execute("DELETE FROM tokens WHERE user_id = ?1", params![user_id])?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn login(&self, username: &str, password: &str) -> Result<TokenResponse, ControlError> {
         let conn = self.conn.lock().expect("control lock");
         let row = conn.query_row(
@@ -397,5 +481,11 @@ mod tests {
         assert_eq!(store.list_tasks().unwrap()[0].status, TaskStatus::Done);
         store.audit("admin", "POST /v1/vms", Some("vm-1")).unwrap();
         assert_eq!(store.list_audit().unwrap().len(), 1);
+        store
+            .change_password(&user.id, "secret", "newer", Some(&token.token))
+            .unwrap();
+        assert!(store.login("admin", "secret").is_err());
+        assert!(store.authenticate(&token.token).is_ok());
+        store.login("admin", "newer").unwrap();
     }
 }

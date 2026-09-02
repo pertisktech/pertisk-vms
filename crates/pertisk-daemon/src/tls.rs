@@ -55,7 +55,9 @@ fn generate_self_signed() -> Result<(String, String), std::io::Error> {
     let dns = dns_names();
     let mut params = CertificateParams::new(dns).map_err(tls_err)?;
     params.distinguished_name = DistinguishedName::new();
-    params.distinguished_name.push(DnType::CommonName, "pertisk");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "pertisk");
     params.is_ca = IsCa::NoCa;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];

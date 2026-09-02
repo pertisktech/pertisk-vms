@@ -9,8 +9,8 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ConsoleInfo,
     CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState, VolumeFormat,
-    VolumeId, VolumeRecord, probe_host,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState,
+    VolumeFormat, VolumeId, VolumeRecord, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -182,6 +182,26 @@ impl Service {
 
     pub fn delete_user(&self, id: &str) -> Result<(), DaemonError> {
         Ok(self.control.delete_user(id)?)
+    }
+
+    pub fn change_own_password(
+        &self,
+        user: &AuthUser,
+        current_password: &str,
+        new_password: &str,
+        keep_token: &str,
+    ) -> Result<(), DaemonError> {
+        self.control
+            .change_password(&user.id, current_password, new_password, Some(keep_token))?;
+        let _ = self
+            .control
+            .audit(&user.username, "user.password", Some(&user.username));
+        Ok(())
+    }
+
+    pub fn set_user_password(&self, id: &str, new_password: &str) -> Result<(), DaemonError> {
+        self.control.set_password(id, new_password, None)?;
+        Ok(())
     }
 
     pub fn host_info(&self) -> HostInfo {
@@ -1595,7 +1615,14 @@ impl Service {
                 .into_iter()
                 .filter(|id| loads.iter().any(|n| n.id == *id && n.online))
                 .collect();
-            eprintln!("recovery candidate self={} vm={} owner={} affinity={:?} loads={:?}", self.cluster.self_id(), vm.id, owner, affinity, loads.iter().map(|n| (n.id, n.online)).collect::<Vec<_>>());
+            eprintln!(
+                "recovery candidate self={} vm={} owner={} affinity={:?} loads={:?}",
+                self.cluster.self_id(),
+                vm.id,
+                owner,
+                affinity,
+                loads.iter().map(|n| (n.id, n.online)).collect::<Vec<_>>()
+            );
             let Some(dest) =
                 cluster::schedule_storage(&loads, &vm.spec, affinity.first().copied(), &affinity)
             else {
@@ -1677,10 +1704,7 @@ impl Service {
             );
             if let Err(err) = self.ensure_start_capacity(&vm) {
                 tracing::warn!(vm = %vm.id, error = %err, "autostart skipped (capacity)");
-                let mut done = self
-                    .autostarted
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut done = self.autostarted.lock().unwrap_or_else(|e| e.into_inner());
                 done.remove(&vm.id);
                 break;
             }
@@ -2016,9 +2040,7 @@ fn free_space_mib(path: &Path) -> Option<u64> {
     let probe = if path.exists() {
         path.to_path_buf()
     } else {
-        path.parent()
-            .unwrap_or(Path::new("/"))
-            .to_path_buf()
+        path.parent().unwrap_or(Path::new("/")).to_path_buf()
     };
     let out = std::process::Command::new("df")
         .args(["-Pk", probe.to_str()?])
@@ -2075,8 +2097,8 @@ mod tests {
     use super::*;
     use crate::control::ControlStore;
     use pertisk_types::{
-        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, UpdateVmRequest, VolumeFormat,
-        VmId, parse_size,
+        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, UpdateVmRequest, VmId,
+        VolumeFormat, parse_size,
     };
     use pertisk_vmm::VmmBackend;
 

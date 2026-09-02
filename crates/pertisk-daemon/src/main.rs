@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use pertisk_daemon::{ControlStore, Service, Store, bind_and_serve, home_dir, load_or_init_config, tls_bind};
+use pertisk_daemon::{
+    ControlStore, Service, Store, bind_and_serve, home_dir, load_or_init_config, tls_bind,
+};
 use pertisk_net::NetworkPool;
 use pertisk_storage::VolumePool;
 use pertisk_vmm::VmmBackend;

@@ -132,12 +132,10 @@ impl QemuDriver {
 
         let mut ordered: Vec<_> = spec.disks.iter().collect();
         ordered.sort_by_key(|disk| boot_rank(disk));
-        let has_installer_cd = ordered
+        let has_installer_cd = ordered.iter().any(|disk| disk.cdrom && !is_cidata(disk));
+        let disk_bootable = ordered
             .iter()
-            .any(|disk| disk.cdrom && !is_cidata(disk));
-        let disk_bootable = ordered.iter().any(|disk| {
-            !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path)
-        });
+            .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path));
         if ordered.iter().any(|disk| disk.cdrom) {
             cmd.arg("-device").arg("ich9-ahci,id=ahci");
         }
@@ -152,9 +150,8 @@ impl QemuDriver {
                     "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",
                     disk.path.display()
                 ));
-                cmd.arg("-device").arg(format!(
-                    "ide-cd,drive={drive_id},bus=ahci.{cd_index}{boot}"
-                ));
+                cmd.arg("-device")
+                    .arg(format!("ide-cd,drive={drive_id},bus=ahci.{cd_index}{boot}"));
                 cd_index = cd_index.saturating_add(1);
             } else {
                 cmd.arg("-drive").arg(format!(
@@ -200,10 +197,7 @@ impl QemuDriver {
             .kill_on_drop(false)
             .spawn()
             .map_err(|err| {
-                VmmError::Message(format!(
-                    "qemu spawn: {err} (see {})",
-                    stderr_log.display()
-                ))
+                VmmError::Message(format!("qemu spawn: {err} (see {})", stderr_log.display()))
             })?;
         let pid = child.id();
         self.children.lock().await.insert(id, child);
@@ -472,9 +466,9 @@ async fn qmp_query_status(path: &Path) -> Result<String> {
 }
 
 async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
-    let mut stream = UnixStream::connect(path).await.map_err(|err| {
-        VmmError::Message(format!("qmp connect {}: {err}", path.display()))
-    })?;
+    let mut stream = UnixStream::connect(path)
+        .await
+        .map_err(|err| VmmError::Message(format!("qmp connect {}: {err}", path.display())))?;
     let mut buf = vec![0u8; 65536];
     let _ = stream.read(&mut buf).await?;
     let cap = serde_json::json!({"execute": "qmp_capabilities"});
@@ -495,9 +489,7 @@ async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
                 return Ok(value);
             }
         }
-        return Err(VmmError::Message(format!(
-            "qmp {execute} returned no json"
-        )));
+        return Err(VmmError::Message(format!("qmp {execute} returned no json")));
     }
     Ok(serde_json::Value::Null)
 }

@@ -63,7 +63,6 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
   const [error, setError] = useState('')
   const [created, setCreated] = useState(false)
   const [progress, setProgress] = useState([])
-  const [taskLog, setTaskLog] = useState([])
 
   useEffect(() => {
     setForm((f) => ({
@@ -82,12 +81,6 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     try {
       const result = await fn()
       setProgress((p) => p.map((x) => (x.label === label ? { ...x, status: 'done' } : x)))
-      try {
-        const list = await api('/v1/tasks')
-        setTaskLog(Array.isArray(list) ? list.slice(0, 8) : [])
-      } catch {
-        /* ignore */
-      }
       return result
     } catch (err) {
       setProgress((p) => p.map((x) => (x.label === label ? { ...x, status: 'error' } : x)))
@@ -108,7 +101,6 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     setError('')
     setCreated(false)
     setProgress([])
-    setTaskLog([])
     let createdVolumeId = ''
     let createdVmId = ''
     try {
@@ -579,7 +571,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <small>Boot the guest as soon as it is defined</small>
               </span>
             </label>
-            {(progress.length > 0 || taskLog.length > 0) && (
+            {progress.length > 0 && (
               <div className="wizard-progress">
                 {progress.map((item) => (
                   <div key={item.label} className={`wizard-progress-row ${item.status}`}>
@@ -587,15 +579,6 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                     <span>{item.status === 'running' ? '…' : item.status === 'done' ? 'done' : 'failed'}</span>
                   </div>
                 ))}
-                {taskLog.length > 0 && (
-                  <ul className="wizard-task-log">
-                    {taskLog.map((t) => (
-                      <li key={t.id || `${t.kind}-${t.created_unix}`}>
-                        {t.kind} · {t.status}
-                      </li>
-                    ))}
-                  </ul>
-                )}
               </div>
             )}
           </>

@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import { api, asList } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
+import ChangePassword from '../components/ChangePassword'
 import { useConfirm } from '../components/Confirm'
 
 export default function Users() {
@@ -11,6 +12,7 @@ export default function Users() {
   const [users, setUsers] = useState([])
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
+  const [passwordUser, setPasswordUser] = useState(null)
   const [form, setForm] = useState({ username: '', password: '', role: 'operator' })
   const [busy, setBusy] = useState(false)
 
@@ -85,25 +87,34 @@ export default function Users() {
                       <span className="badge">{u.role}</span>
                     </td>
                     <td className="col-actions">
-                      {u.id !== user?.id && (
+                      <div className="row-actions">
                         <Btn
-                          icon="trash"
-                          variant="danger"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: 'Delete user',
-                              message: `Remove ${u.username}?`,
-                              confirmLabel: 'Delete',
-                            })
-                            if (ok) {
-                              await api(`/v1/users/${u.id}`, { method: 'DELETE' })
-                              refresh()
-                            }
-                          }}
+                          icon="key"
+                          variant="secondary"
+                          onClick={() => setPasswordUser(u)}
                         >
-                          Delete
+                          Password
                         </Btn>
-                      )}
+                        {u.id !== user?.id && (
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: 'Delete user',
+                                message: `Remove ${u.username}?`,
+                                confirmLabel: 'Delete',
+                              })
+                              if (ok) {
+                                await api(`/v1/users/${u.id}`, { method: 'DELETE' })
+                                refresh()
+                              }
+                            }}
+                          >
+                            Delete
+                          </Btn>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -112,6 +123,18 @@ export default function Users() {
           </div>
         )}
       </section>
+
+      {passwordUser && (
+        passwordUser.id === user?.id ? (
+          <ChangePassword onClose={() => setPasswordUser(null)} />
+        ) : (
+          <ChangePassword
+            userId={passwordUser.id}
+            username={passwordUser.username}
+            onClose={() => setPasswordUser(null)}
+          />
+        )
+      )}
 
       {open && (
         <Modal

@@ -1229,7 +1229,10 @@ mod tests {
         let mut daemon = DaemonConfig::default();
         assert_eq!(daemon.effective_tls_listen(), None);
         daemon.listen = "0.0.0.0:7480".into();
-        assert_eq!(daemon.effective_tls_listen().as_deref(), Some("0.0.0.0:7443"));
+        assert_eq!(
+            daemon.effective_tls_listen().as_deref(),
+            Some("0.0.0.0:7443")
+        );
         daemon.tls_listen = Some("off".into());
         assert_eq!(daemon.effective_tls_listen(), None);
         daemon.tls_listen = Some("127.0.0.1:8443".into());

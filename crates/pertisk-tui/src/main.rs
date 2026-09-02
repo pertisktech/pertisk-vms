@@ -4,15 +4,17 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use crossterm::ExecutableCommand;
-use pertisk_types::{VmId, VmRecord, DEFAULT_LISTEN};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use pertisk_types::{DEFAULT_LISTEN, VmId, VmRecord};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
-use ratatui::Frame;
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -53,11 +55,7 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let info = node_info();
     let listen_host = info.listen.split(':').next().unwrap_or("127.0.0.1");
-    let api_port = info
-        .listen
-        .split(':')
-        .nth(1)
-        .unwrap_or("7480");
+    let api_port = info.listen.split(':').nth(1).unwrap_or("7480");
     let api_base = format!("http://{listen_host}:{api_port}");
 
     let client = Client::builder()
@@ -67,7 +65,9 @@ async fn run() -> Result<()> {
 
     let token = login(&client, &api_base, &info.password).await.ok();
     let vms = if let Some(ref token) = token {
-        fetch_vms(&client, &api_base, token).await.unwrap_or_default()
+        fetch_vms(&client, &api_base, token)
+            .await
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -166,7 +166,13 @@ async fn fetch_vms(client: &Client, base: &str, token: &str) -> Result<Vec<VmRec
     Ok(response.json().await?)
 }
 
-async fn power(client: &Client, base: &str, token: &str, id: VmId, action: &str) -> Result<VmRecord> {
+async fn power(
+    client: &Client,
+    base: &str,
+    token: &str,
+    id: VmId,
+    action: &str,
+) -> Result<VmRecord> {
     let response = client
         .post(format!("{base}/v1/vms/{id}/{action}"))
         .header("Authorization", format!("Bearer {token}"))
@@ -180,7 +186,8 @@ async fn power(client: &Client, base: &str, token: &str, id: VmId, action: &str)
 }
 
 async fn loop_ui(app: &mut App) -> Result<()> {
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     loop {
         terminal.draw(|f| draw(f, app))?;
         if event::poll(Duration::from_millis(250))? {
@@ -310,9 +317,7 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
             auth,
         ]),
     ];
-    let block = Block::default()
-        .title(" pertisk-vm ")
-        .borders(Borders::ALL);
+    let block = Block::default().title(" pertisk-vm ").borders(Borders::ALL);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -339,19 +344,18 @@ fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
             .style(style)
         })
         .collect();
-    let table = Table::new(rows, [
-        Constraint::Length(6),
-        Constraint::Min(12),
-        Constraint::Length(10),
-        Constraint::Length(4),
-        Constraint::Length(10),
-    ])
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Min(12),
+            Constraint::Length(10),
+            Constraint::Length(4),
+            Constraint::Length(10),
+        ],
+    )
     .header(header)
-    .block(
-        Block::default()
-            .title(" Guests ")
-            .borders(Borders::ALL),
-    );
+    .block(Block::default().title(" Guests ").borders(Borders::ALL));
     f.render_widget(table, area);
 }
 

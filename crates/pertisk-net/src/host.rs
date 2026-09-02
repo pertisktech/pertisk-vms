@@ -30,7 +30,17 @@ pub fn ensure_ipv4_egress(bridge: &str, network: Ipv4Net) -> Result<()> {
         let uplink = default_uplink()?;
         let cidr = network.to_cidr_string();
         run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
-        ensure_iptables_rule(&["-t", "nat", "POSTROUTING", "-s", &cidr, "-o", &uplink, "-j", "MASQUERADE"])?;
+        ensure_iptables_rule(&[
+            "-t",
+            "nat",
+            "POSTROUTING",
+            "-s",
+            &cidr,
+            "-o",
+            &uplink,
+            "-j",
+            "MASQUERADE",
+        ])?;
         ensure_iptables_rule(&["FORWARD", "-i", bridge, "-o", &uplink, "-j", "ACCEPT"])?;
         ensure_iptables_rule(&[
             "FORWARD",

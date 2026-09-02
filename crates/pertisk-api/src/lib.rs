@@ -83,6 +83,17 @@ pub struct CreateUserRequest {
     pub role: Role,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetPasswordRequest {
+    pub new_password: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -173,6 +184,7 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/health": { "get": { "summary": "Liveness", "security": [] } },
             "/v1/login": { "post": { "summary": "Create an API token", "security": [] } },
             "/v1/session": { "get": { "summary": "Current user" } },
+            "/v1/session/password": { "post": { "summary": "Change the current user's password" } },
             "/v1/openapi.json": { "get": { "summary": "This document", "security": [] } },
             "/v1/host": { "get": { "summary": "Host capabilities" } },
             "/v1/vms": {
@@ -207,6 +219,7 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/tasks": { "get": { "summary": "Task log" } },
             "/v1/audit": { "get": { "summary": "Audit events" } },
             "/v1/users": { "get": { "summary": "List users (admin)" }, "post": { "summary": "Create user (admin)" } },
+            "/v1/users/{id}/password": { "post": { "summary": "Set a user's password (admin)" } },
             "/v1/cluster": { "get": { "summary": "Cluster membership and quorum" } },
             "/v1/cluster/join": { "post": { "summary": "Join an existing cluster" } },
             "/v1/vms/{id}/migrate": { "post": { "summary": "Migrate VM to another node" } }

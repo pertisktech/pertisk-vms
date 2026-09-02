@@ -326,7 +326,7 @@ impl ChVmConfig {
                     .collect(),
             )
         };
-        
+
         // Configure serial and graphics consoles based on console_type
         let serial = Some(ChConsole {
             mode: "Socket",
@@ -335,7 +335,7 @@ impl ChVmConfig {
         });
         // Cloud Hypervisor has no VGA; use the QEMU driver for graphical consoles.
         let console = None;
-        
+
         Self {
             cpus: ChCpus {
                 boot_vcpus: spec.vcpus,

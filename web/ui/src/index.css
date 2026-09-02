@@ -958,13 +958,6 @@ a.guest-card:hover { color: inherit; }
 .wizard-progress-row.done { color: var(--success); }
 .wizard-progress-row.error { color: var(--danger); }
 .wizard-progress-row.running { color: var(--accent); }
-.wizard-task-log {
-  margin: 0.5rem 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  font-family: var(--mono);
-}
 .role-pills { display: flex; gap: 0.5rem; }
 .role-pill {
   flex: 1;
@@ -1001,7 +994,7 @@ a.guest-card:hover { color: inherit; }
 
 .pve-shell {
   display: grid;
-  grid-template-rows: var(--topbar-h) 1fr auto;
+  grid-template-rows: var(--topbar-h) 1fr;
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -1095,7 +1088,6 @@ a.guest-card:hover { color: inherit; }
 }
 .pve-body:has(.pve-tree.collapsed) { grid-template-columns: 1.9rem 1fr; }
 .pve-tree.collapsed .tree { display: none; }
-.pve-tree.collapsed .pve-tree-collapse { height: 100%; }
 
 .tree { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
@@ -1125,7 +1117,7 @@ a.guest-card:hover { color: inherit; }
   display: flex;
 }
 
-.tree-scroll { flex: 1; overflow-y: auto; padding: 0.35rem 0 2.2rem; }
+.tree-scroll { flex: 1; overflow-y: auto; padding: 0.35rem 0; }
 
 .tree-row {
   display: flex;
@@ -1177,14 +1169,11 @@ a.guest-card:hover { color: inherit; }
 }
 
 .pve-tree-collapse {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex: none;
   height: 1.9rem;
   background: var(--bg-sidebar);
   border: none;
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   cursor: pointer;
   display: flex;
@@ -1359,72 +1348,6 @@ a.guest-card:hover { color: inherit; }
 .console-vnc { position: relative; min-height: 28rem; background: #000; padding: 0; overflow: hidden; }
 .console-vnc > canvas, .console-vnc > div { width: 100% !important; height: 100% !important; }
 
-/* Task log */
-
-.tasklog {
-  border-top: 1px solid var(--border);
-  background: var(--bg-surface);
-  display: flex;
-  flex-direction: column;
-  max-height: 30vh;
-}
-
-.tasklog-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  min-height: 2.25rem;
-  padding: 0.35rem 0.9rem;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  line-height: 1;
-  cursor: pointer;
-}
-.tasklog-head:hover { background: var(--bg-hover); }
-.tasklog-spacer { flex: 1; }
-.tasklog-count {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  height: 1.5rem;
-  background: var(--bg-elevated);
-  border-radius: 999px;
-  padding: 0 0.45rem;
-  font-size: 0.7rem;
-  line-height: 1;
-}
-.tasklog-head .badge { flex: 0 0 auto; line-height: 1; }
-
-.tasklog-body { overflow-y: auto; max-height: 11rem; }
-.tasklog-body table { width: 100%; border-collapse: collapse; font-size: 0.78rem; table-layout: fixed; }
-.tasklog-body th,
-.tasklog-body td {
-  text-align: left;
-  padding: 0.25rem 0.9rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: middle;
-}
-.tasklog-body th:nth-child(1), .tasklog-body td:nth-child(1) { width: 12rem; }
-.tasklog-body th:nth-child(2), .tasklog-body td:nth-child(2) { width: 9rem; }
-.tasklog-body th:nth-child(3), .tasklog-body td:nth-child(3) { width: 8rem; }
-.tasklog-body th:nth-child(5), .tasklog-body td:nth-child(5) { width: 7rem; }
-.tasklog-body th {
-  font-weight: 500;
-  color: var(--text-muted);
-  padding: 0.3rem 0.9rem;
-  position: sticky;
-  top: 0;
-  background: var(--bg-surface);
-  z-index: 1;
-}
-.tasklog-body td { border-top: 1px solid var(--border); }
-.tasklog-empty { padding: 0.5rem 0.9rem; }
-
 @media (max-width: 900px) {
   .pve-mobile-toggle { display: inline-flex; }
   .pve-body { grid-template-columns: 1fr; }
@@ -1441,7 +1364,6 @@ a.guest-card:hover { color: inherit; }
   .pve-tree.open { transform: translateX(0); }
   .pve-tree.collapsed { display: flex; }
   .pve-tree.collapsed .tree { display: flex; }
-  .pve-tree.collapsed .pve-tree-collapse { height: 1.9rem; }
   .pve-panel-body { grid-template-columns: 1fr; }
   .pve-tabs {
     flex-direction: row;

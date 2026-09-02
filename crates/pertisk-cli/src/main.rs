@@ -4,7 +4,8 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pertisk_api::{
-    AuditEvent, CreateUserRequest, CreateVmRequest, LoginRequest, Role, TaskRecord, TokenResponse, UserRecord,
+    AuditEvent, ChangePasswordRequest, CreateUserRequest, CreateVmRequest, LoginRequest, Role,
+    TaskRecord, TokenResponse, UserRecord,
 };
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
@@ -89,6 +90,13 @@ enum UserCommand {
     #[command(name = "rm")]
     Remove {
         id: String,
+    },
+    /// Change the signed-in user's password.
+    Passwd {
+        #[arg(long)]
+        current: String,
+        #[arg(long)]
+        new: String,
     },
 }
 
@@ -541,6 +549,19 @@ async fn run() -> Result<()> {
             UserCommand::Remove { id } => {
                 delete(&client, &cli.url, &format!("/v1/users/{id}")).await?;
             }
+            UserCommand::Passwd { current, new } => {
+                let _: serde_json::Value = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/session/password",
+                    &ChangePasswordRequest {
+                        current_password: current,
+                        new_password: new,
+                    },
+                )
+                .await?;
+                println!("password updated");
+            }
         },
         Command::Cluster { command } => match command {
             ClusterCommand::Status => {
@@ -653,7 +674,11 @@ async fn run() -> Result<()> {
                         .collect(),
                     nets: vec![],
                     serial_log: None,
-                    console_type: if graphics { pertisk_types::ConsoleType::Graphics } else { pertisk_types::ConsoleType::Serial },
+                    console_type: if graphics {
+                        pertisk_types::ConsoleType::Graphics
+                    } else {
+                        pertisk_types::ConsoleType::Serial
+                    },
                     ha: true,
                     autostart,
                     autostart_delay,
@@ -663,10 +688,7 @@ async fn run() -> Result<()> {
                     &client,
                     &cli.url,
                     "/v1/vms",
-                    &CreateVmRequest {
-                        id: Some(id),
-                        spec,
-                    },
+                    &CreateVmRequest { id: Some(id), spec },
                 )
                 .await?;
                 if let Some(size) = disk_size {

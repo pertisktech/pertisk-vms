@@ -686,10 +686,7 @@ mod tests {
 
     #[test]
     fn advertise_url_defaults_to_http() {
-        assert_eq!(
-            advertise_url("0.0.0.0:7480", None),
-            "http://127.0.0.1:7480"
-        );
+        assert_eq!(advertise_url("0.0.0.0:7480", None), "http://127.0.0.1:7480");
         assert_eq!(
             advertise_url("10.1.1.144:7443", Some("https://10.1.1.144:7443")),
             "https://10.1.1.144:7443"

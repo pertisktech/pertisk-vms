@@ -223,10 +223,10 @@ impl NetworkPool {
             }
             Some(ipam::ipv4_string(addr))
         } else if network.dhcp && !bridged {
-            Some(ipam::ipv4_string(net.unwrap().allocate(
-                network.gateway.as_deref(),
-                used_ips,
-            )?))
+            Some(ipam::ipv4_string(
+                net.unwrap()
+                    .allocate(network.gateway.as_deref(), used_ips)?,
+            ))
         } else {
             None
         };
@@ -267,13 +267,7 @@ impl NetworkPool {
                     network.bridge
                 )));
             }
-            return host::provision_nic(
-                &network.bridge,
-                tap,
-                None,
-                0,
-                network.isolate,
-            );
+            return host::provision_nic(&network.bridge, tap, None, 0, network.isolate);
         }
         let net = Ipv4Net::parse(&network.cidr)?;
         if host::overlaps_existing_ipv4(net, Some(&network.bridge))? {

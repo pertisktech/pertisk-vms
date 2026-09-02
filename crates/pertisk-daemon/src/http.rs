@@ -11,16 +11,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
 use futures_util::StreamExt;
-use pertisk_api::{CreateUserRequest, CreateVmRequest, LoginRequest, Role, openapi_json};
+use pertisk_api::{
+    ChangePasswordRequest, CreateUserRequest, CreateVmRequest, LoginRequest, Role,
+    SetPasswordRequest, openapi_json,
+};
 use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
     ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
     SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::Deserialize;
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::control::AuthUser;
 use crate::static_files::static_handler;
@@ -29,6 +32,7 @@ use crate::{DaemonError, Service};
 pub fn router(service: Service) -> Router {
     let protected = Router::new()
         .route("/v1/session", get(session))
+        .route("/v1/session/password", post(change_own_password))
         .route("/v1/host", get(host))
         .route("/v1/vms", get(list).post(create))
         .route("/v1/vms/{id}", get(show).patch(update_vm).delete(destroy))
@@ -75,6 +79,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/audit", get(list_audit))
         .route("/v1/users", get(list_users).post(create_user))
         .route("/v1/users/{id}", axum::routing::delete(delete_user))
+        .route("/v1/users/{id}/password", post(set_user_password))
         .route("/v1/cluster", get(cluster_status))
         .route("/v1/cluster/join", post(cluster_join))
         .route("/v1/cluster/leave", post(cluster_leave))
@@ -145,6 +150,17 @@ async fn session(Extension(user): Extension<AuthUser>) -> impl IntoResponse {
     }))
 }
 
+async fn change_own_password(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let token = bearer_token(&headers).ok_or(crate::control::ControlError::Unauthorized)?;
+    service.change_own_password(&user, &req.current_password, &req.new_password, &token)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::AUTHORIZATION)
@@ -172,7 +188,9 @@ fn request_token(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
 }
 
 fn required_role(method: &Method, path: &str) -> Role {
-    if path.starts_with("/v1/users") {
+    if path == "/v1/session/password" {
+        Role::Viewer
+    } else if path.starts_with("/v1/users") {
         Role::Admin
     } else if *method == Method::GET {
         Role::Viewer
@@ -479,9 +497,7 @@ async fn upload_volume_import(
         .name
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            pertisk_storage::StorageError::Message("query name is required".into())
-        })?;
+        .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
     let ext = format.extension();
     let tmp = std::env::temp_dir().join(format!("pertisk-vol-{}.{ext}", uuid::Uuid::new_v4()));
     let mut file = tokio::fs::File::create(&tmp)
@@ -820,9 +836,9 @@ async fn graphics_ws(
 }
 
 async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) {
-    use tokio::net::UnixStream;
     use futures_util::SinkExt;
-    
+    use tokio::net::UnixStream;
+
     let unix_socket = match UnixStream::connect(&graphics_socket).await {
         Ok(s) => s,
         Err(err) => {
@@ -831,10 +847,10 @@ async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) 
             return;
         }
     };
-    
+
     let (unix_read, unix_write) = unix_socket.into_split();
     let (mut ws_send, mut ws_recv) = ws.split();
-    
+
     // Forward Unix socket → WebSocket (binary)
     let unix_to_ws = tokio::spawn(async move {
         let mut unix_read = unix_read;
@@ -844,11 +860,7 @@ async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) 
                 Ok(0) => break,
                 Ok(n) => {
                     let data = buf[..n].to_vec();
-                    if ws_send
-                        .send(Message::Binary(data.into()))
-                        .await
-                        .is_err()
-                    {
+                    if ws_send.send(Message::Binary(data.into())).await.is_err() {
                         break;
                     }
                 }
@@ -856,7 +868,7 @@ async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) 
             }
         }
     });
-    
+
     // Forward WebSocket → Unix socket
     let mut unix_write = unix_write;
     while let Some(msg) = ws_recv.next().await {
@@ -875,7 +887,7 @@ async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) 
             _ => {}
         }
     }
-    
+
     unix_to_ws.abort();
 }
 
@@ -930,6 +942,23 @@ async fn delete_user(
 ) -> Result<impl IntoResponse, DaemonError> {
     service.delete_user(&id)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_user_password(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Json(req): Json<SetPasswordRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    if id == user.id {
+        return Err(crate::control::ControlError::Message(
+            "use Change password in the user menu (current password required)".into(),
+        )
+        .into());
+    }
+    service.set_user_password(&id, &req.new_password)?;
+    let _ = service.audit(&user.username, "user.password", Some(&id));
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn cluster_status(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
@@ -1396,6 +1425,54 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = send(&app, Method::GET, "/v1/users", Some(token), None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn change_own_password() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, body) = send(
+            &app,
+            Method::POST,
+            "/v1/session/password",
+            Some(token),
+            Some(json!({
+                "current_password": "admin",
+                "new_password": "newpass"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, _) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "newpass" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(&app, Method::GET, "/v1/session", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     struct LiveNode {

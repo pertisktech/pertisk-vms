@@ -6,8 +6,8 @@ import { applyTheme } from './theme'
 import { useConfirm } from './components/Confirm'
 import { useInventory } from './useInventory'
 import ResourceTree from './components/ResourceTree'
-import TaskLog from './components/TaskLog'
 import GuestWizard from './components/GuestWizard'
+import ChangePassword from './components/ChangePassword'
 import { parseResourceRoute, resourceLink } from './resourceRoutes'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
@@ -23,6 +23,7 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(TREE_KEY) === 'true')
   const [wizard, setWizard] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
   const userMenuRef = useRef(null)
 
   useEffect(() => {
@@ -134,6 +135,16 @@ export default function Layout() {
               <button
                 type="button"
                 onClick={() => {
+                  setShowUserMenu(false)
+                  setPasswordOpen(true)
+                }}
+              >
+                <Icon name="key" size={16} />
+                Change password
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   const next = theme === 'dark' ? 'light' : 'dark'
                   setTheme(next)
                   applyTheme(next)
@@ -158,11 +169,6 @@ export default function Layout() {
           onClick={() => setMobileOpen(false)}
         />
         <aside className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
-          <ResourceTree
-            cluster={inv.cluster}
-            host={inv.host}
-            vms={inv.vms}
-          />
           <button
             type="button"
             className="pve-tree-collapse"
@@ -172,6 +178,11 @@ export default function Layout() {
           >
             <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={14} />
           </button>
+          <ResourceTree
+            cluster={inv.cluster}
+            host={inv.host}
+            vms={inv.vms}
+          />
         </aside>
 
         <main className="pve-main">
@@ -179,7 +190,7 @@ export default function Layout() {
         </main>
       </div>
 
-      <TaskLog tasks={inv.tasks} />
+      {passwordOpen && <ChangePassword onClose={() => setPasswordOpen(false)} />}
 
       {wizard && (
         <GuestWizard
