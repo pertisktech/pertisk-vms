@@ -14,7 +14,7 @@ import Users from './pages/Users'
 import NodeSummary from './pages/node/Summary'
 import NodeGuests from './pages/node/Guests'
 import GuestSummary from './pages/guest/Summary'
-import GuestConsole from './pages/guest/Console'
+import GuestConsoleRoute from './pages/guest/ConsoleRoute'
 import GuestHardware from './pages/guest/Hardware'
 import GuestOptions from './pages/guest/Options'
 
@@ -43,7 +43,7 @@ export default function App() {
             <Route path="/vm/:vmId" element={<GuestView />}>
               <Route index element={<Navigate to="summary" replace />} />
               <Route path="summary" element={<GuestSummary />} />
-              <Route path="console" element={<GuestConsole />} />
+              <Route path="console" element={<GuestConsoleRoute />} />
               <Route path="hardware" element={<GuestHardware />} />
               <Route path="options" element={<GuestOptions />} />
             </Route>

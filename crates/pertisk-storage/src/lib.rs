@@ -80,7 +80,19 @@ impl VolumePool {
             if text.trim().is_empty() {
                 Inventory::default()
             } else {
-                serde_json::from_str(&text)?
+                match serde_json::from_str(&text) {
+                    Ok(inv) => inv,
+                    Err(err) => {
+                        let corrupt = inventory_path.with_extension("json.corrupt");
+                        let _ = std::fs::rename(&inventory_path, &corrupt);
+                        eprintln!(
+                            "pertisk-storage: inventory corrupt at {} (backed up to {}): {err}",
+                            inventory_path.display(),
+                            corrupt.display()
+                        );
+                        Inventory::default()
+                    }
+                }
             }
         } else {
             Inventory::default()

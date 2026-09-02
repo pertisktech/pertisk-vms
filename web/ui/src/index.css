@@ -1308,6 +1308,36 @@ a.guest-card:hover { color: inherit; }
   flex: 1 1 auto;
   min-height: 12rem;
 }
+.console-pane-stack {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 28rem;
+}
+.console-pane-hidden {
+  visibility: hidden;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.console-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  z-index: 2;
+}
+.console-loading svg {
+  animation: console-spin 0.9s linear infinite;
+}
+@keyframes console-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .pve-console-bar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; font-size: 0.8rem; flex: none; }
 .pve-console { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0; }
 .pve-console-hint { display: flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; flex: none; margin: 0; }

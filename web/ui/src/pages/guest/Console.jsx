@@ -10,6 +10,7 @@ import { useGuest } from '../GuestView'
 export default function GuestConsole() {
   const { vm, vmId } = useGuest()
   const [connected, setConnected] = useState(false)
+  const [connecting, setConnecting] = useState(true)
   const [tab, setTab] = useState('serial')
   const hasGraphics = Boolean(vm?.graphics_socket)
   const termRef = useRef(null)
@@ -20,6 +21,8 @@ export default function GuestConsole() {
   const rfbRef = useRef(null)
 
   useEffect(() => {
+    setConnected(false)
+    setConnecting(true)
     if (hasGraphics && vm?.spec?.console_type === 'graphics') {
       setTab('display')
     } else {
@@ -29,9 +32,18 @@ export default function GuestConsole() {
 
   // Serial: xterm.js over websocket
   useEffect(() => {
-    if (tab !== 'serial' || !termHostRef.current) return
+    if (tab !== 'serial') return
 
-    const term = new Terminal({
+    let cancelled = false
+    let term
+    let fit
+    let socket
+    let onResize
+
+    const host = termHostRef.current
+    if (!host) return
+
+    term = new Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
@@ -42,29 +54,44 @@ export default function GuestConsole() {
       },
       convertEol: true,
     })
-    const fit = new FitAddon()
+    fit = new FitAddon()
     term.loadAddon(fit)
-    term.open(termHostRef.current)
+    term.open(host)
     fit.fit()
     termRef.current = term
     fitRef.current = fit
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(
+    socket = new WebSocket(
       `${proto}//${location.host}/v1/vms/${vmId}/console/ws?token=${encodeURIComponent(getToken())}`,
     )
     wsRef.current = socket
-    socket.onopen = () => setConnected(true)
-    socket.onclose = () => setConnected(false)
-    socket.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data))
+    socket.onopen = () => {
+      if (!cancelled) {
+        setConnected(true)
+        setConnecting(false)
+      }
+    }
+    socket.onclose = () => {
+      if (!cancelled) {
+        setConnected(false)
+        setConnecting(false)
+      }
+    }
+    socket.onerror = () => {
+      if (!cancelled) setConnecting(false)
+    }
+    socket.onmessage = (e) =>
+      term.write(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data))
     term.onData((data) => {
       if (socket.readyState === 1) socket.send(data)
     })
 
-    const onResize = () => fit.fit()
+    onResize = () => fit.fit()
     window.addEventListener('resize', onResize)
 
     return () => {
+      cancelled = true
       window.removeEventListener('resize', onResize)
       socket.onclose = null
       socket.close()
@@ -73,29 +100,50 @@ export default function GuestConsole() {
       termRef.current = null
       fitRef.current = null
       setConnected(false)
+      setConnecting(false)
     }
   }, [vmId, tab])
 
   // Display: noVNC over graphics websocket
   useEffect(() => {
-    if (tab !== 'display' || !hasGraphics || !screenRef.current) return
+    if (tab !== 'display' || !hasGraphics) return
+
+    let cancelled = false
+    const host = screenRef.current
+    if (!host) return
+
+    host.innerHTML = ''
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const url = `${proto}//${location.host}/v1/vms/${vmId}/graphics/ws?token=${encodeURIComponent(getToken())}`
     let rfb
     try {
-      rfb = new RFB(screenRef.current, url, { shared: true })
+      rfb = new RFB(host, url, { shared: true })
       rfb.scaleViewport = true
       rfb.resizeSession = false
       rfbRef.current = rfb
-      rfb.addEventListener('connect', () => setConnected(true))
-      rfb.addEventListener('disconnect', () => setConnected(false))
+      rfb.addEventListener('connect', () => {
+        if (!cancelled) {
+          setConnected(true)
+          setConnecting(false)
+        }
+      })
+      rfb.addEventListener('disconnect', () => {
+        if (!cancelled) {
+          setConnected(false)
+          setConnecting(false)
+        }
+      })
     } catch (err) {
       console.error('VNC init error', err)
-      setConnected(false)
+      if (!cancelled) {
+        setConnected(false)
+        setConnecting(false)
+      }
     }
 
     return () => {
+      cancelled = true
       if (rfbRef.current) {
         try {
           rfbRef.current.disconnect()
@@ -104,9 +152,21 @@ export default function GuestConsole() {
         }
         rfbRef.current = null
       }
+      host.innerHTML = ''
       setConnected(false)
+      setConnecting(false)
     }
   }, [vmId, tab, hasGraphics])
+
+  function switchTab(next) {
+    if (next === tab) return
+    setConnected(false)
+    setConnecting(true)
+    setTab(next)
+  }
+
+  const statusLabel = connecting ? 'connecting' : connected ? 'connected' : 'disconnected'
+  const statusClass = connecting ? 'pending' : connected ? 'ready' : 'unknown'
 
   return (
     <div className="pve-console-wrap">
@@ -115,27 +175,25 @@ export default function GuestConsole() {
           <button
             type="button"
             className={`console-tab${tab === 'serial' ? ' active' : ''}`}
-            onClick={() => setTab('serial')}
+            onClick={() => switchTab('serial')}
           >
             Serial
           </button>
           <button
             type="button"
             className={`console-tab${tab === 'display' ? ' active' : ''}`}
-            onClick={() => setTab('display')}
+            onClick={() => switchTab('display')}
             disabled={!hasGraphics}
             title={hasGraphics ? 'VGA / VNC' : 'Needs QEMU driver (vmm.driver = qemu)'}
           >
             Display
           </button>
         </div>
-        <span className={`badge ${connected ? 'ready' : 'unknown'}`}>
-          {connected ? 'connected' : 'disconnected'}
-        </span>
+        <span className={`badge ${statusClass}`}>{statusLabel}</span>
         <span className="muted">
           {tab === 'display'
             ? 'Graphics (VNC). Click the screen to focus keyboard and mouse.'
-            : vm.state === 'running'
+            : vm?.state === 'running'
               ? 'Serial console (xterm). Anaconda text UI works here.'
               : 'Guest is not running; serial shows the last log.'}
         </span>
@@ -147,21 +205,30 @@ export default function GuestConsole() {
         )}
       </div>
 
-      {tab === 'display' ? (
-        <>
-          <div ref={screenRef} className="console-pane pve-console console-vnc" />
-          <p className="muted pve-console-hint">
-            <Icon name="tv" size={13} /> Display over websocket (noVNC). Requires QEMU VMM.
-          </p>
-        </>
-      ) : (
-        <>
-          <div ref={termHostRef} className="console-pane pve-console console-xterm" />
-          <p className="muted pve-console-hint">
-            <Icon name="terminal" size={13} /> Serial over websocket (xterm.js).
-          </p>
-        </>
-      )}
+      <div className="console-pane-stack">
+        <div
+          ref={screenRef}
+          className={`console-pane pve-console console-vnc${tab === 'display' ? '' : ' console-pane-hidden'}`}
+          aria-hidden={tab !== 'display'}
+        />
+        <div
+          ref={termHostRef}
+          className={`console-pane pve-console console-xterm${tab === 'serial' ? '' : ' console-pane-hidden'}`}
+          aria-hidden={tab !== 'serial'}
+        />
+        {connecting && (
+          <div className="console-loading" aria-live="polite">
+            <Icon name="refresh" size={18} />
+            Connecting to {vm?.spec?.name || vmId}…
+          </div>
+        )}
+      </div>
+      <p className="muted pve-console-hint">
+        <Icon name={tab === 'display' ? 'tv' : 'terminal'} size={13} />
+        {tab === 'display'
+          ? 'Display over websocket (noVNC). Requires QEMU VMM.'
+          : 'Serial over websocket (xterm.js).'}
+      </p>
     </div>
   )
 }

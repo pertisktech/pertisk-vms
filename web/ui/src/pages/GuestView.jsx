@@ -46,18 +46,19 @@ export default function GuestView() {
   }
 
   if (!vm) {
+    if (inv.loading && inv.vms.length === 0) {
+      return (
+        <div className="pve-panel">
+          <p className="muted" style={{ padding: '1rem' }}>Loading…</p>
+        </div>
+      )
+    }
     return (
       <div className="pve-panel">
-        {inv.loading ? (
-          <p className="muted" style={{ padding: '1rem' }}>
-            Loading…
-          </p>
-        ) : (
-          <div className="dash-empty card">
-            <strong>Guest not found</strong>
-            <p className="muted">It may have been destroyed or migrated to another node.</p>
-          </div>
-        )}
+        <div className="dash-empty card">
+          <strong>Guest not found</strong>
+          <p className="muted">It may have been destroyed or migrated to another node.</p>
+        </div>
       </div>
     )
   }
