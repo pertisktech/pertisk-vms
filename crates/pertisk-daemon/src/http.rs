@@ -128,7 +128,7 @@ pub fn router(service: Service) -> Router {
 }
 
 async fn health() -> impl IntoResponse {
-    Json(json!({ "ok": true }))
+    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -1214,6 +1214,7 @@ mod tests {
         let (status, body) = send(&app, Method::GET, "/v1/health", None, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["ok"], true);
+        assert!(body["version"].as_str().unwrap().contains('.'));
         let (status, body) = send(&app, Method::GET, "/v1/openapi.json", None, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["openapi"], "3.0.3");
@@ -1295,6 +1296,7 @@ mod tests {
         let (status, host) = send(&app, Method::GET, "/v1/host", Some(token), None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(host["driver"].is_string());
+        assert!(host["version"].as_str().unwrap().contains('.'));
         let (status, created) = send(
             &app,
             Method::POST,

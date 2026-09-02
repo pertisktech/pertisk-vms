@@ -80,110 +80,116 @@ export default function Layout() {
   const canWrite = user?.role && user.role !== 'viewer'
   const quorum = inv.cluster?.quorum !== false
   const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
+  const version = inv.host?.version
 
   return (
     <div className="pve-shell">
-      <header className="pve-header">
-        <button
-          type="button"
-          className="pve-icon-btn pve-mobile-toggle"
-          onClick={() => setMobileOpen((v) => !v)}
-          aria-label="Toggle resource tree"
-        >
-          <Icon name="menu" size={18} />
-        </button>
-        <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
-          <span className="brand-mark" aria-hidden>
-            <Icon name="guests" size={15} />
-          </span>
-          <span>
-            Pertisk <span className="accent">VM</span>
-          </span>
-        </Link>
-        <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
-          <Icon name={quorum ? 'check' : 'alert'} size={13} />
-          {quorum ? 'Quorate' : 'No quorum'}
-        </span>
-        <div className="pve-header-spacer" />
-        {canWrite && (
-          <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
-            <Icon name="plus" size={15} />
-            <span>Create guest</span>
-          </button>
-        )}
-        <button
-          type="button"
-          className="pve-icon-btn"
-          onClick={inv.refresh}
-          title="Refresh"
-          aria-label="Refresh"
-        >
-          <Icon name="refresh" size={16} />
-        </button>
-        <div className="user-menu" ref={userMenuRef}>
-          <button
-            type="button"
-            className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
-            onClick={() => setShowUserMenu((v) => !v)}
-          >
-            <span className="user-avatar">{initial}</span>
-            <span className="user-name">{user?.username || '…'}</span>
-          </button>
-          {showUserMenu && (
-            <div className="user-menu-dropdown">
-              <div className="user-menu-meta">{user?.role || 'session'}</div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowUserMenu(false)
-                  setPasswordOpen(true)
-                }}
-              >
-                <Icon name="key" size={16} />
-                Change password
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = theme === 'dark' ? 'light' : 'dark'
-                  setTheme(next)
-                  applyTheme(next)
-                }}
-              >
-                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-                {theme === 'dark' ? 'Light' : 'Dark'}
-              </button>
-              <button type="button" onClick={logout}>
-                <Icon name="logout" size={16} />
-                Sign out
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+      <div
+        className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
+        aria-hidden={!mobileOpen}
+        onClick={() => setMobileOpen(false)}
+      />
 
-      <div className="pve-body">
-        <div
-          className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
-          aria-hidden={!mobileOpen}
-          onClick={() => setMobileOpen(false)}
-        />
-        <aside className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
+      <aside className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
+        <div className="pve-tree-header">
+          <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
+            <span className="brand-mark" aria-hidden>
+              <Icon name="guests" size={15} />
+            </span>
+            <span className="pve-brand-text">
+              Pertisk <span className="accent">VM</span>
+            </span>
+          </Link>
           <button
             type="button"
-            className="pve-tree-collapse"
+            className={`pve-tree-collapse${!collapsed ? ' anchor-right' : ''}`}
             onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? 'Expand tree' : 'Collapse tree'}
-            aria-label={collapsed ? 'Expand tree' : 'Collapse tree'}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={14} />
+            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={16} />
           </button>
-          <ResourceTree
-            cluster={inv.cluster}
-            host={inv.host}
-            vms={inv.vms}
-          />
-        </aside>
+        </div>
+        <ResourceTree
+          collapsed={collapsed}
+          cluster={inv.cluster}
+          host={inv.host}
+          vms={inv.vms}
+        />
+        <div className="pve-tree-footer">{version ? `v${version}` : 'Pertisk VM'}</div>
+      </aside>
+
+      <div className={`pve-content${mobileOpen ? ' sidebar-open' : ''}`}>
+        <header className="pve-header">
+          <button
+            type="button"
+            className="pve-icon-btn pve-mobile-toggle"
+            onClick={() => setMobileOpen((v) => !v)}
+            aria-label="Toggle resource tree"
+          >
+            <Icon name="menu" size={18} />
+          </button>
+          <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
+            <Icon name={quorum ? 'check' : 'alert'} size={13} />
+            {quorum ? 'Quorate' : 'No quorum'}
+          </span>
+          <div className="pve-header-spacer" />
+          {canWrite && (
+            <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
+              <Icon name="plus" size={15} />
+              <span>Create guest</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="pve-icon-btn"
+            onClick={inv.refresh}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <Icon name="refresh" size={16} />
+          </button>
+          <div className="user-menu" ref={userMenuRef}>
+            <button
+              type="button"
+              className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
+              onClick={() => setShowUserMenu((v) => !v)}
+            >
+              <span className="user-avatar">{initial}</span>
+              <span className="user-name">{user?.username || '…'}</span>
+            </button>
+            {showUserMenu && (
+              <div className="user-menu-dropdown">
+                <div className="user-menu-meta">{user?.role || 'session'}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUserMenu(false)
+                    setPasswordOpen(true)
+                  }}
+                >
+                  <Icon name="key" size={16} />
+                  Change password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = theme === 'dark' ? 'light' : 'dark'
+                    setTheme(next)
+                    applyTheme(next)
+                  }}
+                >
+                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+                  {theme === 'dark' ? 'Light' : 'Dark'}
+                </button>
+                <button type="button" onClick={logout}>
+                  <Icon name="logout" size={16} />
+                  Sign out
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
 
         <main className="pve-main">
           <Outlet context={{ user, canWrite, inv }} />

@@ -11,9 +11,13 @@ export default function Login() {
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [version, setVersion] = useState('')
 
   useEffect(() => {
     if (getToken()) nav('/')
+    api('/v1/health')
+      .then((h) => setVersion(h.version || ''))
+      .catch(() => {})
   }, [nav])
 
   async function onSubmit(e) {
@@ -44,6 +48,7 @@ export default function Login() {
           <h1>Pertisk VM</h1>
         </div>
         <p>Sign in to the virtualization control plane.</p>
+        {version ? <p className="login-version">v{version}</p> : null}
         {error && <div className="error">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">

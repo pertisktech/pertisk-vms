@@ -69,7 +69,7 @@
   --radius: var(--radius-lg);
   --sidebar-w: 16rem;
   --sidebar-w-collapsed: 4rem;
-  --topbar-h: 3rem;
+  --topbar-h: 3.25rem;
   --font: var(--font-sans);
   --mono: var(--font-mono);
   color-scheme: dark;
@@ -577,6 +577,7 @@ a.btn-icon:hover { color: var(--accent-on); }
 }
 .login-card h1 { margin: 0; font-size: 1.25rem; letter-spacing: -0.02em; font-weight: 700; }
 .login-card p { color: var(--text-muted); margin: 0 0 1.5rem; font-size: 0.9rem; }
+.login-version { margin: -1rem 0 1.25rem !important; font-family: var(--mono); font-size: 0.8rem !important; }
 .login-submit { width: 100%; min-height: 2.65rem; border-radius: 10px; font-weight: 600; }
 .login-remember { margin-bottom: 1.15rem; }
 
@@ -993,9 +994,21 @@ a.guest-card:hover { color: inherit; }
 /* ── Proxmox-style shell ─────────────────────────────────────────────── */
 
 .pve-shell {
-  display: grid;
-  grid-template-rows: var(--topbar-h) 1fr;
-  height: 100vh;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.pve-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg);
 }
@@ -1004,10 +1017,13 @@ a.guest-card:hover { color: inherit; }
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  flex: none;
+  height: var(--topbar-h);
+  min-height: var(--topbar-h);
   padding: 0 0.75rem;
-  background: var(--bg-sidebar);
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
-  z-index: 20;
+  z-index: 40;
 }
 
 .pve-brand {
@@ -1019,10 +1035,11 @@ a.guest-card:hover { color: inherit; }
   white-space: nowrap;
   color: var(--text);
   text-decoration: none;
+  min-width: 0;
 }
 .pve-brand:hover { color: var(--text); opacity: 0.85; }
-
 .pve-brand .accent { color: var(--accent); }
+.pve-brand-text { overflow: hidden; text-overflow: ellipsis; }
 
 .pve-header-spacer { flex: 1; }
 
@@ -1069,25 +1086,31 @@ a.guest-card:hover { color: inherit; }
 .pve-icon-btn svg { flex: none; }
 .pve-mobile-toggle { display: none; }
 
-.pve-body {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
-  min-height: 0;
-  overflow: hidden;
-}
-
 /* Resource tree */
 
 .pve-tree {
-  position: relative;
   display: flex;
   flex-direction: column;
+  width: var(--sidebar-w);
+  flex-shrink: 0;
   min-height: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
+  overflow: hidden;
 }
-.pve-body:has(.pve-tree.collapsed) { grid-template-columns: 1.9rem 1fr; }
-.pve-tree.collapsed .tree { display: none; }
+
+.pve-tree-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: var(--topbar-h);
+  min-height: var(--topbar-h);
+  padding: 0 2.5rem;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
 
 .tree { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
@@ -1169,18 +1192,31 @@ a.guest-card:hover { color: inherit; }
 }
 
 .pve-tree-collapse {
-  flex: none;
-  height: 1.9rem;
-  background: var(--bg-sidebar);
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
 }
-.pve-tree-collapse:hover { color: var(--text); background: var(--bg-hover); }
+.pve-tree-collapse:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+.pve-tree-footer {
+  flex: none;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+}
 
 /* Content panel */
 
@@ -1348,22 +1384,47 @@ a.guest-card:hover { color: inherit; }
 .console-vnc { position: relative; min-height: 28rem; background: #000; padding: 0; overflow: hidden; }
 .console-vnc > canvas, .console-vnc > div { width: 100% !important; height: 100% !important; }
 
-@media (max-width: 900px) {
+@media (min-width: 1024px) {
+  .pve-tree { transition: width 220ms ease; }
+  .pve-tree.collapsed { width: var(--sidebar-w-collapsed); }
+  .pve-tree-collapse { display: inline-flex; }
+  .pve-tree-collapse.anchor-right {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .pve-tree.collapsed .pve-tree-header { padding: 0 0.5rem; }
+  .pve-tree.collapsed .pve-brand,
+  .pve-tree.collapsed .pve-tree-footer,
+  .pve-tree.collapsed .tree-label,
+  .pve-tree.collapsed .tree-twisty,
+  .pve-tree.collapsed .tree-badge { display: none; }
+  .pve-tree.collapsed .tree-row {
+    justify-content: center;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    border-left-color: transparent;
+  }
+  .pve-tree.collapsed .tree-scroll { padding: 0.35rem 0.35rem; }
+}
+
+@media (max-width: 1023px) {
   .pve-mobile-toggle { display: inline-flex; }
-  .pve-body { grid-template-columns: 1fr; }
   .pve-tree {
-    position: fixed;
-    top: var(--topbar-h);
+    position: absolute;
+    top: 0;
     bottom: 0;
     left: 0;
-    width: var(--sidebar-w);
+    z-index: 30;
+    width: min(var(--sidebar-w), 86vw);
     transform: translateX(-100%);
     transition: transform var(--transition-normal);
-    z-index: 30;
+    box-shadow: var(--shadow-md);
   }
   .pve-tree.open { transform: translateX(0); }
-  .pve-tree.collapsed { display: flex; }
-  .pve-tree.collapsed .tree { display: flex; }
+  .pve-tree.collapsed { width: min(var(--sidebar-w), 86vw); }
+  .pve-content.sidebar-open { pointer-events: none; user-select: none; }
   .pve-panel-body { grid-template-columns: 1fr; }
   .pve-tabs {
     flex-direction: row;

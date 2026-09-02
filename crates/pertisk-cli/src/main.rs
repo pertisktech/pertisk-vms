@@ -393,6 +393,7 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::Host => {
             let info: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
+            println!("version            {}", info.version);
             println!("os                 {}", info.os);
             println!("arch               {}", info.arch);
             println!("kvm                {}", info.kvm);

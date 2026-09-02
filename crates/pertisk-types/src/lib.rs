@@ -1049,6 +1049,8 @@ pub struct HostInfo {
     pub replica_count: u8,
     #[serde(default)]
     pub rbd: bool,
+    #[serde(default)]
+    pub version: String,
 }
 
 pub fn default_home() -> PathBuf {
@@ -1133,6 +1135,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         storage_backend: config.storage.backend,
         replica_count: config.storage.replica_count.max(1),
         rbd: find_in_path("rbd").is_some(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 

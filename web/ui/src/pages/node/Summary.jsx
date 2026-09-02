@@ -55,6 +55,8 @@ export default function NodeSummary() {
           <dd>{host ? `${host.os}/${host.arch}` : '—'}</dd>
           <dt>Driver</dt>
           <dd>{host?.driver || '—'}</dd>
+          <dt>Version</dt>
+          <dd>{host?.version ? `v${host.version}` : '—'}</dd>
           <dt>KVM</dt>
           <dd>{host?.kvm ? 'available' : 'unavailable'}</dd>
           <dt>Firmware</dt>

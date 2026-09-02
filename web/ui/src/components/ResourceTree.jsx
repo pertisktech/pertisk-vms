@@ -28,12 +28,13 @@ function guestStatus(vm) {
   return 'stopped'
 }
 
-function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf }) {
+function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf, compact }) {
   return (
     <NavLink
       to={to}
+      title={compact ? label : undefined}
       className={({ isActive }) => `tree-row${isActive ? ' active' : ''}`}
-      style={{ paddingLeft: `${0.4 + depth * 0.85}rem` }}
+      style={compact ? undefined : { paddingLeft: `${0.4 + depth * 0.85}rem` }}
     >
       <span
         className="tree-twisty"
@@ -60,7 +61,7 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf })
   )
 }
 
-export default function ResourceTree({ cluster, host, vms }) {
+export default function ResourceTree({ cluster, host, vms, collapsed }) {
   const location = useLocation()
   const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
   const [open, setOpen] = useState(loadOpen)
@@ -93,6 +94,7 @@ export default function ResourceTree({ cluster, host, vms }) {
 
   return (
     <div className="tree">
+      {!collapsed && (
       <div className="tree-search">
         <Icon name="search" size={14} />
         <input
@@ -107,10 +109,12 @@ export default function ResourceTree({ cluster, host, vms }) {
           </button>
         )}
       </div>
+      )}
 
       <div className="tree-scroll">
         <Branch
           depth={0}
+          compact={collapsed}
           icon="datacenter"
           label="Pertisk"
           to={resourceLink('dc', null, currentRoute)}
@@ -131,6 +135,7 @@ export default function ResourceTree({ cluster, host, vms }) {
                 <div key={node.id}>
                   <Branch
                     depth={1}
+                    compact={collapsed}
                     icon="worker"
                     label={node.name}
                     to={resourceLink('node', node.id, currentRoute)}
@@ -143,6 +148,7 @@ export default function ResourceTree({ cluster, host, vms }) {
                       <Branch
                         key={vm.id}
                         depth={2}
+                        compact={collapsed}
                         leaf
                         icon="guests"
                         label={vm.spec?.name || vm.id}
