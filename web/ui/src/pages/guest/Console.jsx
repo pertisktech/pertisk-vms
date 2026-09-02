@@ -7,6 +7,17 @@ import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useGuest } from '../GuestView'
 
+function scheduleFit(fit) {
+  if (!fit) return
+  requestAnimationFrame(() => {
+    try {
+      fit.fit()
+    } catch {
+      /* host may be hidden briefly */
+    }
+  })
+}
+
 export default function GuestConsole() {
   const { vm, vmId } = useGuest()
   const [connected, setConnected] = useState(false)
@@ -38,7 +49,7 @@ export default function GuestConsole() {
     let term
     let fit
     let socket
-    let onResize
+    let ro
 
     const host = termHostRef.current
     if (!host) return
@@ -57,9 +68,9 @@ export default function GuestConsole() {
     fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host)
-    fit.fit()
     termRef.current = term
     fitRef.current = fit
+    scheduleFit(fit)
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     socket = new WebSocket(
@@ -70,6 +81,7 @@ export default function GuestConsole() {
       if (!cancelled) {
         setConnected(true)
         setConnecting(false)
+        scheduleFit(fit)
       }
     }
     socket.onclose = () => {
@@ -87,12 +99,17 @@ export default function GuestConsole() {
       if (socket.readyState === 1) socket.send(data)
     })
 
-    onResize = () => fit.fit()
+    const onResize = () => scheduleFit(fit)
     window.addEventListener('resize', onResize)
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(onResize)
+      ro.observe(host)
+    }
 
     return () => {
       cancelled = true
       window.removeEventListener('resize', onResize)
+      ro?.disconnect()
       socket.onclose = null
       socket.close()
       wsRef.current = null
@@ -103,6 +120,11 @@ export default function GuestConsole() {
       setConnecting(false)
     }
   }, [vmId, tab])
+
+  // Refit serial when switching back to the tab (layout may have changed)
+  useEffect(() => {
+    if (tab === 'serial') scheduleFit(fitRef.current)
+  }, [tab])
 
   // Display: noVNC over graphics websocket
   useEffect(() => {
@@ -120,6 +142,7 @@ export default function GuestConsole() {
     try {
       rfb = new RFB(host, url, { shared: true })
       rfb.scaleViewport = true
+      rfb.clipViewport = true
       rfb.resizeSession = false
       rfbRef.current = rfb
       rfb.addEventListener('connect', () => {
@@ -223,12 +246,6 @@ export default function GuestConsole() {
           </div>
         )}
       </div>
-      <p className="muted pve-console-hint">
-        <Icon name={tab === 'display' ? 'tv' : 'terminal'} size={13} />
-        {tab === 'display'
-          ? 'Display over websocket (noVNC). Requires QEMU VMM.'
-          : 'Serial over websocket (xterm.js).'}
-      </p>
     </div>
   )
 }
