@@ -8,8 +8,8 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ConsoleInfo,
     CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState, VolumeId,
-    VolumeRecord, probe_host,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState, VolumeFormat,
+    VolumeId, VolumeRecord, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -666,6 +666,27 @@ impl Service {
             .replicas
             .unwrap_or(self.config.storage.replica_count)
             .max(1);
+        let online = self.cluster.online_ids();
+        record.replica_count = want;
+        record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
+        record.backend = StorageBackend::Replica;
+        record = self.volumes.put_record(record)?;
+        self.ensure_replicas(&record).await;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
+    /// Streamed qcow2/raw image → inventory volume (template for clone).
+    pub async fn import_volume(
+        &self,
+        name: String,
+        format: VolumeFormat,
+        source: std::path::PathBuf,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut record = self.volumes.import_volume(&source, name, format)?;
+        let want = self.config.storage.replica_count.max(1);
         let online = self.cluster.online_ids();
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));

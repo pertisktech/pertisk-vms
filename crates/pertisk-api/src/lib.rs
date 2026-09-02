@@ -1,5 +1,7 @@
 //! Public API types: auth, tasks, audit, OpenAPI.
 
+#![recursion_limit = "256"]
+
 use pertisk_types::{HostInfo, VmId, VmRecord, VmSpec};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -194,6 +196,7 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/vms/{id}/cdrom": { "post": { "summary": "Attach ISO" } },
             "/v1/vms/{id}/nics": { "post": { "summary": "Attach NIC" } },
             "/v1/volumes": { "get": { "summary": "List volumes" }, "post": { "summary": "Create volume (replica_count via replicas)" } },
+            "/v1/volumes/import": { "post": { "summary": "Upload a disk image as a volume (raw body, 8GiB)" } },
             "/v1/volumes/{id}/clone": { "post": { "summary": "Clone volume" } },
             "/v1/peer/volumes/ensure": { "post": { "summary": "Peer: create local replica file" } },
             "/v1/peer/volumes/{id}/blob": { "get": { "summary": "Peer: read replica blob" }, "put": { "summary": "Peer: write replica blob" } },

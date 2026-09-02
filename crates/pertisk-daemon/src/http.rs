@@ -16,7 +16,7 @@ use pertisk_types::{
     AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
     ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
-    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeId, VolumeRecord,
+    SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::Deserialize;
@@ -103,8 +103,9 @@ pub fn router(service: Service) -> Router {
         ))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
-    let iso_upload = Router::new()
+    let large_upload = Router::new()
         .route("/v1/isos/upload", post(upload_iso))
+        .route("/v1/volumes/import", post(upload_volume_import))
         .route_layer(middleware::from_fn_with_state(
             service.clone(),
             auth_middleware,
@@ -116,7 +117,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/login", post(login))
         .route("/v1/openapi.json", get(openapi))
         .merge(protected)
-        .merge(iso_upload)
+        .merge(large_upload)
         .fallback(static_handler)
         .with_state(service)
 }
@@ -450,6 +451,80 @@ async fn clone_volume(
             .await?,
         ),
     ))
+}
+
+#[derive(Deserialize)]
+struct VolumeImportQuery {
+    name: Option<String>,
+    format: Option<String>,
+}
+
+async fn upload_volume_import(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Query(q): Query<VolumeImportQuery>,
+    body: Body,
+) -> Result<impl IntoResponse, DaemonError> {
+    let format = match q.format.as_deref().unwrap_or("qcow2") {
+        "qcow2" | "QCOW2" => VolumeFormat::Qcow2,
+        "raw" | "RAW" => VolumeFormat::Raw,
+        other => {
+            return Err(pertisk_storage::StorageError::Message(format!(
+                "unknown volume format '{other}' (raw | qcow2)"
+            ))
+            .into());
+        }
+    };
+    let name = q
+        .name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            pertisk_storage::StorageError::Message("query name is required".into())
+        })?;
+    let ext = format.extension();
+    let tmp = std::env::temp_dir().join(format!("pertisk-vol-{}.{ext}", uuid::Uuid::new_v4()));
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    const MAX: u64 = 8 * 1024 * 1024 * 1024;
+    let write = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
+            written += chunk.len() as u64;
+            if written > MAX {
+                return Err(pertisk_storage::StorageError::Message(
+                    "volume larger than 8GiB".into(),
+                )
+                .into());
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(pertisk_storage::StorageError::Io)?;
+        }
+        file.flush()
+            .await
+            .map_err(pertisk_storage::StorageError::Io)?;
+        Ok::<(), DaemonError>(())
+    }
+    .await;
+    if let Err(err) = write {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err);
+    }
+    drop(file);
+    if written == 0 {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
+    }
+    let result = tracked(&service, &user, "volume.import", name.clone(), async {
+        service.import_volume(name, format, tmp.clone()).await
+    })
+    .await;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Ok((StatusCode::CREATED, Json(result?)))
 }
 
 async fn snapshot_volume(

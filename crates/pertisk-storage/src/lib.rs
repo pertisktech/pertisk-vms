@@ -207,6 +207,60 @@ impl VolumePool {
             .ok_or(StorageError::NotFound(id))
     }
 
+    /// Register an existing disk image (copied into the pool) as a volume.
+    pub fn import_volume(
+        &self,
+        source: &Path,
+        name: String,
+        format: VolumeFormat,
+    ) -> Result<VolumeRecord> {
+        if name.trim().is_empty() {
+            return Err(StorageError::Message("volume name is required".into()));
+        }
+        if !source.is_file() {
+            return Err(StorageError::Message(format!(
+                "volume source is not a file: {}",
+                source.display()
+            )));
+        }
+        {
+            let inner = self.inner.lock().expect("storage lock");
+            if inner.volumes.values().any(|vol| vol.name == name) {
+                return Err(StorageError::NameTaken(name));
+            }
+        }
+        let id = VolumeId::new();
+        let dest = self.local_path(id, format);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source, &dest)?;
+        let file_size = dest.metadata()?.len();
+        if file_size == 0 {
+            let _ = std::fs::remove_file(&dest);
+            return Err(StorageError::Message("empty volume upload".into()));
+        }
+        let size_bytes = self
+            .qemu
+            .virtual_size(&dest)
+            .unwrap_or(file_size)
+            .max(file_size);
+        let record = VolumeRecord {
+            id,
+            name,
+            format,
+            size_bytes,
+            path: dest,
+            backing_id: None,
+            snapshots: vec![],
+            replicas: vec![],
+            replica_count: 1,
+            backend: StorageBackend::Replica,
+        };
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
     pub fn create_volume(&self, req: CreateVolumeRequest) -> Result<VolumeRecord> {
         if req.name.trim().is_empty() {
             return Err(StorageError::Message("volume name is required".into()));
@@ -678,6 +732,23 @@ mod tests {
         assert_eq!(iso.size_bytes, 9);
         pool.delete_iso("installer.iso").unwrap();
         assert!(pool.list_isos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_volume_from_file() {
+        let (pool, dir) = pool();
+        let src = dir.path().join("cloud.raw");
+        std::fs::write(&src, vec![0u8; 1024]).unwrap();
+        let vol = pool
+            .import_volume(&src, "kos-cloud-amd64".into(), VolumeFormat::Raw)
+            .unwrap();
+        assert_eq!(vol.name, "kos-cloud-amd64");
+        assert_eq!(vol.size_bytes, 1024);
+        assert!(vol.path.is_file());
+        let err = pool
+            .import_volume(&src, "kos-cloud-amd64".into(), VolumeFormat::Raw)
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NameTaken(_)));
     }
 
     #[test]

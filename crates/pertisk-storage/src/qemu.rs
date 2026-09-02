@@ -69,6 +69,20 @@ impl QemuImg {
         self.run(&["snapshot", "-a", name, &image.display().to_string()])
     }
 
+    /// Virtual size from `qemu-img info` (qcow2 sparse file length is smaller).
+    pub fn virtual_size(&self, path: &Path) -> Option<u64> {
+        let bin = self.binary.as_deref()?;
+        let output = Command::new(bin)
+            .args(["info", "--output=json", &path.display().to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        v.get("virtual-size").and_then(|x| x.as_u64())
+    }
+
     fn run(&self, args: &[&str]) -> Result<()> {
         let bin = self.bin()?;
         let output = Command::new(bin).args(args).output()?;
