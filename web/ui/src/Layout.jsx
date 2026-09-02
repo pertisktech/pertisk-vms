@@ -102,16 +102,15 @@ export default function Layout() {
           </Link>
           <button
             type="button"
-            className={`pve-tree-collapse${!collapsed ? ' anchor-right' : ''}`}
+            className="pve-tree-collapse"
             onClick={() => setCollapsed((v) => !v)}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={16} />
+            {collapsed ? 'Expand' : 'Collapse'}
           </button>
         </div>
         <ResourceTree
-          collapsed={collapsed}
           cluster={inv.cluster}
           host={inv.host}
           vms={inv.vms}

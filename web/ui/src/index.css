@@ -68,7 +68,7 @@
   --info: var(--color-blue-b1);
   --radius: var(--radius-lg);
   --sidebar-w: 16rem;
-  --sidebar-w-collapsed: 4rem;
+  --sidebar-w-collapsed: 2.35rem;
   --topbar-h: 3.25rem;
   --font: var(--font-sans);
   --mono: var(--font-mono);
@@ -1103,42 +1103,17 @@ a.guest-card:hover { color: inherit; }
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 0.4rem;
   flex: none;
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  padding: 0 2.5rem;
+  padding: 0 0.5rem 0 0.75rem;
   border-bottom: 1px solid var(--border);
   overflow: hidden;
 }
 
 .tree { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-
-.tree-search {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-muted);
-}
-.tree-search input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text);
-  font-size: 0.8rem;
-  padding: 0;
-}
-.tree-search button {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-}
 
 .tree-scroll { flex: 1; overflow-y: auto; padding: 0.35rem 0; }
 
@@ -1195,14 +1170,19 @@ a.guest-card:hover { color: inherit; }
   display: none;
   align-items: center;
   justify-content: center;
-  width: 1.75rem;
+  width: auto;
+  min-width: 1.75rem;
   height: 1.75rem;
+  padding: 0 0.5rem;
   flex: none;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-muted);
   cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
 }
 .pve-tree-collapse:hover {
   color: var(--accent);
@@ -1388,25 +1368,25 @@ a.guest-card:hover { color: inherit; }
   .pve-tree { transition: width 220ms ease; }
   .pve-tree.collapsed { width: var(--sidebar-w-collapsed); }
   .pve-tree-collapse { display: inline-flex; }
-  .pve-tree-collapse.anchor-right {
-    position: absolute;
-    right: 0.5rem;
-    top: 50%;
-    transform: translateY(-50%);
+  .pve-tree.collapsed .pve-tree-header {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border-bottom: none;
   }
-  .pve-tree.collapsed .pve-tree-header { padding: 0 0.5rem; }
   .pve-tree.collapsed .pve-brand,
   .pve-tree.collapsed .pve-tree-footer,
-  .pve-tree.collapsed .tree-label,
-  .pve-tree.collapsed .tree-twisty,
-  .pve-tree.collapsed .tree-badge { display: none; }
-  .pve-tree.collapsed .tree-row {
-    justify-content: center;
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
-    border-left-color: transparent;
+  .pve-tree.collapsed .tree { display: none; }
+  .pve-tree.collapsed .pve-tree-collapse {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    letter-spacing: 0.08em;
   }
-  .pve-tree.collapsed .tree-scroll { padding: 0.35rem 0.35rem; }
 }
 
 @media (max-width: 1023px) {

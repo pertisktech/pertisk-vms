@@ -28,13 +28,12 @@ function guestStatus(vm) {
   return 'stopped'
 }
 
-function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf, compact }) {
+function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf }) {
   return (
     <NavLink
       to={to}
-      title={compact ? label : undefined}
       className={({ isActive }) => `tree-row${isActive ? ' active' : ''}`}
-      style={compact ? undefined : { paddingLeft: `${0.4 + depth * 0.85}rem` }}
+      style={{ paddingLeft: `${0.4 + depth * 0.85}rem` }}
     >
       <span
         className="tree-twisty"
@@ -44,7 +43,6 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf, c
           leaf
             ? undefined
             : (e) => {
-                // Collapsing a branch must not also select it.
                 e.preventDefault()
                 e.stopPropagation()
                 onToggle()
@@ -61,11 +59,10 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf, c
   )
 }
 
-export default function ResourceTree({ cluster, host, vms, collapsed }) {
+export default function ResourceTree({ cluster, host, vms }) {
   const location = useLocation()
   const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
   const [open, setOpen] = useState(loadOpen)
-  const [filter, setFilter] = useState('')
 
   function toggle(key) {
     setOpen((prev) => {
@@ -77,8 +74,6 @@ export default function ResourceTree({ cluster, host, vms, collapsed }) {
 
   const isOpen = (key) => open[key] !== false
   const nodes = useMemo(() => nodeList(cluster, host), [cluster, host])
-  const needle = filter.trim().toLowerCase()
-  const match = (text) => !needle || String(text || '').toLowerCase().includes(needle)
   const guestsByNode = useMemo(() => {
     const guests = new Map()
     for (const vm of vms) {
@@ -94,27 +89,9 @@ export default function ResourceTree({ cluster, host, vms, collapsed }) {
 
   return (
     <div className="tree">
-      {!collapsed && (
-      <div className="tree-search">
-        <Icon name="search" size={14} />
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Search"
-          aria-label="Filter resources"
-        />
-        {filter && (
-          <button type="button" onClick={() => setFilter('')} aria-label="Clear filter">
-            <Icon name="x" size={13} />
-          </button>
-        )}
-      </div>
-      )}
-
       <div className="tree-scroll">
         <Branch
           depth={0}
-          compact={collapsed}
           icon="datacenter"
           label="Pertisk"
           to={resourceLink('dc', null, currentRoute)}
@@ -123,44 +100,36 @@ export default function ResourceTree({ cluster, host, vms, collapsed }) {
           status={cluster?.quorum === false ? 'failed' : undefined}
         />
 
-        {isOpen('dc') && (
-          <>
-            {nodes.map((node) => {
-              const guests = (guestsByNode.get(node.id) || []).filter((vm) =>
-                match(vm.spec?.name || vm.id),
-              )
-              if (!match(node.name) && guests.length === 0) return null
-              const nodeKey = `node:${node.id}`
-              return (
-                <div key={node.id}>
-                  <Branch
-                    depth={1}
-                    compact={collapsed}
-                    icon="worker"
-                    label={node.name}
-                    to={resourceLink('node', node.id, currentRoute)}
-                    open={isOpen(nodeKey)}
-                    onToggle={() => toggle(nodeKey)}
-                    status={node.online ? 'running' : 'failed'}
-                  />
-                  {isOpen(nodeKey) &&
-                    guests.map((vm) => (
-                      <Branch
-                        key={vm.id}
-                        depth={2}
-                        compact={collapsed}
-                        leaf
-                        icon="guests"
-                        label={vm.spec?.name || vm.id}
-                        to={resourceLink('vm', vm.id, currentRoute)}
-                        status={guestStatus(vm)}
-                      />
-                    ))}
-                </div>
-              )
-            })}
-          </>
-        )}
+        {isOpen('dc') &&
+          nodes.map((node) => {
+            const guests = guestsByNode.get(node.id) || []
+            const nodeKey = `node:${node.id}`
+            return (
+              <div key={node.id}>
+                <Branch
+                  depth={1}
+                  icon="worker"
+                  label={node.name}
+                  to={resourceLink('node', node.id, currentRoute)}
+                  open={isOpen(nodeKey)}
+                  onToggle={() => toggle(nodeKey)}
+                  status={node.online ? 'running' : 'failed'}
+                />
+                {isOpen(nodeKey) &&
+                  guests.map((vm) => (
+                    <Branch
+                      key={vm.id}
+                      depth={2}
+                      leaf
+                      icon="guests"
+                      label={vm.spec?.name || vm.id}
+                      to={resourceLink('vm', vm.id, currentRoute)}
+                      status={guestStatus(vm)}
+                    />
+                  ))}
+              </div>
+            )
+          })}
       </div>
     </div>
   )
