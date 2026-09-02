@@ -63,6 +63,14 @@ impl QemuDriver {
         if let Some(parent) = serial_log.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // Cap serial log growth so busy guests do not fill the appliance root.
+        if serial_log.exists() {
+            if let Ok(meta) = tokio::fs::metadata(&serial_log).await
+                && meta.len() > 2 * 1024 * 1024
+            {
+                let _ = tokio::fs::write(&serial_log, []).await;
+            }
+        }
         for path in [&qmp, &serial_socket, &graphics_socket] {
             if path.exists() {
                 let _ = tokio::fs::remove_file(path).await;

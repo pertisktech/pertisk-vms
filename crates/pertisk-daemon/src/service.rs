@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -39,6 +40,8 @@ pub enum DaemonError {
     NoQuorum,
     #[error("node is fenced (lost quorum)")]
     Fenced,
+    #[error("insufficient host capacity: {0}")]
+    Capacity(String),
     #[error("no node has capacity for this vm ({0})")]
     Unschedulable(String),
     #[error("cluster peer: {0}")]
@@ -323,6 +326,7 @@ impl Service {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
         }
+        self.ensure_start_capacity(&record)?;
         let boot_spec = self.prefer_disk_boot_spec(&self.iso_linux_boot_spec(&record.spec)?);
         for nic in &record.spec.nets {
             self.networks.ensure_host_links(nic)?;
@@ -1189,6 +1193,53 @@ impl Service {
         has_installer && bootable
     }
 
+    /// Refuse to start when host disk or free RAM is too low (avoids ENOSPC / OOM mid-boot).
+    fn ensure_start_capacity(&self, record: &VmRecord) -> Result<(), DaemonError> {
+        const MIN_DISK_MIB: u64 = 1024;
+        const DISK_HEADROOM_MIB: u64 = 2048;
+        let storage_root = &self.config.storage.root;
+        let avail_mib = free_space_mib(storage_root).or_else(|| free_space_mib(Path::new("/")));
+        if let Some(avail) = avail_mib {
+            if avail < MIN_DISK_MIB {
+                return Err(DaemonError::Capacity(format!(
+                    "only {avail} MiB free on storage (need ≥ {MIN_DISK_MIB} MiB); free disk or expand the appliance volume"
+                )));
+            }
+            if avail < DISK_HEADROOM_MIB {
+                tracing::warn!(
+                    vm = %record.id,
+                    avail_mib = avail,
+                    "low disk space before guest start"
+                );
+            }
+        }
+
+        let need = u64::from(record.spec.memory_mib);
+        let running_mem: u64 = self
+            .store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|vm| {
+                vm.id != record.id
+                    && vm.state == VmState::Running
+                    && vm.node_id == Some(self.cluster.self_id())
+            })
+            .map(|vm| u64::from(vm.spec.memory_mib))
+            .sum();
+        if let Some(host_mib) = host_memory_mib() {
+            // Keep ~1.5 GiB for the host daemon / nested KVM.
+            let reserve = 1536u64;
+            let free_for_guests = host_mib.saturating_sub(reserve);
+            if running_mem.saturating_add(need) > free_for_guests {
+                return Err(DaemonError::Capacity(format!(
+                    "guest needs {need} MiB; already running {running_mem} MiB of guests on a {host_mib} MiB host (reserve {reserve} MiB)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn network_users(&self, id: NetworkId) -> Result<Vec<VmId>, DaemonError> {
         Ok(self
             .store
@@ -1624,9 +1675,20 @@ impl Service {
                 order = vm.spec.autostart_order,
                 "autostart"
             );
+            if let Err(err) = self.ensure_start_capacity(&vm) {
+                tracing::warn!(vm = %vm.id, error = %err, "autostart skipped (capacity)");
+                let mut done = self
+                    .autostarted
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                done.remove(&vm.id);
+                break;
+            }
             if let Err(err) = self.start_local(vm.id).await {
                 tracing::warn!(vm = %vm.id, error = %err, "autostart failed");
             }
+            // Stagger heavy boots so qcow2 growth / memory pressure don't pile up.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     }
 
@@ -1948,6 +2010,39 @@ impl Service {
         self.cluster.reset_solo()?;
         self.cluster_status()
     }
+}
+
+fn free_space_mib(path: &Path) -> Option<u64> {
+    let probe = if path.exists() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .unwrap_or(Path::new("/"))
+            .to_path_buf()
+    };
+    let out = std::process::Command::new("df")
+        .args(["-Pk", probe.to_str()?])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Filesystem 1024-blocks Used Available Capacity Mounted on
+    let line = text.lines().nth(1)?;
+    let avail_kb: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    Some(avail_kb / 1024)
+}
+
+fn host_memory_mib() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
 }
 
 fn iso_is_cidata(disk: &DiskSpec) -> bool {
