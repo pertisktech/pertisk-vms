@@ -11,6 +11,13 @@ function stateClass(state) {
   return 'unknown'
 }
 
+function guestIps(vm) {
+  const ips = netsOf(vm)
+    .map((n) => n.ip)
+    .filter(Boolean)
+  return ips.length ? ips.join(', ') : '—'
+}
+
 export default function NodeGuests() {
   const { guests, canWrite, inv } = useNode()
   const confirm = useConfirm()
@@ -47,6 +54,7 @@ export default function NodeGuests() {
             <tr>
               <th>Name</th>
               <th>Status</th>
+              <th>IP</th>
               <th>vCPU</th>
               <th>Memory</th>
               <th>Disks</th>
@@ -68,6 +76,7 @@ export default function NodeGuests() {
                 <td>
                   <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
                 </td>
+                <td className="mono-inline">{guestIps(vm)}</td>
                 <td>{vm.spec?.vcpus || 1}</td>
                 <td>{vm.spec?.memory_mib || 0} MiB</td>
                 <td>{disksOf(vm).length}</td>

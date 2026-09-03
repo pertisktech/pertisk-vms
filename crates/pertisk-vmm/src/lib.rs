@@ -3,6 +3,7 @@
 mod cloud_hypervisor;
 mod mock;
 mod qemu;
+mod qga;
 mod unix_http;
 
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use pertisk_types::{DriverKind, VmId, VmRecord, VmSpec, VmState};
 pub use cloud_hypervisor::CloudHypervisorDriver;
 pub use mock::MockDriver;
 pub use qemu::QemuDriver;
+pub use qga::ipv4_by_mac as qga_ipv4_by_mac;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {

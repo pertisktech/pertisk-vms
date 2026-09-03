@@ -46,6 +46,10 @@ impl QemuDriver {
         self.run_dir.join(format!("{id}.graphics.sock"))
     }
 
+    fn qga_socket_path(&self, id: VmId) -> PathBuf {
+        self.run_dir.join(format!("{id}.qga.sock"))
+    }
+
     pub async fn create(&self, id: VmId, spec: &VmSpec) -> Result<CreateResult> {
         if spec.disks.is_empty() && spec.kernel.is_none() {
             return Err(VmmError::Message(
@@ -60,6 +64,7 @@ impl QemuDriver {
             .unwrap_or_else(|| self.serial_path(id));
         let serial_socket = self.serial_socket_path(id);
         let graphics_socket = self.graphics_socket_path(id);
+        let qga_socket = self.qga_socket_path(id);
         if let Some(parent) = serial_log.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -71,7 +76,7 @@ impl QemuDriver {
                 let _ = tokio::fs::write(&serial_log, []).await;
             }
         }
-        for path in [&qmp, &serial_socket, &graphics_socket] {
+        for path in [&qmp, &serial_socket, &graphics_socket, &qga_socket] {
             if path.exists() {
                 let _ = tokio::fs::remove_file(path).await;
             }
@@ -97,7 +102,16 @@ impl QemuDriver {
             .arg("-serial")
             .arg(format!("unix:{},server,nowait", serial_socket.display()))
             .arg("-vnc")
-            .arg(format!("unix:{},share=ignore", graphics_socket.display()));
+            .arg(format!("unix:{},share=ignore", graphics_socket.display()))
+            .arg("-chardev")
+            .arg(format!(
+                "socket,path={},server=on,wait=off,id=qga0",
+                qga_socket.display()
+            ))
+            .arg("-device")
+            .arg("virtio-serial-pci,id=virtio-serial0")
+            .arg("-device")
+            .arg("virtserialport,chardev=qga0,name=org.qemu.guest_agent.0");
 
         if pertisk_types::kvm_available() {
             cmd.arg("-enable-kvm").arg("-cpu").arg("host");

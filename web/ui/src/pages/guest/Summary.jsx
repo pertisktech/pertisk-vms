@@ -1,4 +1,5 @@
-import { asList, disksOf, netsOf, shortId } from '../../api'
+import { useEffect, useState } from 'react'
+import { api, asList, disksOf, netsOf, shortId } from '../../api'
 import { useGuest } from '../GuestView'
 
 function nodeName(cluster, id) {
@@ -6,8 +7,47 @@ function nodeName(cluster, id) {
   return members.find((m) => m.id === id)?.name || (id ? shortId(id) : '—')
 }
 
+function networkLine(vm, networks) {
+  const nets = netsOf(vm)
+  if (!nets.length) return 'none'
+  return nets
+    .map((n) => {
+      const net = networks.find((item) => item.id === n.network_id)
+      const name = net?.name || n.tap || 'nic'
+      return n.ip ? `${name} (${n.ip})` : name
+    })
+    .join(', ')
+}
+
 export default function GuestSummary() {
-  const { vm, inv } = useGuest()
+  const { vm: invVm, vmId, inv } = useGuest()
+  const [vm, setVm] = useState(invVm)
+
+  useEffect(() => {
+    setVm(invVm)
+  }, [invVm])
+
+  // Live record so discovered DHCP IPs show even if the inventory poll is briefly stale.
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const fresh = await api(`/v1/vms/${vmId}`)
+        if (!cancelled && fresh) setVm(fresh)
+      } catch {
+        /* keep inventory copy */
+      }
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [vmId])
+
+  if (!vm) return null
+
   const disks = disksOf(vm).filter((d) => !d.cdrom)
   const cdroms = disksOf(vm).filter((d) => d.cdrom || d.iso_name)
 
@@ -62,16 +102,7 @@ export default function GuestSummary() {
           <dt>CD-ROM</dt>
           <dd>{cdroms.length === 0 ? 'none' : cdroms.map((d) => d.iso_name || 'ISO').join(', ')}</dd>
           <dt>Network</dt>
-          <dd>
-            {netsOf(vm).length === 0
-              ? 'none'
-              : netsOf(vm)
-                  .map((n) => {
-                    const net = inv.networks.find((item) => item.id === n.network_id)
-                    return `${net?.name || n.tap || 'nic'}${n.ip ? ` (${n.ip})` : ''}`
-                  })
-                  .join(', ')}
-          </dd>
+          <dd>{networkLine(vm, inv.networks)}</dd>
           <dt>Serial log</dt>
           <dd className="mono-inline">{vm.serial_log || '—'}</dd>
           <dt>PID</dt>

@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, NetworkRecord, VmId};
 use serde::{Deserialize, Serialize};
 
-pub use host::{delete_tap, provision_nic};
+pub use host::{delete_tap, ipv4_for_mac, normalize_mac, probe_bridge_neighbors, provision_nic};
 pub use ipam::{Ipv4Net, parse_cidr, parse_ipv4};
 
 #[derive(Debug, thiserror::Error)]

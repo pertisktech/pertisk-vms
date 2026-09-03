@@ -70,6 +70,187 @@ pub fn is_bridge(name: &str) -> bool {
             .exists()
 }
 
+/// Normalize MAC to lowercase `aa:bb:…` form for comparisons.
+pub fn normalize_mac(mac: &str) -> Option<String> {
+    let hex: String = mac
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if hex.len() != 12 {
+        return None;
+    }
+    Some(
+        hex.as_bytes()
+            .chunks(2)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap_or("00"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+/// Best-effort IPv4 for a guest MAC from the kernel neighbour table (`ip neigh` / `/proc/net/arp`).
+/// Used to show DHCP addresses that were never stored on the NIC spec.
+pub fn ipv4_for_mac(mac: &str) -> Option<String> {
+    let want = normalize_mac(mac)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = want;
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(ip) = ipv4_for_mac_from_neigh(&want) {
+            return Some(ip);
+        }
+        ipv4_for_mac_from_proc_arp(&want)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ipv4_for_mac_from_neigh(want_mac: &str) -> Option<String> {
+    let output = Command::new("ip")
+        .args(["-4", "neigh", "show"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        // e.g. "10.1.1.240 dev br0 lladdr 52:54:00:00:00:fc REACHABLE"
+        if fields.len() < 5 {
+            continue;
+        }
+        let ip = fields[0];
+        if !ip.contains('.') || ip.starts_with("169.254.") {
+            continue;
+        }
+        let Some(ll) = fields.iter().position(|f| *f == "lladdr") else {
+            continue;
+        };
+        let Some(mac) = fields.get(ll + 1).and_then(|m| normalize_mac(m)) else {
+            continue;
+        };
+        if mac != want_mac {
+            continue;
+        }
+        let state = fields.last().copied().unwrap_or("");
+        if state == "FAILED" || state == "INCOMPLETE" {
+            continue;
+        }
+        return Some(ip.to_string());
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn ipv4_for_mac_from_proc_arp(want_mac: &str) -> Option<String> {
+    let text = std::fs::read_to_string("/proc/net/arp").ok()?;
+    for line in text.lines().skip(1) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        // IP dst HW type Flags HW address Mask Device
+        if fields.len() < 4 {
+            continue;
+        }
+        let ip = fields[0];
+        let flags = u32::from_str_radix(fields[2].trim_start_matches("0x"), 16).unwrap_or(0);
+        if flags & 0x2 == 0 {
+            continue; // not complete
+        }
+        let Some(mac) = normalize_mac(fields[3]) else {
+            continue;
+        };
+        if mac == want_mac && ip.contains('.') && !ip.starts_with("169.254.") {
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+/// Probe IPv4 neighbors on host bridges so DHCP guest MACs appear in the neigh table.
+/// Cheap enough to call when listing VMs that are missing IPs (internally rate-limited).
+pub fn probe_bridge_neighbors() {
+    #[cfg(not(target_os = "linux"))]
+    {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+        static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+        {
+            let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(45)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let mut bridges: Vec<(String, String)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !valid_ifname(&name) || !is_bridge(&name) {
+                    continue;
+                }
+                let output = Command::new("ip")
+                    .args(["-o", "-4", "addr", "show", "dev", &name])
+                    .output();
+                let Ok(output) = output else {
+                    continue;
+                };
+                if !output.status.success() {
+                    continue;
+                }
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    let Some(inet) = fields.iter().position(|f| *f == "inet") else {
+                        continue;
+                    };
+                    if let Some(cidr) = fields.get(inet + 1) {
+                        bridges.push((name.clone(), (*cidr).to_string()));
+                    }
+                }
+            }
+        }
+        for (dev, cidr) in bridges {
+            let Some((base, prefix)) = cidr.split_once('/') else {
+                continue;
+            };
+            let Ok(prefix) = prefix.parse::<u8>() else {
+                continue;
+            };
+            // Only probe typical LAN sizes; skip tiny/huge nets.
+            if !(16..=24).contains(&prefix) {
+                continue;
+            }
+            let Ok(net) = crate::Ipv4Net::parse(&format!("{base}/{prefix}")) else {
+                continue;
+            };
+            let first = net.nth(1);
+            let last = net.broadcast().saturating_sub(1);
+            if first > last {
+                continue;
+            }
+            let mut addr = first;
+            let mut launched = 0u32;
+            while addr <= last && launched < 256 {
+                let ip = crate::ipam::ipv4_string(addr);
+                let _ = Command::new("ping")
+                    .args(["-c", "1", "-W", "1", "-I", &dev, &ip])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                launched += 1;
+                addr = addr.saturating_add(1);
+            }
+            // Wait for probes to fill the neighbour table.
+            std::thread::sleep(Duration::from_millis(2200));
+        }
+    }
+}
+
 pub fn overlaps_existing_ipv4(network: Ipv4Net, except_interface: Option<&str>) -> Result<bool> {
     #[cfg(not(target_os = "linux"))]
     {

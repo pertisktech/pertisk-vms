@@ -232,11 +232,29 @@ impl Service {
     }
 
     pub fn list(&self) -> Result<Vec<VmRecord>, DaemonError> {
-        self.store.list()
+        let mut vms = self.store.list()?;
+        let run_dir = &self.config.vmm.run_dir;
+        if vms.iter().any(vm_needs_ip_probe) {
+            pertisk_net::probe_bridge_neighbors();
+        }
+        for vm in &mut vms {
+            if enrich_observed_ips(vm, run_dir) {
+                // Keep discovered DHCP addresses so Summary stays filled when ARP goes cold.
+                let _ = self.store.upsert(vm.clone());
+            }
+        }
+        Ok(vms)
     }
 
     pub fn get(&self, id: VmId) -> Result<VmRecord, DaemonError> {
-        self.store.get(id)
+        let mut vm = self.store.get(id)?;
+        if vm_needs_ip_probe(&vm) {
+            pertisk_net::probe_bridge_neighbors();
+        }
+        if enrich_observed_ips(&mut vm, &self.config.vmm.run_dir) {
+            let _ = self.store.upsert(vm.clone());
+        }
+        Ok(vm)
     }
 
     pub async fn create(&self, id: VmId, spec: VmSpec) -> Result<VmRecord, DaemonError> {
@@ -2034,6 +2052,50 @@ impl Service {
         self.cluster.reset_solo()?;
         self.cluster_status()
     }
+}
+
+fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
+    vm.state == VmState::Running
+        && vm
+            .spec
+            .nets
+            .iter()
+            .any(|nic| nic.ip.is_none() && nic.mac.is_some())
+}
+
+/// Fill missing NIC IPs from QEMU guest agent and/or the host neighbour table.
+/// Returns true when the in-memory record gained an IP (caller may persist).
+fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
+    let qga = run_dir.join(format!("{}.qga.sock", vm.id));
+    let qga_ips = if vm.state == VmState::Running && qga.exists() {
+        pertisk_vmm::qga_ipv4_by_mac(&qga)
+    } else {
+        Vec::new()
+    };
+    let mut changed = false;
+    for nic in &mut vm.spec.nets {
+        if nic.ip.is_some() {
+            continue;
+        }
+        let Some(mac) = nic.mac.as_deref() else {
+            continue;
+        };
+        let want = pertisk_net::normalize_mac(mac);
+        let observed = want
+            .as_ref()
+            .and_then(|want| {
+                qga_ips
+                    .iter()
+                    .find(|(m, _)| m == want)
+                    .map(|(_, ip)| ip.clone())
+            })
+            .or_else(|| pertisk_net::ipv4_for_mac(mac));
+        if let Some(ip) = observed {
+            nic.ip = Some(ip);
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn free_space_mib(path: &Path) -> Option<u64> {
