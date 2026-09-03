@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, asList, disksOf, netsOf, shortId } from '../../api'
-import MetricsPanel from '../../components/MetricsPanel'
+import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
 
@@ -24,7 +24,7 @@ function networkLine(vm, networks) {
 export default function GuestSummary() {
   const { vm: invVm, vmId, inv } = useGuest()
   const [vm, setVm] = useState(invVm)
-  const { data: metrics } = useMetrics(vmId)
+  const metrics = useMetrics(vmId)
 
   useEffect(() => {
     setVm(invVm)
@@ -77,10 +77,16 @@ export default function GuestSummary() {
         </div>
       </div>
 
-      <MetricsPanel
-        live={metrics?.live}
-        title="Live"
-        empty={running ? 'Collecting metrics…' : 'Guest stopped'}
+      <MetricsCharts
+        scope="vm"
+        title="Guest resources"
+        history={metrics.history}
+        latest={metrics.data}
+        live={metrics.live}
+        setLive={metrics.setLive}
+        loading={metrics.loading}
+        onRefresh={() => metrics.refresh()}
+        empty={running ? undefined : 'Guest stopped'}
       />
 
       <section className="card">

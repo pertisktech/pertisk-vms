@@ -20,36 +20,49 @@ export default function NodeSummary() {
 
   return (
     <div className="pve-stack">
+      <div className="dash-stat-row">
+        <div className="stat">
+          <div className="label">Status</div>
+          <div className="value">{node?.online === false ? 'offline' : 'online'}</div>
+        </div>
+        <div className="stat">
+          <div className="label">Guests</div>
+          <div className="value">
+            {metrics.data?.running_vms ?? running.length}
+            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+              / {guests.length}
+            </span>
+          </div>
+        </div>
+        <div className="stat">
+          <div className="label">Allocated vCPU</div>
+          <div className="value">
+            {metrics.data?.allocated_vcpus ?? usedCpu}
+            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+              / {totalCpu || '—'}
+            </span>
+          </div>
+        </div>
+        <div className="stat">
+          <div className="label">Allocated memory</div>
+          <div className="value">
+            {metrics.data?.allocated_memory_mib ?? usedMem} MiB
+            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+              / {allocMemTotal || '—'}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <MetricsCharts
-        title="Live node"
+        scope="node"
+        title="Node resources"
         history={metrics.history}
         latest={metrics.data}
         live={metrics.live}
         setLive={metrics.setLive}
         loading={metrics.loading}
         onRefresh={() => metrics.refresh()}
-        extras={
-          <>
-            <div className="stat">
-              <div className="label">Allocated vCPU</div>
-              <div className="value">
-                {metrics.data?.allocated_vcpus ?? usedCpu}
-                <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-                  / {totalCpu || '—'}
-                </span>
-              </div>
-            </div>
-            <div className="stat">
-              <div className="label">Allocated memory</div>
-              <div className="value">
-                {metrics.data?.allocated_memory_mib ?? usedMem} MiB
-                <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-                  / {allocMemTotal || '—'}
-                </span>
-              </div>
-            </div>
-          </>
-        }
       />
 
       <section className="card">

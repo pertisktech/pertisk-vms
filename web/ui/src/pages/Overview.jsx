@@ -52,6 +52,7 @@ export default function Overview() {
       </div>
 
       <MetricsCharts
+        scope="cluster"
         title="Cluster resources"
         history={metrics.history}
         latest={metrics.data}

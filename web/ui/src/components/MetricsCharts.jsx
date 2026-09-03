@@ -83,6 +83,24 @@ function ChartCard({ title, hint, legend, children, empty }) {
   )
 }
 
+const HINTS = {
+  cluster: {
+    cpu: 'Percent of host cores',
+    mem: 'Used percent of installed RAM and storage root.',
+    net: 'Receive and transmit, from successive host samples.',
+  },
+  node: {
+    cpu: 'Percent of this node’s cores',
+    mem: 'Used percent of this node’s RAM and storage root.',
+    net: 'Receive and transmit on this node.',
+  },
+  vm: {
+    cpu: 'Guest CPU as a share of host cores',
+    mem: 'Guest RSS versus assigned memory, and disk image usage.',
+    net: 'Receive and transmit on the guest TAP.',
+  },
+}
+
 export default function MetricsCharts({
   history,
   latest,
@@ -93,11 +111,16 @@ export default function MetricsCharts({
   onRefresh,
   title,
   extras,
+  empty,
+  scope = 'cluster',
 }) {
   const current = history[history.length - 1]
   const sample = latest?.live || current
   const waiting = history.length === 0
-  const emptyMsg = loading ? 'Loading…' : 'No time-series data yet — wait for the next sample.'
+  const emptyMsg =
+    empty || (loading ? 'Loading…' : 'No time-series data yet — wait for the next sample.')
+  const hints = HINTS[scope] || HINTS.cluster
+  const gid = (name) => `${scope}-${name}`
   const nodeRows = asList(nodes)
 
   const nodeBars = nodeRows.map((n) => {
@@ -167,13 +190,13 @@ export default function MetricsCharts({
 
       <ChartCard
         title="CPU"
-        hint={`Percent of host cores${live ? ' (live every 3s)' : ''}.`}
+        hint={`${hints.cpu}${live ? ' (live every 3s)' : ''}.`}
         empty={waiting ? emptyMsg : null}
       >
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
-              <linearGradient id="cpuFill" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id={gid('cpuFill')} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={CHART.cpu} stopOpacity={0.35} />
                 <stop offset="100%" stopColor={CHART.cpu} stopOpacity={0} />
               </linearGradient>
@@ -195,7 +218,7 @@ export default function MetricsCharts({
               type="monotone"
               dataKey="cpu"
               stroke={CHART.cpu}
-              fill="url(#cpuFill)"
+              fill={`url(#${gid('cpuFill')})`}
               strokeWidth={2}
               isAnimationActive={false}
             />
@@ -206,7 +229,7 @@ export default function MetricsCharts({
       <div className="metrics-chart-grid">
         <ChartCard
           title="Memory & disk"
-          hint="Used percent of installed RAM and storage root."
+          hint={hints.mem}
           legend={
             <>
               <LegendDot color={CHART.mem} label="Memory" />
@@ -218,11 +241,11 @@ export default function MetricsCharts({
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="memFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gid('memFill')} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART.mem} stopOpacity={0.35} />
                   <stop offset="100%" stopColor={CHART.mem} stopOpacity={0} />
                 </linearGradient>
-                <linearGradient id="diskFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gid('diskFill')} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART.disk} stopOpacity={0.3} />
                   <stop offset="100%" stopColor={CHART.disk} stopOpacity={0} />
                 </linearGradient>
@@ -244,7 +267,7 @@ export default function MetricsCharts({
                 type="monotone"
                 dataKey="mem_pct"
                 stroke={CHART.mem}
-                fill="url(#memFill)"
+                fill={`url(#${gid('memFill')})`}
                 strokeWidth={2}
                 isAnimationActive={false}
               />
@@ -252,7 +275,7 @@ export default function MetricsCharts({
                 type="monotone"
                 dataKey="disk_pct"
                 stroke={CHART.disk}
-                fill="url(#diskFill)"
+                fill={`url(#${gid('diskFill')})`}
                 strokeWidth={2}
                 isAnimationActive={false}
               />
@@ -262,7 +285,7 @@ export default function MetricsCharts({
 
         <ChartCard
           title="Network throughput"
-          hint="Receive and transmit, from successive host samples."
+          hint={hints.net}
           legend={
             <>
               <LegendDot color={CHART.rx} label="Receive" />
@@ -274,11 +297,11 @@ export default function MetricsCharts({
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
               <defs>
-                <linearGradient id="rxFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gid('rxFill')} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART.rx} stopOpacity={0.35} />
                   <stop offset="100%" stopColor={CHART.rx} stopOpacity={0} />
                 </linearGradient>
-                <linearGradient id="txFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gid('txFill')} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART.tx} stopOpacity={0.3} />
                   <stop offset="100%" stopColor={CHART.tx} stopOpacity={0} />
                 </linearGradient>
@@ -298,7 +321,7 @@ export default function MetricsCharts({
                 type="monotone"
                 dataKey="rx_mibps"
                 stroke={CHART.rx}
-                fill="url(#rxFill)"
+                fill={`url(#${gid('rxFill')})`}
                 strokeWidth={2}
                 isAnimationActive={false}
               />
@@ -306,7 +329,7 @@ export default function MetricsCharts({
                 type="monotone"
                 dataKey="tx_mibps"
                 stroke={CHART.tx}
-                fill="url(#txFill)"
+                fill={`url(#${gid('txFill')})`}
                 strokeWidth={2}
                 isAnimationActive={false}
               />
