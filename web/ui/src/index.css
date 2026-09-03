@@ -72,6 +72,10 @@
   --topbar-h: 3.25rem;
   --font: var(--font-sans);
   --mono: var(--font-mono);
+  --scrollbar-size: 10px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--color-naturals-n9) 45%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 55%, var(--color-naturals-n9));
   color-scheme: dark;
 }
 
@@ -94,11 +98,43 @@ html.light {
   --color-bg-gradient-end: #ffffff;
   --shadow-sm: 0 1px 2px rgba(22, 22, 42, 0.07);
   --shadow-md: 0 8px 24px rgba(22, 22, 42, 0.1);
+  --scrollbar-track: color-mix(in srgb, var(--color-border) 40%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--color-muted) 40%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent) 45%, var(--color-muted));
 }
 
 * { box-sizing: border-box; }
 html { font-size: 15px; }
 html, body, #root { height: 100%; margin: 0; }
+
+/* Themed scrollbars (Firefox + Chromium) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 body {
   font-family: var(--font);
   font-size: 1rem;
