@@ -1,11 +1,11 @@
 import { formatBytes } from '../../api'
-import MetricsPanel, { AllocatedPanel } from '../../components/MetricsPanel'
+import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useNode } from '../NodeView'
 
 export default function NodeSummary() {
   const { node, guests, inv } = useNode()
-  const { data: metrics } = useMetrics('node')
+  const metrics = useMetrics('node')
   const host = inv.host
   const running = guests.filter((vm) => vm.state === 'running')
   const usedMem = running.reduce((sum, vm) => sum + (vm.spec?.memory_mib || 0), 0)
@@ -14,30 +14,54 @@ export default function NodeSummary() {
   const allocMemTotal =
     node?.memory_mib ||
     host?.memory_mib ||
-    (metrics?.live?.mem_total_bytes
-      ? Math.round(metrics.live.mem_total_bytes / (1024 * 1024))
+    (metrics.data?.live?.mem_total_bytes
+      ? Math.round(metrics.data.live.mem_total_bytes / (1024 * 1024))
       : 0)
 
   return (
     <div className="pve-stack">
-      <MetricsPanel live={metrics?.live} title="Live" />
-      <AllocatedPanel
-        vcpusUsed={metrics?.allocated_vcpus ?? usedCpu}
-        vcpusTotal={totalCpu || 1}
-        memUsedMib={metrics?.allocated_memory_mib ?? usedMem}
-        memTotalMib={allocMemTotal || 1}
+      <MetricsCharts
+        title="Live node"
+        history={metrics.history}
+        latest={metrics.data}
+        live={metrics.live}
+        setLive={metrics.setLive}
+        loading={metrics.loading}
+        onRefresh={() => metrics.refresh()}
+        extras={
+          <>
+            <div className="stat">
+              <div className="label">Allocated vCPU</div>
+              <div className="value">
+                {metrics.data?.allocated_vcpus ?? usedCpu}
+                <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+                  / {totalCpu || '—'}
+                </span>
+              </div>
+            </div>
+            <div className="stat">
+              <div className="label">Allocated memory</div>
+              <div className="value">
+                {metrics.data?.allocated_memory_mib ?? usedMem} MiB
+                <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+                  / {allocMemTotal || '—'}
+                </span>
+              </div>
+            </div>
+          </>
+        }
       />
 
       <section className="card">
         <div className="table-meta">Node</div>
         <dl className="pve-kv">
           <dt>Name</dt>
-          <dd>{node?.name || metrics?.name || '—'}</dd>
+          <dd>{node?.name || metrics.data?.name || '—'}</dd>
           <dt>Status</dt>
           <dd>{node?.online === false ? 'offline' : 'online'}</dd>
           <dt>Guests</dt>
           <dd>
-            {metrics?.running_vms ?? running.length} running / {guests.length} total
+            {metrics.data?.running_vms ?? running.length} running / {guests.length} total
           </dd>
           <dt>Platform</dt>
           <dd>{host ? `${host.os}/${host.arch}` : '—'}</dd>

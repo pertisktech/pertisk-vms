@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { asList, disksOf } from '../api'
-import MetricsPanel from '../components/MetricsPanel'
+import MetricsCharts from '../components/MetricsCharts'
 import { useInventory } from '../useInventory'
 import { useMetrics } from '../useMetrics'
 
@@ -13,7 +13,7 @@ function stateClass(state) {
 
 export default function Overview() {
   const { host, cluster, vms, volumes, error, loading } = useInventory()
-  const { data: metrics } = useMetrics('cluster')
+  const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const online = members.filter((m) => m.online).length
   const running = vms.filter((vm) => vm.state === 'running').length
@@ -51,52 +51,16 @@ export default function Overview() {
         </div>
       </div>
 
-      <MetricsPanel live={metrics?.live} title="Cluster resources" />
-
-      {asList(metrics?.nodes).length > 0 && (
-        <section className="card table-card">
-          <div className="table-meta">Nodes</div>
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>CPU</th>
-                  <th>Memory</th>
-                  <th>Disk</th>
-                  <th>Running</th>
-                </tr>
-              </thead>
-              <tbody>
-                {asList(metrics.nodes).map((n) => {
-                  const live = n.live || {}
-                  const memPct =
-                    live.mem_total_bytes > 0
-                      ? Math.round((live.mem_used_bytes / live.mem_total_bytes) * 100)
-                      : 0
-                  const diskPct =
-                    live.disk_total_bytes > 0
-                      ? Math.round((live.disk_used_bytes / live.disk_total_bytes) * 100)
-                      : 0
-                  return (
-                    <tr key={n.node_id}>
-                      <td>
-                        <Link to={`/node/${n.node_id}/summary`} className="pve-link">
-                          {n.name}
-                        </Link>
-                      </td>
-                      <td>{Math.round(live.cpu_pct || 0)}%</td>
-                      <td>{memPct}%</td>
-                      <td>{diskPct}%</td>
-                      <td>{n.running_vms ?? 0}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      <MetricsCharts
+        title="Cluster resources"
+        history={metrics.history}
+        latest={metrics.data}
+        nodes={asList(metrics.data?.nodes)}
+        live={metrics.live}
+        setLive={metrics.setLive}
+        loading={metrics.loading}
+        onRefresh={() => metrics.refresh()}
+      />
 
       <section className="dash-panel">
         <div className="dash-resources-head">
