@@ -826,6 +826,65 @@ pub struct VmRecord {
     pub node_id: Option<NodeId>,
 }
 
+/// Point-in-time live resource sample (host or guest).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResourceSample {
+    /// 0..=100
+    pub cpu_pct: f32,
+    pub mem_used_bytes: u64,
+    pub mem_total_bytes: u64,
+    pub disk_used_bytes: u64,
+    pub disk_total_bytes: u64,
+    /// Receive bytes per second since previous sample.
+    pub net_rx_bps: u64,
+    /// Transmit bytes per second since previous sample.
+    pub net_tx_bps: u64,
+    pub collected_at_ms: u64,
+}
+
+impl Default for ResourceSample {
+    fn default() -> Self {
+        Self {
+            cpu_pct: 0.0,
+            mem_used_bytes: 0,
+            mem_total_bytes: 0,
+            disk_used_bytes: 0,
+            disk_total_bytes: 0,
+            net_rx_bps: 0,
+            net_tx_bps: 0,
+            collected_at_ms: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeMetrics {
+    pub node_id: NodeId,
+    pub name: String,
+    pub live: ResourceSample,
+    pub allocated_vcpus: u32,
+    pub allocated_memory_mib: u32,
+    pub running_vms: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VmMetrics {
+    pub id: VmId,
+    pub state: VmState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<ResourceSample>,
+    pub vcpus: u8,
+    pub memory_mib: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterMetrics {
+    pub live: ResourceSample,
+    pub nodes: Vec<NodeMetrics>,
+    pub running_vms: u32,
+    pub total_vms: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClusterSnapshot {
     pub name: String,

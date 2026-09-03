@@ -4,6 +4,7 @@ mod cluster;
 mod console;
 mod control;
 mod http;
+mod metrics;
 mod service;
 mod static_files;
 mod store;

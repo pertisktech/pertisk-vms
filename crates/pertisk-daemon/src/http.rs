@@ -35,8 +35,11 @@ pub fn router(service: Service) -> Router {
         .route("/v1/session", get(session))
         .route("/v1/session/password", post(change_own_password))
         .route("/v1/host", get(host))
+        .route("/v1/metrics", get(cluster_metrics))
+        .route("/v1/metrics/node", get(node_metrics))
         .route("/v1/vms", get(list).post(create))
         .route("/v1/vms/{id}", get(show).patch(update_vm).delete(destroy))
+        .route("/v1/vms/{id}/metrics", get(vm_metrics))
         .route("/v1/vms/{id}/start", post(start))
         .route("/v1/vms/{id}/stop", post(stop))
         .route("/v1/vms/{id}/shutdown", post(shutdown))
@@ -259,6 +262,21 @@ async fn tracked<T>(
 
 async fn host(State(service): State<Service>) -> impl IntoResponse {
     Json(service.host_info())
+}
+
+async fn cluster_metrics(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.cluster_metrics()?))
+}
+
+async fn node_metrics(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.node_metrics()?))
+}
+
+async fn vm_metrics(
+    State(service): State<Service>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.vm_metrics(id)?))
 }
 
 async fn list(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {

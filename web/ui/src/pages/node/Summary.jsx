@@ -1,55 +1,43 @@
 import { formatBytes } from '../../api'
+import MetricsPanel, { AllocatedPanel } from '../../components/MetricsPanel'
+import { useMetrics } from '../../useMetrics'
 import { useNode } from '../NodeView'
-
-function Meter({ label, used, total, unit }) {
-  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
-  return (
-    <div className="pve-meter">
-      <div className="pve-meter-head">
-        <span>{label}</span>
-        <span className="muted">
-          {pct}% {total > 0 ? `(${used}${unit} of ${total}${unit})` : ''}
-        </span>
-      </div>
-      <div className="pve-meter-track">
-        <div
-          className={`pve-meter-fill${pct > 90 ? ' hot' : pct > 75 ? ' warm' : ''}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  )
-}
 
 export default function NodeSummary() {
   const { node, guests, inv } = useNode()
+  const { data: metrics } = useMetrics('node')
   const host = inv.host
   const running = guests.filter((vm) => vm.state === 'running')
   const usedMem = running.reduce((sum, vm) => sum + (vm.spec?.memory_mib || 0), 0)
   const usedCpu = running.reduce((sum, vm) => sum + (vm.spec?.vcpus || 0), 0)
-  const totalMem = node?.memory_mib || host?.memory_mib || 0
   const totalCpu = node?.cpus || host?.cpus || 0
+  const allocMemTotal =
+    node?.memory_mib ||
+    host?.memory_mib ||
+    (metrics?.live?.mem_total_bytes
+      ? Math.round(metrics.live.mem_total_bytes / (1024 * 1024))
+      : 0)
 
   return (
     <div className="pve-stack">
-      <section className="card">
-        <div className="table-meta">Status</div>
-        <div className="pve-meters">
-          <Meter label="CPU (allocated vCPU)" used={usedCpu} total={totalCpu} unit="" />
-          <Meter label="Memory (allocated)" used={usedMem} total={totalMem} unit=" MiB" />
-        </div>
-      </section>
+      <MetricsPanel live={metrics?.live} title="Live" />
+      <AllocatedPanel
+        vcpusUsed={metrics?.allocated_vcpus ?? usedCpu}
+        vcpusTotal={totalCpu || 1}
+        memUsedMib={metrics?.allocated_memory_mib ?? usedMem}
+        memTotalMib={allocMemTotal || 1}
+      />
 
       <section className="card">
         <div className="table-meta">Node</div>
         <dl className="pve-kv">
           <dt>Name</dt>
-          <dd>{node?.name || '—'}</dd>
+          <dd>{node?.name || metrics?.name || '—'}</dd>
           <dt>Status</dt>
           <dd>{node?.online === false ? 'offline' : 'online'}</dd>
           <dt>Guests</dt>
           <dd>
-            {running.length} running / {guests.length} total
+            {metrics?.running_vms ?? running.length} running / {guests.length} total
           </dd>
           <dt>Platform</dt>
           <dd>{host ? `${host.os}/${host.arch}` : '—'}</dd>

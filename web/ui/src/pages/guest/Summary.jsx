@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, asList, disksOf, netsOf, shortId } from '../../api'
+import MetricsPanel from '../../components/MetricsPanel'
+import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
 
 function nodeName(cluster, id) {
@@ -22,12 +24,12 @@ function networkLine(vm, networks) {
 export default function GuestSummary() {
   const { vm: invVm, vmId, inv } = useGuest()
   const [vm, setVm] = useState(invVm)
+  const { data: metrics } = useMetrics(vmId)
 
   useEffect(() => {
     setVm(invVm)
   }, [invVm])
 
-  // Live record so discovered DHCP IPs show even if the inventory poll is briefly stale.
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -50,6 +52,7 @@ export default function GuestSummary() {
 
   const disks = disksOf(vm).filter((d) => !d.cdrom)
   const cdroms = disksOf(vm).filter((d) => d.cdrom || d.iso_name)
+  const running = vm.state === 'running'
 
   return (
     <div className="pve-stack">
@@ -73,6 +76,12 @@ export default function GuestSummary() {
           <div className="value">{nodeName(inv.cluster, vm.node_id)}</div>
         </div>
       </div>
+
+      <MetricsPanel
+        live={metrics?.live}
+        title="Live"
+        empty={running ? 'Collecting metrics…' : 'Guest stopped'}
+      />
 
       <section className="card">
         <div className="table-meta">Configuration</div>

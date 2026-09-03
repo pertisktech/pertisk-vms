@@ -10,7 +10,7 @@ use pertisk_types::{
     CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
     SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState,
-    VolumeFormat, VolumeId, VolumeRecord, probe_host,
+    VolumeFormat, VolumeId, VolumeRecord, probe_host, ClusterMetrics, NodeMetrics, VmMetrics,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -19,6 +19,7 @@ use crate::Store;
 use crate::cluster::{self, Cluster, NodeLoad};
 use crate::console::ConsoleHub;
 use crate::control::{AuthUser, ControlError, ControlStore};
+use crate::metrics::{self, MetricsCache};
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
@@ -82,6 +83,7 @@ pub struct Service {
     started_at: Instant,
     autostarted: Arc<Mutex<HashSet<VmId>>>,
     created_this_boot: Arc<Mutex<HashSet<VmId>>>,
+    metrics: Arc<MetricsCache>,
 }
 
 impl Service {
@@ -116,6 +118,7 @@ impl Service {
             started_at: Instant::now(),
             autostarted: Arc::new(Mutex::new(HashSet::new())),
             created_this_boot: Arc::new(Mutex::new(HashSet::new())),
+            metrics: Arc::new(MetricsCache::new()),
         }
     }
 
@@ -209,6 +212,58 @@ impl Service {
         info.node_id = Some(self.cluster.self_id());
         info.quorum = self.cluster.has_quorum();
         info
+    }
+
+    pub fn node_metrics(&self) -> Result<NodeMetrics, DaemonError> {
+        let live = metrics::sample_host(&self.metrics, &self.config.storage.root);
+        let self_id = self.cluster.self_id();
+        let status = self.cluster_status()?;
+        let me = status
+            .members
+            .iter()
+            .find(|m| m.id == self_id)
+            .cloned();
+        let vms = self.store.list()?;
+        let running: Vec<_> = vms
+            .iter()
+            .filter(|vm| vm.node_id == Some(self_id) && vm.state == VmState::Running)
+            .collect();
+        Ok(NodeMetrics {
+            node_id: self_id,
+            name: me
+                .as_ref()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| self.config.cluster.node_name.clone().unwrap_or_else(|| "local".into())),
+            live,
+            allocated_vcpus: running.iter().map(|vm| u32::from(vm.spec.vcpus)).sum(),
+            allocated_memory_mib: running.iter().map(|vm| vm.spec.memory_mib).sum(),
+            running_vms: running.len() as u32,
+        })
+    }
+
+    pub fn vm_metrics(&self, id: VmId) -> Result<VmMetrics, DaemonError> {
+        let vm = self.store.get(id)?;
+        let volumes = self.list_volumes().unwrap_or_default();
+        let live = metrics::sample_vm(&self.metrics, &vm, &volumes);
+        Ok(VmMetrics {
+            id: vm.id,
+            state: vm.state,
+            live,
+            vcpus: vm.spec.vcpus,
+            memory_mib: vm.spec.memory_mib,
+        })
+    }
+
+    pub fn cluster_metrics(&self) -> Result<ClusterMetrics, DaemonError> {
+        let node = self.node_metrics()?;
+        let vms = self.store.list()?;
+        let running_vms = vms.iter().filter(|vm| vm.state == VmState::Running).count() as u32;
+        Ok(ClusterMetrics {
+            live: node.live.clone(),
+            nodes: vec![node],
+            running_vms,
+            total_vms: vms.len() as u32,
+        })
     }
 
     pub fn cluster_status(&self) -> Result<pertisk_types::ClusterStatus, DaemonError> {

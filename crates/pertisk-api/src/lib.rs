@@ -187,6 +187,10 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/session/password": { "post": { "summary": "Change the current user's password" } },
             "/v1/openapi.json": { "get": { "summary": "This document", "security": [] } },
             "/v1/host": { "get": { "summary": "Host capabilities" } },
+            "/v1/host": { "get": { "summary": "Host / node info" } },
+            "/v1/metrics": { "get": { "summary": "Cluster live metrics (cpu/mem/disk/net)" } },
+            "/v1/metrics/node": { "get": { "summary": "Local node live metrics" } },
+            "/v1/vms/{id}/metrics": { "get": { "summary": "Guest live metrics" } },
             "/v1/vms": {
                 "get": { "summary": "List VMs" },
                 "post": { "summary": "Define a VM" }

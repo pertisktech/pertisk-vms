@@ -1323,6 +1323,7 @@ a.guest-card:hover { color: inherit; }
 .pve-meter-fill { height: 100%; background: var(--success); transition: width var(--transition-normal); }
 .pve-meter-fill.warm { background: var(--warning); }
 .pve-meter-fill.hot { background: var(--danger); }
+.pve-meter-detail { font-size: 0.75rem; margin-top: 0.25rem; }
 
 /* Console tab — fill remaining panel height */
 
