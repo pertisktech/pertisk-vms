@@ -87,24 +87,24 @@ Attach that seed last; firmware boots an installer ISO or the OS disk, not the c
 
 **Node install / flashable image (phase 7):** not a custom hypervisor — Debian Trixie + pertiskd.
 
-On an existing Linux KVM box (9955HX after you install Ubuntu/Debian):
+**Real machine (recommended):** on Ubuntu/Debian with KVM:
 
 ```bash
-sudo ./scripts/install-node.sh
+sudo ./upgrade.sh          # first install and later version upgrades
 ```
 
-That installs `pertiskd` as a systemd service (`0.0.0.0:7480`, home `/var/lib/pertisk`). Admin password is in `/etc/pertisk/admin`.
+See `node.txt`. Guests stay in `/var/lib/pertisk`.
 
-To build a bootable, flashable **raw disk image** (Linux build host with [mkosi](https://github.com/systemd/mkosi)):
+USB image (only when the box has no OS yet):
 
 ```bash
-./scripts/test-iso.sh
 make release-amd VERSION=0.1.0
-# or: make release-arm VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-The image has a 12 GiB root filesystem so the ISO library can store installer media. The raw output is sparse on the build host, but flashing needs a USB disk of at least 13 GiB.
+Then boot USB (UEFI) and `pertisk-install --disk /dev/nvme0n1 --yes`. After that, upgrades are still `sudo ./upgrade.sh`.
+
+Admin password: `/etc/pertisk/admin`. Optional: `make release-arm VERSION=0.1.0` for arm64 images (needs mkosi).
 
 Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 edk2-ovmf`):
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Turn this Linux machine into a pertisk node (systemd). No ISO required.
+# Install or upgrade this Linux machine as a pertisk node (systemd).
+# Re-run after git pull to upgrade; guests under /var/lib/pertisk are kept.
 # Usage: sudo ./scripts/install-node.sh
+#        sudo ./upgrade.sh   # same thing from repo root
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

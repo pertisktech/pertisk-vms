@@ -1,0 +1,19 @@
+# Real Linux node (bare metal / KVM server) — install & upgrade
+# Run ON the machine that will host VMs (needs /dev/kvm, Rust, npm).
+
+# First install OR upgrade to a new version (same command):
+sudo ./upgrade.sh
+
+# That builds UI + binaries, installs to /usr/bin, restarts pertiskd.
+# Keeps guests/data in /var/lib/pertisk and password in /etc/pertisk/admin.
+
+# UI: https://<this-machine-ip>:7443/   admin / (see /etc/pertisk/admin)
+
+# --- only if you do NOT have an OS yet (USB image path) ---
+# make release-amd VERSION=0.1.0
+# sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
+# boot USB → pertisk-install --disk /dev/nvme0n1 --yes
+# later upgrades: still use sudo ./upgrade.sh on the installed system
+
+# Lab Proxmox appliance (VM 901) is different — use: sudo ./deploy.sh
+# (see deploy.txt)
