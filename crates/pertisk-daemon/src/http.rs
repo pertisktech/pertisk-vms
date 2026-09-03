@@ -1316,6 +1316,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(host["driver"].is_string());
         assert!(host["version"].as_str().unwrap().contains('.'));
+        assert!(host["ipv4"].is_array());
+        assert!(host["ipv6"].is_array());
         let (status, created) = send(
             &app,
             Method::POST,

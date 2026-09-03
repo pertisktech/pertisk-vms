@@ -417,6 +417,22 @@ async fn run() -> Result<()> {
                 "tls                {}",
                 info.tls_listen.as_deref().unwrap_or("off")
             );
+            println!(
+                "ipv4               {}",
+                if info.ipv4.is_empty() {
+                    "—".into()
+                } else {
+                    info.ipv4.join(", ")
+                }
+            );
+            println!(
+                "ipv6               {}",
+                if info.ipv6.is_empty() {
+                    "—".into()
+                } else {
+                    info.ipv6.join(", ")
+                }
+            );
             println!("data_dir           {}", info.data_dir.display());
             println!("storage            {}", info.storage_root.display());
             println!(
@@ -592,6 +608,11 @@ async fn run() -> Result<()> {
                         format!("{}/{}", member.used_memory_mib, member.memory_mib),
                         member.peer_url
                     );
+                    if !member.ipv4.is_empty() || !member.ipv6.is_empty() {
+                        let mut addrs = member.ipv4;
+                        addrs.extend(member.ipv6);
+                        println!("  {}", addrs.join(", "));
+                    }
                 }
             }
             ClusterCommand::Join {

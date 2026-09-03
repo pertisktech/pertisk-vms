@@ -3,10 +3,23 @@ import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useNode } from '../NodeView'
 
+function formatAddrs(value) {
+  if (Array.isArray(value) && value.length) return value.join(', ')
+  if (typeof value === 'string' && value) return value
+  return '—'
+}
+
+function pickAddrs(nodeAddrs, hostAddrs, self) {
+  if (Array.isArray(nodeAddrs) && nodeAddrs.length) return nodeAddrs
+  if (self) return hostAddrs
+  return null
+}
+
 export default function NodeSummary() {
-  const { node, guests, inv } = useNode()
+  const { node, guests, inv, nodeId } = useNode()
   const metrics = useMetrics('node')
   const host = inv.host
+  const self = !inv.cluster?.self_id || inv.cluster.self_id === nodeId
   const running = guests.filter((vm) => vm.state === 'running')
   const usedMem = running.reduce((sum, vm) => sum + (vm.spec?.memory_mib || 0), 0)
   const usedCpu = running.reduce((sum, vm) => sum + (vm.spec?.vcpus || 0), 0)
@@ -70,6 +83,10 @@ export default function NodeSummary() {
         <dl className="pve-kv">
           <dt>Name</dt>
           <dd>{node?.name || metrics.data?.name || '—'}</dd>
+          <dt>IPv4</dt>
+          <dd className="mono-inline">{formatAddrs(pickAddrs(node?.ipv4, host?.ipv4, self))}</dd>
+          <dt>IPv6</dt>
+          <dd className="mono-inline">{formatAddrs(pickAddrs(node?.ipv6, host?.ipv6, self))}</dd>
           <dt>Status</dt>
           <dd>{node?.online === false ? 'offline' : 'online'}</dd>
           <dt>Guests</dt>

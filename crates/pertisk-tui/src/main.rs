@@ -95,7 +95,7 @@ fn node_info() -> NodeInfo {
     let ips = local_ips();
     let password = admin_password();
     let listen = std::env::var("PERTISK_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
-    let primary_ip = ips.first().cloned().unwrap_or_else(|| "127.0.0.1".into());
+    let ui_host = url_host(&ips);
     let tls_listen = std::env::var("PERTISK_TLS_LISTEN").unwrap_or_else(|_| "0.0.0.0:7443".into());
     let tls_port = tls_listen
         .rsplit(':')
@@ -103,28 +103,36 @@ fn node_info() -> NodeInfo {
         .filter(|p| *p != "off" && !p.is_empty())
         .unwrap_or("7443");
     NodeInfo {
-        ui_url: format!("https://{primary_ip}:{tls_port}/"),
+        ui_url: format!("https://{ui_host}:{tls_port}/"),
         ips,
         password,
         listen,
     }
 }
 
+fn url_host(ips: &[String]) -> String {
+    let raw = ips
+        .iter()
+        .find(|ip| ip.contains('.'))
+        .or_else(|| ips.first())
+        .map(|s| s.as_str())
+        .unwrap_or("127.0.0.1");
+    if raw.contains(':') {
+        format!("[{raw}]")
+    } else {
+        raw.to_string()
+    }
+}
+
 fn local_ips() -> Vec<String> {
-    let output = std::process::Command::new("hostname")
-        .arg("-I")
-        .output()
-        .ok();
-    output
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| {
-            s.split_whitespace()
-                .filter(|ip| ip.contains('.'))
-                .map(str::to_string)
-                .collect()
-        })
-        .filter(|v: &Vec<String>| !v.is_empty())
-        .unwrap_or_else(|| vec!["127.0.0.1".into()])
+    let addrs = pertisk_types::probe_host_addrs();
+    let mut ips = addrs.ipv4;
+    ips.extend(addrs.ipv6);
+    if ips.is_empty() {
+        vec!["127.0.0.1".into()]
+    } else {
+        ips
+    }
 }
 
 fn admin_password() -> String {
@@ -395,5 +403,14 @@ mod tests {
     fn local_ips_non_empty_fallback() {
         let ips = local_ips();
         assert!(!ips.is_empty());
+    }
+
+    #[test]
+    fn url_host_brackets_ipv6() {
+        assert_eq!(url_host(&["2001:db8::1".into()]), "[2001:db8::1]");
+        assert_eq!(
+            url_host(&["2001:db8::1".into(), "10.0.0.5".into()]),
+            "10.0.0.5"
+        );
     }
 }

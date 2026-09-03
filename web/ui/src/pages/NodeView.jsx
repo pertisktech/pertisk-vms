@@ -9,7 +9,13 @@ export function useNode() {
   const node =
     members.find((m) => m.id === nodeId) ||
     (members.length === 0
-      ? { id: nodeId, name: ctx.inv.host?.hostname || 'localhost', online: true }
+      ? {
+          id: nodeId,
+          name: ctx.inv.host?.hostname || 'localhost',
+          online: true,
+          ipv4: ctx.inv.host?.ipv4 || [],
+          ipv6: ctx.inv.host?.ipv6 || [],
+        }
       : null)
   const guests = ctx.inv.vms.filter(
     (vm) => vm.node_id === nodeId || (!vm.node_id && members.length === 0),

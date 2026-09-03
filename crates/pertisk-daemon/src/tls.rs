@@ -1,9 +1,8 @@
 //! TLS certificate bootstrap for the HTTPS listener.
 
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
-use pertisk_types::DaemonConfig;
+use pertisk_types::{DaemonConfig, local_host_ips};
 use rcgen::{
     CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, Ia5String, IsCa,
     KeyPair, KeyUsagePurpose, SanType,
@@ -62,7 +61,7 @@ fn generate_self_signed() -> Result<(String, String), std::io::Error> {
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.not_after = rcgen::date_time_ymd(2036, 9, 1);
-    for ip in local_ips() {
+    for ip in local_host_ips() {
         params.subject_alt_names.push(SanType::IpAddress(ip));
     }
     let key_pair = KeyPair::generate().map_err(tls_err)?;
@@ -93,35 +92,10 @@ fn dns_names() -> Vec<String> {
     names
 }
 
-fn local_ips() -> Vec<IpAddr> {
-    let mut ips = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
-    if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        let _ = sock.connect("1.1.1.1:443");
-        if let Ok(addr) = sock.local_addr() {
-            let ip = addr.ip();
-            if !ip.is_unspecified() && !ips.contains(&ip) {
-                ips.push(ip);
-            }
-        }
-    }
-    if let Ok(out) = std::process::Command::new("hostname").arg("-I").output()
-        && let Ok(text) = String::from_utf8(out.stdout)
-    {
-        for tok in text.split_whitespace() {
-            if let Ok(ip) = tok.parse::<IpAddr>()
-                && !ip.is_unspecified()
-                && !ips.contains(&ip)
-            {
-                ips.push(ip);
-            }
-        }
-    }
-    ips
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn writes_pem_pair() {
@@ -139,7 +113,7 @@ mod tests {
 
     #[test]
     fn includes_loopback_san() {
-        let ips = local_ips();
+        let ips = local_host_ips();
         assert!(ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 }

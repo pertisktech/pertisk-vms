@@ -1,8 +1,12 @@
 //! Shared identifiers, VM spec, host configuration, and inventory records.
 
+mod addrs;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+pub use addrs::{HostAddrs, local_host_ips, probe_host_addrs};
 
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -237,6 +241,10 @@ pub struct NodeRecord {
     pub cpus: u32,
     #[serde(default)]
     pub memory_mib: u32,
+    #[serde(default)]
+    pub ipv4: Vec<String>,
+    #[serde(default)]
+    pub ipv6: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -298,6 +306,10 @@ pub struct ClusterMemberStatus {
     pub memory_mib: u32,
     pub used_vcpus: u32,
     pub used_memory_mib: u32,
+    #[serde(default)]
+    pub ipv4: Vec<String>,
+    #[serde(default)]
+    pub ipv6: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1092,6 +1104,10 @@ pub struct HostInfo {
     pub listen: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_listen: Option<String>,
+    #[serde(default)]
+    pub ipv4: Vec<String>,
+    #[serde(default)]
+    pub ipv6: Vec<String>,
     pub data_dir: PathBuf,
     #[serde(default)]
     pub storage_root: PathBuf,
@@ -1169,6 +1185,7 @@ pub fn find_firmware() -> Option<PathBuf> {
 }
 
 pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
+    let addrs = probe_host_addrs();
     HostInfo {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
@@ -1182,6 +1199,8 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         firmware: config.vmm.firmware.clone().or_else(find_firmware),
         listen: config.daemon.listen.clone(),
         tls_listen: config.daemon.effective_tls_listen(),
+        ipv4: addrs.ipv4,
+        ipv6: addrs.ipv6,
         data_dir,
         storage_root: config.storage.root.clone(),
         qemu_img: config
@@ -1303,5 +1322,13 @@ mod tests {
             daemon.effective_tls_listen().as_deref(),
             Some("127.0.0.1:8443")
         );
+    }
+
+    #[test]
+    fn node_record_accepts_legacy_json_without_addrs() {
+        let raw = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"n","peer_url":"http://127.0.0.1:7480","cpus":4,"memory_mib":1024}"#;
+        let rec: NodeRecord = serde_json::from_str(raw).unwrap();
+        assert!(rec.ipv4.is_empty());
+        assert!(rec.ipv6.is_empty());
     }
 }

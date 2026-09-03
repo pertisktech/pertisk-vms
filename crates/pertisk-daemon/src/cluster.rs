@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pertisk_types::{
     ClusterMemberStatus, ClusterSnapshot, ClusterStatus, HeartbeatMessage, HostConfig, NodeId,
-    NodeRecord, VmSpec,
+    NodeRecord, VmSpec, probe_host_addrs,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -250,6 +250,8 @@ impl Cluster {
                 peer_url,
                 cpus,
                 memory_mib,
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
             };
             let mut members = BTreeMap::new();
             members.insert(
@@ -310,6 +312,8 @@ impl Cluster {
                 peer_url: String::new(),
                 cpus: 4,
                 memory_mib: 16_384,
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
             })
     }
 
@@ -512,7 +516,18 @@ impl Cluster {
         }
     }
 
+    fn refresh_self_addrs(&self) {
+        let addrs = probe_host_addrs();
+        let mut inner = self.inner.lock().expect("cluster lock");
+        let self_id = inner.self_id;
+        if let Some(member) = inner.members.get_mut(&self_id) {
+            member.record.ipv4 = addrs.ipv4;
+            member.record.ipv6 = addrs.ipv6;
+        }
+    }
+
     pub fn heartbeat_out(&self, include_snapshot: bool) -> HeartbeatMessage {
+        self.refresh_self_addrs();
         let member = self.self_record();
         let inner = self.inner.lock().expect("cluster lock");
         HeartbeatMessage {
@@ -531,6 +546,7 @@ impl Cluster {
     }
 
     pub fn status(&self, loads: &[NodeLoad]) -> ClusterStatus {
+        self.refresh_self_addrs();
         let inner = self.inner.lock().expect("cluster lock");
         let now = now_ms();
         let members: Vec<ClusterMemberStatus> = inner
@@ -548,6 +564,8 @@ impl Cluster {
                     memory_mib: m.record.memory_mib,
                     used_vcpus: load.map(|l| l.used_vcpus).unwrap_or(0),
                     used_memory_mib: load.map(|l| l.used_memory_mib).unwrap_or(0),
+                    ipv4: m.record.ipv4.clone(),
+                    ipv6: m.record.ipv6.clone(),
                 }
             })
             .collect();
@@ -706,6 +724,8 @@ mod tests {
         let reopened = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
         assert_eq!(reopened.self_id(), id);
         assert_eq!(reopened.self_record().name, "alpha");
+        let status = reopened.status(&[]);
+        assert_eq!(status.members.len(), 1);
         assert!(reopened.has_quorum());
         assert!(reopened.is_leader());
     }

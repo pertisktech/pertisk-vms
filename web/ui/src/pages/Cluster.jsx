@@ -104,6 +104,12 @@ export default function Cluster() {
               <div className="guest-meta">
                 <span className="mono-inline">{m.peer_url}</span>
               </div>
+              {(m.ipv4?.length || m.ipv6?.length) ? (
+                <div className="guest-meta">
+                  {m.ipv4?.length > 0 && <span className="mono-inline">{m.ipv4.join(', ')}</span>}
+                  {m.ipv6?.length > 0 && <span className="mono-inline">{m.ipv6.join(', ')}</span>}
+                </div>
+              ) : null}
               <div className="metric-tile-track" style={{ marginTop: '0.75rem' }}>
                 <div className="metric-tile-fill usage-bar-cpu" style={{ width: `${cpuPct}%` }} />
               </div>
