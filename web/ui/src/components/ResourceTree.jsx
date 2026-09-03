@@ -52,7 +52,9 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf })
         {!leaf && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
       </span>
       <Icon name={icon} size={14} className="tree-icon" />
-      <span className="tree-label">{label}</span>
+      <span className="tree-label" title={label}>
+        {label}
+      </span>
       {status && <span className={`tree-dot ${status}`} />}
       {badge != null && <span className="tree-badge">{badge}</span>}
     </NavLink>

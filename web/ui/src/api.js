@@ -72,6 +72,10 @@ export function netsOf(vm) {
   return asList(vm?.spec?.nets)
 }
 
+export function nicAddrs(nic) {
+  return [nic?.ip, nic?.ipv6].filter(Boolean)
+}
+
 export function replicasOf(vol) {
   return asList(vol?.replicas)
 }

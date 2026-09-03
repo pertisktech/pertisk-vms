@@ -1131,6 +1131,7 @@ a.guest-card:hover { color: inherit; }
 /* Resource tree */
 
 .pve-tree {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: var(--sidebar-w);
@@ -1186,7 +1187,11 @@ a.guest-card:hover { color: inherit; }
   color: var(--text-muted);
 }
 .tree-icon { flex: none; opacity: 0.8; }
-.tree-label { overflow: hidden; text-overflow: ellipsis; }
+.tree-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .tree-dot {
   width: 6px;
@@ -1236,6 +1241,38 @@ a.guest-card:hover { color: inherit; }
   font-size: 0.75rem;
   color: var(--text-secondary);
   font-family: var(--mono);
+}
+
+.pve-tree-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+  touch-action: none;
+}
+.pve-tree-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+}
+.pve-tree-resize:hover::after,
+.pve-tree.resizing .pve-tree-resize::after {
+  background: var(--accent);
+}
+
+.node-addrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  padding: 0.15rem 0.1rem 0.35rem;
+  font-size: 0.82rem;
 }
 
 /* Content panel */
@@ -1529,6 +1566,7 @@ a.guest-card:hover { color: inherit; }
 
 @media (min-width: 1024px) {
   .pve-tree { transition: width 220ms ease; }
+  .pve-tree.resizing { transition: none; }
   .pve-tree.collapsed { width: var(--sidebar-w-collapsed); }
   .pve-tree-collapse { display: inline-flex; }
   .pve-tree.collapsed .pve-tree-header {

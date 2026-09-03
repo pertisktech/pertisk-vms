@@ -144,6 +144,66 @@ fn ipv4_for_mac_from_neigh(want_mac: &str) -> Option<String> {
     None
 }
 
+/// Best-effort IPv6 for a guest MAC from `ip -6 neigh`.
+pub fn ipv6_for_mac(mac: &str) -> Option<String> {
+    let want = normalize_mac(mac)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = want;
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        ipv6_for_mac_from_neigh(&want)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
+    let output = Command::new("ip")
+        .args(["-6", "neigh", "show"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut link_local = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let ip = fields[0];
+        let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() else {
+            continue;
+        };
+        if addr.is_loopback() || addr.is_unspecified() || addr.is_multicast() {
+            continue;
+        }
+        let Some(ll) = fields.iter().position(|f| *f == "lladdr") else {
+            continue;
+        };
+        let Some(mac) = fields.get(ll + 1).and_then(|m| normalize_mac(m)) else {
+            continue;
+        };
+        if mac != want_mac {
+            continue;
+        }
+        let state = fields.last().copied().unwrap_or("");
+        if state == "FAILED" || state == "INCOMPLETE" {
+            continue;
+        }
+        if addr.is_unicast_link_local() {
+            if link_local.is_none() {
+                link_local = Some(ip.to_string());
+            }
+            continue;
+        }
+        return Some(ip.to_string());
+    }
+    link_local
+}
+
 #[cfg(target_os = "linux")]
 fn ipv4_for_mac_from_proc_arp(want_mac: &str) -> Option<String> {
     let text = std::fs::read_to_string("/proc/net/arp").ok()?;

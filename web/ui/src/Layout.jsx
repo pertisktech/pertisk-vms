@@ -11,6 +11,16 @@ import ChangePassword from './components/ChangePassword'
 import { parseResourceRoute, resourceLink } from './resourceRoutes'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
+const TREE_WIDTH_KEY = 'pertisk_vm_tree_width'
+const TREE_WIDTH_MIN = 180
+const TREE_WIDTH_MAX = 560
+const TREE_WIDTH_DEFAULT = 256
+
+function clampTreeWidth(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return TREE_WIDTH_DEFAULT
+  return Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, Math.round(n)))
+}
 
 export default function Layout() {
   const nav = useNavigate()
@@ -22,9 +32,12 @@ export default function Layout() {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(TREE_KEY) === 'true')
+  const [treeWidth, setTreeWidth] = useState(() => clampTreeWidth(localStorage.getItem(TREE_WIDTH_KEY)))
+  const [resizing, setResizing] = useState(false)
   const [wizard, setWizard] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const userMenuRef = useRef(null)
+  const treeRef = useRef(null)
 
   useEffect(() => {
     applyTheme(theme)
@@ -51,6 +64,35 @@ export default function Layout() {
   useEffect(() => {
     localStorage.setItem(TREE_KEY, String(collapsed))
   }, [collapsed])
+
+  useEffect(() => {
+    localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth))
+  }, [treeWidth])
+
+  function onResizePointerDown(e) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = treeRef.current?.getBoundingClientRect().width || treeWidth
+    setResizing(true)
+    const prevCursor = document.body.style.cursor
+    const prevSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    function onMove(ev) {
+      setTreeWidth(clampTreeWidth(startWidth + (ev.clientX - startX)))
+    }
+    function onUp() {
+      setResizing(false)
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevSelect
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
 
   useEffect(() => {
     if (!showUserMenu) return
@@ -90,7 +132,13 @@ export default function Layout() {
         onClick={() => setMobileOpen(false)}
       />
 
-      <aside className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}`}>
+      <aside
+        ref={treeRef}
+        className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}${
+          resizing ? ' resizing' : ''
+        }`}
+        style={collapsed ? undefined : { width: `${treeWidth}px` }}
+      >
         <div className="pve-tree-header">
           <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
             <span className="brand-mark" aria-hidden>
@@ -116,6 +164,17 @@ export default function Layout() {
           vms={inv.vms}
         />
         <div className="pve-tree-footer">{version ? `v${version}` : 'Pertisk VM'}</div>
+        {!collapsed && (
+          <div
+            className="pve-tree-resize"
+            onPointerDown={onResizePointerDown}
+            onDoubleClick={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            title="Drag to resize"
+          />
+        )}
       </aside>
 
       <div className={`pve-content${mobileOpen ? ' sidebar-open' : ''}`}>

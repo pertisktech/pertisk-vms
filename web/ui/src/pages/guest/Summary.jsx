@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, asList, disksOf, netsOf, shortId } from '../../api'
+import { api, asList, disksOf, netsOf, nicAddrs, shortId } from '../../api'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
@@ -16,7 +16,8 @@ function networkLine(vm, networks) {
     .map((n) => {
       const net = networks.find((item) => item.id === n.network_id)
       const name = net?.name || n.tap || 'nic'
-      return n.ip ? `${name} (${n.ip})` : name
+      const addrs = nicAddrs(n)
+      return addrs.length ? `${name} (${addrs.join(', ')})` : name
     })
     .join(', ')
 }

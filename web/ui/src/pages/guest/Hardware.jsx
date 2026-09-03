@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { api, disksOf, formatBytes, netsOf } from '../../api'
+import { api, disksOf, formatBytes, netsOf, nicAddrs } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/Confirm'
@@ -159,7 +159,7 @@ export default function GuestHardware() {
       key: `nic-${n.tap || n.mac || i}`,
       icon: 'network',
       label: `Network Device (net${i})`,
-      value: [net?.name || n.tap || 'nic', n.ip, n.mac].filter(Boolean).join(', '),
+      value: [net?.name || n.tap || 'nic', ...nicAddrs(n), n.mac].filter(Boolean).join(', '),
       removeUrl: n.tap ? `/v1/vms/${vm.id}/nics/${encodeURIComponent(n.tap)}` : null,
       lockedWhileRunning: true,
     })

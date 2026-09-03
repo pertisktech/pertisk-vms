@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, NetworkRecord, VmId};
 use serde::{Deserialize, Serialize};
 
-pub use host::{delete_tap, ipv4_for_mac, normalize_mac, probe_bridge_neighbors, provision_nic};
+pub use host::{delete_tap, ipv4_for_mac, ipv6_for_mac, normalize_mac, probe_bridge_neighbors, provision_nic};
 pub use ipam::{Ipv4Net, parse_cidr, parse_ipv4};
 
 #[derive(Debug, thiserror::Error)]
@@ -235,6 +235,7 @@ impl NetworkPool {
             tap: Some(tap),
             mac: Some(guest_mac(vm_id, nic_index)),
             ip,
+            ipv6: None,
         };
         self.ensure_host_links(&spec)?;
         Ok(spec)

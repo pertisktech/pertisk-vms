@@ -1,21 +1,37 @@
 //! Best-effort QEMU guest agent (QGA) queries over the virtio-serial unix socket.
 
 use std::io::{Read, Write};
+use std::net::Ipv6Addr;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GuestAddrs {
+    pub ipv4: Vec<(String, String)>,
+    pub ipv6: Vec<(String, String)>,
+}
+
 /// Return IPv4 addresses keyed by interface MAC from `guest-network-get-interfaces`.
 pub fn ipv4_by_mac(qga_sock: &Path) -> Vec<(String, String)> {
+    addrs_by_mac(qga_sock).ipv4
+}
+
+/// Return IPv4 and IPv6 addresses keyed by interface MAC.
+pub fn addrs_by_mac(qga_sock: &Path) -> GuestAddrs {
     let Ok(raw) = qga_command(qga_sock, "guest-network-get-interfaces", None) else {
-        return Vec::new();
+        return GuestAddrs::default();
     };
+    parse_guest_addrs(&raw)
+}
+
+fn parse_guest_addrs(raw: &Value) -> GuestAddrs {
     let Some(list) = raw.as_array() else {
-        return Vec::new();
+        return GuestAddrs::default();
     };
-    let mut out = Vec::new();
+    let mut out = GuestAddrs::default();
     for iface in list {
         let mac = iface
             .get("hardware-address")
@@ -33,19 +49,31 @@ pub fn ipv4_by_mac(qga_sock: &Path) -> Vec<(String, String)> {
                 .get("ip-address-type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if kind != "ipv4" {
-                continue;
-            }
             let Some(ip) = addr.get("ip-address").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if ip.starts_with("127.") || ip.starts_with("169.254.") {
-                continue;
+            match kind {
+                "ipv4" if usable_guest_ipv4(ip) => out.ipv4.push((mac.clone(), ip.to_string())),
+                "ipv6" if usable_guest_ipv6(ip) => out.ipv6.push((mac.clone(), ip.to_string())),
+                _ => {}
             }
-            out.push((mac.clone(), ip.to_string()));
         }
     }
     out
+}
+
+fn usable_guest_ipv4(ip: &str) -> bool {
+    !ip.starts_with("127.") && !ip.starts_with("169.254.")
+}
+
+fn usable_guest_ipv6(ip: &str) -> bool {
+    let Ok(addr) = ip.parse::<Ipv6Addr>() else {
+        return false;
+    };
+    !addr.is_loopback()
+        && !addr.is_unspecified()
+        && !addr.is_multicast()
+        && !addr.is_unicast_link_local()
 }
 
 fn qga_command(path: &Path, execute: &str, arguments: Option<Value>) -> std::io::Result<Value> {
@@ -149,4 +177,36 @@ fn normalize_mac(mac: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(":"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_ipv4_and_ipv6_from_qga() {
+        let raw = json!([
+            {
+                "name": "lo",
+                "hardware-address": "00:00:00:00:00:00",
+                "ip-addresses": [
+                    { "ip-address-type": "ipv4", "ip-address": "127.0.0.1" },
+                    { "ip-address-type": "ipv6", "ip-address": "::1" }
+                ]
+            },
+            {
+                "name": "eth0",
+                "hardware-address": "52:54:00:12:34:56",
+                "ip-addresses": [
+                    { "ip-address-type": "ipv4", "ip-address": "10.88.0.12" },
+                    { "ip-address-type": "ipv6", "ip-address": "fe80::1" },
+                    { "ip-address-type": "ipv6", "ip-address": "fd00:3::10" }
+                ]
+            }
+        ]);
+        let addrs = parse_guest_addrs(&raw);
+        assert_eq!(addrs.ipv4, vec![("52:54:00:12:34:56".into(), "10.88.0.12".into())]);
+        assert_eq!(addrs.ipv6, vec![("52:54:00:12:34:56".into(), "fd00:3::10".into())]);
+    }
 }

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { api, disksOf, netsOf } from '../../api'
+import { api, disksOf, netsOf, nicAddrs } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useConfirm } from '../../components/Confirm'
 import { useNode } from '../NodeView'
@@ -12,9 +12,7 @@ function stateClass(state) {
 }
 
 function guestIps(vm) {
-  const ips = netsOf(vm)
-    .map((n) => n.ip)
-    .filter(Boolean)
+  const ips = netsOf(vm).flatMap((n) => nicAddrs(n))
   return ips.length ? ips.join(', ') : '—'
 }
 

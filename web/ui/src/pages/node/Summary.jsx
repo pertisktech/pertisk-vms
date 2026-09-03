@@ -30,6 +30,8 @@ export default function NodeSummary() {
     (metrics.data?.live?.mem_total_bytes
       ? Math.round(metrics.data.live.mem_total_bytes / (1024 * 1024))
       : 0)
+  const ipv4 = formatAddrs(pickAddrs(node?.ipv4, host?.ipv4, self))
+  const ipv6 = formatAddrs(pickAddrs(node?.ipv6, host?.ipv6, self))
 
   return (
     <div className="pve-stack">
@@ -67,6 +69,15 @@ export default function NodeSummary() {
         </div>
       </div>
 
+      <div className="node-addrs">
+        <span>
+          <span className="muted">IPv4</span> <span className="mono-inline">{ipv4}</span>
+        </span>
+        <span>
+          <span className="muted">IPv6</span> <span className="mono-inline">{ipv6}</span>
+        </span>
+      </div>
+
       <MetricsCharts
         scope="node"
         title="Node resources"
@@ -84,9 +95,9 @@ export default function NodeSummary() {
           <dt>Name</dt>
           <dd>{node?.name || metrics.data?.name || '—'}</dd>
           <dt>IPv4</dt>
-          <dd className="mono-inline">{formatAddrs(pickAddrs(node?.ipv4, host?.ipv4, self))}</dd>
+          <dd className="mono-inline">{ipv4}</dd>
           <dt>IPv6</dt>
-          <dd className="mono-inline">{formatAddrs(pickAddrs(node?.ipv6, host?.ipv6, self))}</dd>
+          <dd className="mono-inline">{ipv6}</dd>
           <dt>Status</dt>
           <dd>{node?.online === false ? 'offline' : 'online'}</dd>
           <dt>Guests</dt>

@@ -2115,7 +2115,7 @@ fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
             .spec
             .nets
             .iter()
-            .any(|nic| nic.ip.is_none() && nic.mac.is_some())
+            .any(|nic| nic.mac.is_some() && (nic.ip.is_none() || nic.ipv6.is_none()))
 }
 
 /// Fill missing NIC IPs from QEMU guest agent and/or the host neighbour table.
@@ -2123,31 +2123,47 @@ fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
 fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
     let qga = run_dir.join(format!("{}.qga.sock", vm.id));
     let qga_ips = if vm.state == VmState::Running && qga.exists() {
-        pertisk_vmm::qga_ipv4_by_mac(&qga)
+        pertisk_vmm::qga_addrs_by_mac(&qga)
     } else {
-        Vec::new()
+        Default::default()
     };
     let mut changed = false;
     for nic in &mut vm.spec.nets {
-        if nic.ip.is_some() {
-            continue;
-        }
         let Some(mac) = nic.mac.as_deref() else {
             continue;
         };
         let want = pertisk_net::normalize_mac(mac);
-        let observed = want
-            .as_ref()
-            .and_then(|want| {
-                qga_ips
-                    .iter()
-                    .find(|(m, _)| m == want)
-                    .map(|(_, ip)| ip.clone())
-            })
-            .or_else(|| pertisk_net::ipv4_for_mac(mac));
-        if let Some(ip) = observed {
-            nic.ip = Some(ip);
-            changed = true;
+        if nic.ip.is_none() {
+            let observed = want
+                .as_ref()
+                .and_then(|want| {
+                    qga_ips
+                        .ipv4
+                        .iter()
+                        .find(|(m, _)| m == want)
+                        .map(|(_, ip)| ip.clone())
+                })
+                .or_else(|| pertisk_net::ipv4_for_mac(mac));
+            if let Some(ip) = observed {
+                nic.ip = Some(ip);
+                changed = true;
+            }
+        }
+        if nic.ipv6.is_none() {
+            let observed = want
+                .as_ref()
+                .and_then(|want| {
+                    qga_ips
+                        .ipv6
+                        .iter()
+                        .find(|(m, _)| m == want)
+                        .map(|(_, ip)| ip.clone())
+                })
+                .or_else(|| pertisk_net::ipv6_for_mac(mac));
+            if let Some(ip) = observed {
+                nic.ipv6 = Some(ip);
+                changed = true;
+            }
         }
     }
     changed
