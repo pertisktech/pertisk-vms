@@ -9,8 +9,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 OVERLAY="$ROOT/iso/overlay"
-OUT="$ROOT/out"
 RELEASE_DIR="$ROOT/release"
+# CI: keep the mkosi tools tree out of GITHUB_WORKSPACE. It is a full OS
+# image (root/subuid owned) and the runner cannot delete it without sudo.
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  MKOSI_STATE="${PERTISK_MKOSI_STATE:-$HOME/.cache/pertisk-mkosi}"
+else
+  MKOSI_STATE="${PERTISK_MKOSI_STATE:-}"
+fi
+OUT="${PERTISK_MKOSI_OUT:-${MKOSI_STATE:+$MKOSI_STATE/out}}"
+OUT="${OUT:-$ROOT/out}"
 FORMAT="${PERTISK_IMAGE_FORMAT:-disk}"
 ARCH="${PERTISK_ARCH:-}"
 VERSION="${PERTISK_VERSION:-}"
@@ -166,17 +174,7 @@ install -m 644 "$FIRMWARE" "$OVERLAY/usr/lib/cloud-hypervisor/hypervisor-fw"
 chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-firstboot" "$OVERLAY/usr/sbin/pertisk-install"
 printf '%s\n' "$VERSION" >"$OVERLAY/etc/pertisk/version"
 
-reclaim_tree() {
-  local path="$1"
-  [[ -e "$path" ]] || return 0
-  if [[ "$(id -u)" -eq 0 ]]; then
-    chown -R "${SUDO_UID:-0}:${SUDO_GID:-0}" "$path" || true
-  elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-    sudo -n chown -R "$(id -u):$(id -g)" "$path" || true
-  fi
-}
-
-echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION (needs root for the image)"
+echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION output=$OUT"
 MKOSI_BIN="$(command -v mkosi)"
 mkosi_cmd=("$MKOSI_BIN")
 if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
@@ -186,6 +184,16 @@ if ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
   echo "host is not Debian/Ubuntu; using mkosi tools tree"
   mkosi_cmd+=(--tools-tree default)
 fi
+mkdir -p "$OUT"
+mkosi_cmd+=(--output-directory "$OUT")
+if [[ -n "$MKOSI_STATE" ]]; then
+  mkdir -p "$MKOSI_STATE/cache" "$MKOSI_STATE/workspace" "$MKOSI_STATE/pkgcache"
+  mkosi_cmd+=(
+    --cache-directory "$MKOSI_STATE/cache"
+    --workspace-directory "$MKOSI_STATE/workspace"
+    --package-cache-dir "$MKOSI_STATE/pkgcache"
+  )
+fi
 (
   cd "$ROOT/iso"
   "${mkosi_cmd[@]}" --force --format "$FORMAT" \
@@ -193,13 +201,6 @@ fi
     --image-version "$VERSION" \
     --output "$OUTPUT_STEM"
 )
-# sudo mkosi leaves out/tools root-owned; that blocks the next actions/checkout.
-if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  sudo -n rm -rf "$OUT/tools"
-fi
-rm -rf "$OUT/tools" 2>/dev/null || true
-reclaim_tree "$OUT"
-reclaim_tree "$RELEASE_DIR"
 
 SRC=""
 for candidate in "$OUT/$OUTPUT_RAW" "$OUT/${OUTPUT_STEM}" "$ROOT/iso/$OUTPUT_RAW"; do

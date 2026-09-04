@@ -31,42 +31,12 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
 
     steps:
-      # Repo is not available yet. sudo mkosi --tools-tree leaves root-owned
-      # out/tools, which makes actions/checkout fail with EACCES.
-      - name: Clear mkosi leftovers
-        run: |
-          set -euo pipefail
-          ws="${GITHUB_WORKSPACE:?}"
-          echo "workspace=$ws user=$(id -un) uid=$(id -u)"
-          ls -la "$ws" || true
-          for d in "$ws/out/tools" "$ws/out" "$ws/release" "$ws/dist"; do
-            [[ -e "$d" ]] || continue
-            echo "Removing $d"
-            if command -v findmnt >/dev/null; then
-              while IFS= read -r m; do
-                [[ -n "$m" ]] || continue
-                echo "Unmounting $m"
-                sudo -n umount -l "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
-              done < <(findmnt -rn -o TARGET 2>/dev/null | grep -F "$d" || true)
-            fi
-            if [[ "$(id -u)" -eq 0 ]]; then
-              rm -rf "$d" || true
-            elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-              sudo -n rm -rf "$d" || true
-            else
-              rm -rf "$d" || true
-            fi
-            if [[ -e "$d" ]]; then
-              echo "::error::Cannot delete ${d}. On the runner: sudo rm -rf ${d}"
-              ls -lad "$d" || true
-              ls -la "$(dirname "$d")" || true
-              exit 1
-            fi
-          done
-          echo "mkosi leftovers cleared"
-
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          # leftover out/tools is a root-owned mkosi image; the runner cannot
+          # git-clean it without passwordless sudo.
+          clean: false
 
       - name: Get version from tag
         id: version
@@ -144,51 +114,15 @@ jobs:
           path: dist/*
           retention-days: 1
 
-      - name: Reclaim mkosi leftovers
-        if: always()
-        run: |
-          set -euo pipefail
-          if [[ -f scripts/ci-reset-workspace.sh ]]; then
-            chmod +x scripts/ci-reset-workspace.sh
-            ./scripts/ci-reset-workspace.sh
-          else
-            ws="${GITHUB_WORKSPACE}"
-            sudo -n rm -rf "$ws/out" "$ws/release" "$ws/dist" 2>/dev/null \
-              || rm -rf "$ws/out" "$ws/release" "$ws/dist" 2>/dev/null \
-              || true
-          fi
-
   release:
     name: Create Release
     needs: build
     runs-on: [self-hosted, linux]
     steps:
-      - name: Clear mkosi leftovers
-        run: |
-          set -euo pipefail
-          ws="${GITHUB_WORKSPACE:?}"
-          echo "workspace=$ws user=$(id -un) uid=$(id -u)"
-          ls -la "$ws" || true
-          for d in "$ws/out/tools" "$ws/out" "$ws/release" "$ws/dist"; do
-            [[ -e "$d" ]] || continue
-            echo "Removing $d"
-            if [[ "$(id -u)" -eq 0 ]]; then
-              rm -rf "$d" || true
-            elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-              sudo -n rm -rf "$d" || true
-            else
-              rm -rf "$d" || true
-            fi
-            if [[ -e "$d" ]]; then
-              echo "::error::Cannot delete ${d}. On the runner: sudo rm -rf ${d}"
-              ls -lad "$d" || true
-              exit 1
-            fi
-          done
-          echo "mkosi leftovers cleared"
-
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Get version from tag
         id: version
