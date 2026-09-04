@@ -52,7 +52,7 @@ install_host_packages() {
     $SUDO dnf install -y \
       python3 python3-pip python3-virtualenv \
       bubblewrap systemd-container \
-      qemu-user-static xz \
+      qemu-user-static qemu-user-binfmt xz \
       gcc gcc-c++ \
       e2fsprogs dosfstools mtools \
       ca-certificates curl

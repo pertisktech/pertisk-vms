@@ -64,6 +64,15 @@ jobs:
       - name: Set up QEMU for cross-arch mkosi
         if: matrix.arch != steps.native_plat.outputs.arch
         uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Register qemu-aarch64 binfmt
+        if: matrix.arch != steps.native_plat.outputs.arch
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-ensure-qemu-binfmt.sh
+          ./scripts/ci-ensure-qemu-binfmt.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:

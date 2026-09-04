@@ -185,7 +185,15 @@ mkosi_cmd=("$MKOSI_BIN")
 if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
   mkosi_cmd=(sudo -n "$MKOSI_BIN")
 fi
-if ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
+if [[ "$HOST" != "$ARCH" ]]; then
+  echo "cross-arch mkosi ($HOST -> $ARCH): Debian tools tree + qemu-user-static"
+  chmod +x "$ROOT/scripts/ci-ensure-qemu-binfmt.sh"
+  # shellcheck source=ci-ensure-qemu-binfmt.sh
+  source "$ROOT/scripts/ci-ensure-qemu-binfmt.sh"
+  mkosi_cmd+=(--tools-tree default)
+  mkosi_cmd+=(--tools-tree-distribution debian --tools-tree-release trixie)
+  mkosi_cmd+=(--tools-tree-package qemu-user-static)
+elif ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
   echo "host is not Debian/Ubuntu; using mkosi tools tree"
   mkosi_cmd+=(--tools-tree default)
 fi
