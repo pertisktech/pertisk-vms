@@ -125,49 +125,35 @@ echo "building web ui"
 (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
 
 HOST="$(host_arch)"
-CARGO_ARGS=(build --release --locked -p pertisk-daemon -p pertisk-cli -p pertisk-tui)
+CARGO_PACKAGES=(-p pertisk-daemon -p pertisk-cli -p pertisk-tui)
 BINDIR="$ROOT/target/release"
-# Host gcc + host glibc for native builds. Cross builds use a user-local
-# Bootlin GNU toolchain (not zig cc — cc-rs+zig never writes C .o files).
+# Host gcc + host glibc for native builds. Cross uses cargo-zigbuild (same as
+# pertisk-proxy tunnel), not a homemade zig-cc wrapper.
 unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER \
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
   CC_x86_64_unknown_linux_gnu CC_aarch64_unknown_linux_gnu \
   AR_x86_64_unknown_linux_gnu AR_aarch64_unknown_linux_gnu
+CARGO=(cargo build --release --locked "${CARGO_PACKAGES[@]}")
 if [[ "$HOST" != "$ARCH" ]]; then
-  echo "cross-compiling $ARCH on $HOST host ($RUST_TARGET)"
+  echo "cross-compiling $ARCH on $HOST host via cargo-zigbuild ($RUST_TARGET)"
+  chmod +x "$ROOT/scripts/ci-ensure-zig.sh"
+  "$ROOT/scripts/ci-ensure-zig.sh"
+  case "$(uname -m)" in
+    x86_64|amd64) _za=x86_64 ;;
+    *) _za=aarch64 ;;
+  esac
+  _zd="${HOME}/.local/zig/zig-linux-${_za}-${ZIG_VERSION:-0.13.0}"
+  [[ -x "${_zd}/zig" ]] && export PATH="${_zd}:${PATH}"
+  [[ -d "${HOME}/.cargo/bin" ]] && export PATH="${HOME}/.cargo/bin:${PATH}"
   if command -v rustup >/dev/null; then
     rustup target add "$RUST_TARGET"
   fi
-  echo "build-iso: installing/refreshing user-local GNU cross-gcc for ${CROSS_CC}"
-  chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
-  # shellcheck source=ci-ensure-cross-cc.sh
-  source "$ROOT/scripts/ci-ensure-cross-cc.sh"
-  CROSS_CC_BIN="${HOME}/.local/bin/${CROSS_CC}"
-  [[ -x "$CROSS_CC_BIN" ]] || die "${CROSS_CC_BIN} not found after cross-gcc install"
-  # Drop stale zig-produced object dirs from earlier arm64 attempts.
-  rm -rf "$ROOT/target/${RUST_TARGET}"
-  export AWS_LC_SYS_NO_ASM=1
-  export AWS_LC_SYS_NO_JITTER_ENTROPY=1
-  case "$ARCH" in
-    arm64)
-      export CC_aarch64_unknown_linux_gnu="$CROSS_CC_BIN"
-      export CXX_aarch64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-g++"
-      export AR_aarch64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-ar"
-      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC_BIN"
-      ;;
-    amd64)
-      export CC_x86_64_unknown_linux_gnu="$CROSS_CC_BIN"
-      export CXX_x86_64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-g++"
-      export AR_x86_64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-ar"
-      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC_BIN"
-      ;;
-  esac
-  CARGO_ARGS+=(--target "$RUST_TARGET")
+  CARGO=(cargo zigbuild --release --locked --target "$RUST_TARGET" "${CARGO_PACKAGES[@]}")
   BINDIR="$ROOT/target/${RUST_TARGET}/release"
 fi
 
 echo "building release binaries ($ARCH v$VERSION)"
-pertisk_vms_VERSION="$VERSION" cargo "${CARGO_ARGS[@]}"
+pertisk_vms_VERSION="$VERSION" "${CARGO[@]}"
 install -m 755 "$BINDIR/pertiskd" "$OVERLAY/usr/bin/pertiskd"
 install -m 755 "$BINDIR/pertisk" "$OVERLAY/usr/bin/pertisk"
 install -m 755 "$BINDIR/pertisk-tui" "$OVERLAY/usr/bin/pertisk-tui"

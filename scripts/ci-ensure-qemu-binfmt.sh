@@ -57,8 +57,7 @@ if binfmt_aarch64_enabled; then
 fi
 
 echo "::error::arm64 mkosi cannot run dpkg maintainer scripts on this amd64 host (Exec format error on libc6:arm64)."
-echo "Register qemu-aarch64 binfmt once on the runner:"
-echo "  sudo dnf install -y qemu-user-static qemu-user-binfmt"
-echo "  # or: docker run --rm --privileged tonistiigi/binfmt --install arm64"
+echo "On the runner (as root), register qemu-aarch64 binfmt:"
+echo "  docker run --rm --privileged tonistiigi/binfmt --install arm64"
 dump_binfmt
 exit 1
