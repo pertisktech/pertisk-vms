@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# zig cc frontend that drops cc-rs clang flags which conflict with -target.
+# zig cc frontend that drops cc-rs clang flags which conflict with zig -target.
+# cc-rs sees `zig cc` as clang and passes --target=aarch64-unknown-linux-gnu
+# (Rust/LLVM triple). Zig's target grammar is arch-os-abi, so it parses
+# "unknown" as the OS and exits: UnknownOperatingSystem.
 # Usage: ZIG=/path/to/zig ZIG_CC_TARGET=aarch64-linux-gnu.2.28 zig-cc.sh [args...]
 set -euo pipefail
 
@@ -14,15 +17,22 @@ for arg in "$@"; do
     continue
   fi
   case "$arg" in
-    --target=*|-target=*)
+    --target=*|-target=*|--triple=*|-triple=*)
       continue
       ;;
-    --target|-target)
+    --target|-target|--triple|-triple)
       skip_next=1
       continue
       ;;
     -m64|-m32)
       continue
+      ;;
+    *-unknown-linux-*|*-unknown-unknown-*)
+      # Bare Rust triple, not a filesystem path.
+      if [[ "$arg" != */* ]]; then
+        continue
+      fi
+      args+=("$arg")
       ;;
   esac
   args+=("$arg")

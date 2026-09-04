@@ -138,23 +138,27 @@ if [[ "$HOST" != "$ARCH" ]]; then
   if command -v rustup >/dev/null; then
     rustup target add "$RUST_TARGET"
   fi
-  if ! command -v "$CROSS_CC" >/dev/null; then
-    echo "build-iso: ${CROSS_CC} missing; installing user-local zig cc wrappers"
-    chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
-    # shellcheck source=ci-ensure-cross-cc.sh
-    source "$ROOT/scripts/ci-ensure-cross-cc.sh"
-  fi
-  command -v "$CROSS_CC" >/dev/null || die "${CROSS_CC} not found (needed to cross-compile ${ARCH})"
+  # Always refresh zig wrappers. A leftover ~/.local/bin/aarch64-linux-gnu-gcc
+  # from an earlier job would skip install and keep forwarding Rust --target=
+  # triples that zig rejects (UnknownOperatingSystem).
+  echo "build-iso: installing/refreshing user-local zig cc wrappers for ${CROSS_CC}"
+  chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
+  # shellcheck source=ci-ensure-cross-cc.sh
+  source "$ROOT/scripts/ci-ensure-cross-cc.sh"
+  CROSS_CC_BIN="${HOME}/.local/bin/${CROSS_CC}"
+  [[ -x "$CROSS_CC_BIN" ]] || die "${CROSS_CC_BIN} not found after zig wrapper install"
   case "$ARCH" in
     arm64)
-      export CC_aarch64_unknown_linux_gnu="$CROSS_CC"
-      export AR_aarch64_unknown_linux_gnu="${CROSS_CC%-gcc}-ar"
-      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC"
+      export CC_aarch64_unknown_linux_gnu="$CROSS_CC_BIN"
+      export CXX_aarch64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-g++"
+      export AR_aarch64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-ar"
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC_BIN"
       ;;
     amd64)
-      export CC_x86_64_unknown_linux_gnu="$CROSS_CC"
-      export AR_x86_64_unknown_linux_gnu="${CROSS_CC%-gcc}-ar"
-      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC"
+      export CC_x86_64_unknown_linux_gnu="$CROSS_CC_BIN"
+      export CXX_x86_64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-g++"
+      export AR_x86_64_unknown_linux_gnu="${HOME}/.local/bin/${CROSS_CC%-gcc}-ar"
+      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC_BIN"
       ;;
   esac
   CARGO_ARGS+=(--target "$RUST_TARGET")

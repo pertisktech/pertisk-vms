@@ -86,3 +86,22 @@ fi
 
 echo "cross-cc ${CROSS_PREFIX}-gcc -> zig cc -target ${CROSS_ZIG} (strips --target=)"
 echo "native gcc left alone (${HOST_TRIPLE})"
+
+# Fail fast if the wrapper still forwards Rust/LLVM triples to zig.
+probe_dir="$(mktemp -d)"
+printf 'void foo(void) {}\n' > "$probe_dir/foo.c"
+case "$CROSS_PREFIX" in
+  aarch64-linux-gnu) probe_target=aarch64-unknown-linux-gnu ;;
+  x86_64-linux-gnu) probe_target=x86_64-unknown-linux-gnu ;;
+  *) probe_target="" ;;
+esac
+if [[ -n "$probe_target" ]]; then
+  if ! "${HOME}/.local/bin/${CROSS_PREFIX}-gcc" --target="$probe_target" -c "$probe_dir/foo.c" -o "$probe_dir/foo.o"; then
+    rm -rf "$probe_dir"
+    echo "::error::zig-cc wrapper rejected --target=${probe_target} (UnknownOperatingSystem). Update scripts/zig-cc.sh." >&2
+    exit 1
+  fi
+  echo "zig-cc wrapper accepted (and stripped) --target=${probe_target}"
+fi
+rm -rf "$probe_dir"
+
