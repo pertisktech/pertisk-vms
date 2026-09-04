@@ -76,8 +76,9 @@ host_arch() {
 }
 
 [[ "$(uname -s)" == "Linux" ]] || die "build the image on Linux (this host is $(uname -s))"
+export PATH="${HOME}/.local/bin:${PATH}"
 command -v cargo >/dev/null || die "cargo not in PATH"
-command -v mkosi >/dev/null || die "install mkosi (https://github.com/systemd/mkosi). Debian: apt install mkosi"
+command -v mkosi >/dev/null || die "install mkosi (https://github.com/systemd/mkosi). Debian: apt install mkosi  |  CI: ./scripts/ci-install-deps.sh"
 command -v curl >/dev/null || die "curl not in PATH"
 command -v npm >/dev/null || die "npm not in PATH (install Node.js to build the embedded web UI)"
 [[ "$FORMAT" == "disk" ]] || die "this script builds a raw disk image only"
@@ -149,9 +150,14 @@ chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-first
 printf '%s\n' "$VERSION" >"$OVERLAY/etc/pertisk/version"
 
 echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION (needs root for the image)"
-mkosi_cmd=(mkosi)
+MKOSI_BIN="$(command -v mkosi)"
+mkosi_cmd=("$MKOSI_BIN")
 if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  mkosi_cmd=(sudo mkosi)
+  mkosi_cmd=(sudo -n "$MKOSI_BIN")
+fi
+if ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
+  echo "host is not Debian/Ubuntu; using mkosi tools tree"
+  mkosi_cmd+=(--tools-tree default)
 fi
 (
   cd "$ROOT/iso"

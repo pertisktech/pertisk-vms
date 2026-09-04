@@ -71,6 +71,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/ui/package-lock.json
 
+      - name: Install mkosi and image-build deps
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci-install-deps.sh
+          ./scripts/ci-install-deps.sh
+
       - name: Build node image
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
