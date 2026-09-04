@@ -95,7 +95,34 @@ sudo ./upgrade.sh          # first install and later version upgrades
 
 See `node.txt`. Guests stay in `/var/lib/pertisk`.
 
-USB image (only when the box has no OS yet):
+**ARM SBC (Orange Pi 5 Max / 5 Plus, Raspberry Pi 5):** do **not** flash `pertisk-node-*-arm64.raw`. That image is generic Debian EFI. These boards boot vendor U-Boot / EEPROM, so the `.raw` will not start. Install vendor OS first, then the **arm64 tarball**.
+
+1. Flash the **vendor** image for that exact board (Orange Pi 5 Plus ≠ 5 Max ≠ Raspberry Pi 5) onto a **healthy** SD (16–64GB Class 10). Unplug NVMe until SSH works.
+2. Boot, enable SSH (`systemctl enable --now ssh`). Default login is usually `root` / `orangepi`.
+3. Download the **tagged** release (not `untagged-…` draft URLs):
+
+```bash
+VER=0.1.1
+curl -fL -o pertisk-vm-${VER}-linux-arm64.tar.gz \
+  https://github.com/pertisktech/pertisk-vms/releases/download/${VER}/pertisk-vm-${VER}-linux-arm64.tar.gz
+sudo tar -C /usr/bin -xzf pertisk-vm-${VER}-linux-arm64.tar.gz
+sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 ipxe-qemu qemu-utils
+```
+
+Copy `iso/overlay` systemd units + `/etc/pertisk` from the repo (`pertiskd.service`, `pertisk-kvm-check`, `config.toml` with `driver = "qemu"` and `qemu_img = "/usr/bin/qemu-img"`). Do **not** enable overlay `systemd-networkd` on Orange Pi (it uses NetworkManager). Then `systemctl enable --now pertisk-firstboot pertiskd`.
+
+4. Create host `br0` **before** any pertisk network (LAN NIC enslaved, STP off, cloned MAC, DHCP). Then:
+
+```bash
+pertisk net create --name lan --mode bridge --bridge br0 --cidr 10.1.1.0/24 --gateway 10.1.1.10
+pertisk net create --name vmnet --mode bridge --bridge br0 --cidr 0.0.0.0/0
+```
+
+5. NVMe: keep `/boot` on SD, put `/` on NVMe. Do not remove the SD (U-Boot loads the kernel from the card). Do not `dd` the pertisk `.raw` onto NVMe. If the SD remounts read-only, stop using it as root — copy root to NVMe while `/boot` is still writable.
+
+RK3588 (Max/Plus) is mixed A55+A76; 0.1.1 QEMU pins guests to one cluster. Raspberry Pi 5 is all A76; use 64-bit Raspberry Pi OS with `/dev/kvm` (prefer kernel 6.6, not a broken 6.12 VGIC).
+
+USB image (only when the box has no OS yet, **x86_64 UEFI PCs**):
 
 ```bash
 make release-amd VERSION=0.1.0
