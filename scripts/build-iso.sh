@@ -124,14 +124,25 @@ if [[ "$HOST" != "$ARCH" ]]; then
   if command -v rustup >/dev/null; then
     rustup target add "$RUST_TARGET"
   fi
-  if command -v "$CROSS_CC" >/dev/null; then
-    case "$ARCH" in
-      arm64) export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC" ;;
-      amd64) export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC" ;;
-    esac
-  else
-    echo "build-iso: ${CROSS_CC} not found; cargo --target may fail" >&2
+  if ! command -v "$CROSS_CC" >/dev/null; then
+    echo "build-iso: ${CROSS_CC} missing; installing user-local zig cc wrappers"
+    chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
+    # shellcheck source=ci-ensure-cross-cc.sh
+    source "$ROOT/scripts/ci-ensure-cross-cc.sh"
   fi
+  command -v "$CROSS_CC" >/dev/null || die "${CROSS_CC} not found (needed to cross-compile ${ARCH})"
+  case "$ARCH" in
+    arm64)
+      export CC_aarch64_unknown_linux_gnu="$CROSS_CC"
+      export AR_aarch64_unknown_linux_gnu="${CROSS_CC%-gcc}-ar"
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC"
+      ;;
+    amd64)
+      export CC_x86_64_unknown_linux_gnu="$CROSS_CC"
+      export AR_x86_64_unknown_linux_gnu="${CROSS_CC%-gcc}-ar"
+      export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CROSS_CC"
+      ;;
+  esac
   CARGO_ARGS+=(--target "$RUST_TARGET")
   BINDIR="$ROOT/target/${RUST_TARGET}/release"
 fi
