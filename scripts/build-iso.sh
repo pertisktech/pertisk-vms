@@ -147,6 +147,10 @@ if [[ "$HOST" != "$ARCH" ]]; then
   source "$ROOT/scripts/ci-ensure-cross-cc.sh"
   CROSS_CC_BIN="${HOME}/.local/bin/${CROSS_CC}"
   [[ -x "$CROSS_CC_BIN" ]] || die "${CROSS_CC_BIN} not found after zig wrapper install"
+  # zig cc cannot assemble s2n-bignum .S files; missing .o then breaks ld.lld.
+  export AWS_LC_SYS_NO_ASM=1
+  export AWS_LC_SYS_NO_JITTER_ENTROPY=1
+  rm -rf "$ROOT/target/${RUST_TARGET}/release/build/aws-lc-sys-"*
   case "$ARCH" in
     arm64)
       export CC_aarch64_unknown_linux_gnu="$CROSS_CC_BIN"
