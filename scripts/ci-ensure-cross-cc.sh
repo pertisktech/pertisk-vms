@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# User-local aarch64/x86_64 GCC shims via zig cc (no root).
-# cc-rs looks for aarch64-linux-gnu-gcc when cross-compiling ring/aws-lc.
+# User-local GCC shims via zig cc (no root) for **cross** compiles only.
+# Never wrap the host gcc: aws-lc built with host glibc cannot link against zig's 2.28 libc.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ZIG_VERSION="${ZIG_VERSION:-0.13.0}"
 
 case "$(uname -m)" in
-  x86_64|amd64) ZIG_ARCH=x86_64 ;;
-  aarch64|arm64) ZIG_ARCH=aarch64 ;;
+  x86_64|amd64)
+    ZIG_ARCH=x86_64
+    HOST_TRIPLE=x86_64-linux-gnu
+    CROSS_PREFIX=aarch64-linux-gnu
+    CROSS_ZIG=aarch64-linux-gnu.2.28
+    CROSS_LINKER_ENV=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
+    ;;
+  aarch64|arm64)
+    ZIG_ARCH=aarch64
+    HOST_TRIPLE=aarch64-linux-gnu
+    CROSS_PREFIX=x86_64-linux-gnu
+    CROSS_ZIG=x86_64-linux-gnu.2.28
+    CROSS_LINKER_ENV=CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
+    ;;
   *)
     echo "unsupported arch for zig: $(uname -m)" >&2
     exit 1
@@ -17,6 +30,9 @@ esac
 PREFIX="${HOME}/.local/zig"
 DIR="${PREFIX}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}"
 mkdir -p "$PREFIX" "${HOME}/.local/bin"
+
+rm -f "${HOME}/.local/bin/${HOST_TRIPLE}-gcc" "${HOME}/.local/bin/${HOST_TRIPLE}-g++" \
+  "${HOME}/.local/bin/${HOST_TRIPLE}-ar"
 
 if [[ ! -x "${DIR}/zig" ]]; then
   tmp="$(mktemp)"
@@ -37,32 +53,27 @@ command -v zig >/dev/null || {
 }
 echo "zig $(zig version)"
 
-write_cc_wrapper() {
+install -m 755 "$ROOT/scripts/zig-cc.sh" "${HOME}/.local/bin/zig-cc.sh"
+
+write_cc() {
   local name="$1"
-  local target="$2"
-  local dest="${HOME}/.local/bin/${name}"
-  cat >"$dest" <<EOF
+  cat >"${HOME}/.local/bin/${name}" <<EOF
 #!/bin/sh
-exec "${DIR}/zig" cc -target ${target} "\$@"
+export ZIG="${DIR}/zig"
+export ZIG_CC_TARGET="${CROSS_ZIG}"
+exec "${HOME}/.local/bin/zig-cc.sh" "\$@"
 EOF
-  chmod +x "$dest"
+  chmod +x "${HOME}/.local/bin/${name}"
 }
 
-write_ar_wrapper() {
-  local name="$1"
-  local dest="${HOME}/.local/bin/${name}"
-  cat >"$dest" <<EOF
+write_cc "${CROSS_PREFIX}-gcc"
+write_cc "${CROSS_PREFIX}-g++"
+
+cat >"${HOME}/.local/bin/${CROSS_PREFIX}-ar" <<EOF
 #!/bin/sh
 exec "${DIR}/zig" ar "\$@"
 EOF
-  chmod +x "$dest"
-}
-
-# glibc 2.28 is new enough for Debian Trixie and old enough to link on most distros.
-write_cc_wrapper aarch64-linux-gnu-gcc aarch64-linux-gnu.2.28
-write_ar_wrapper aarch64-linux-gnu-ar
-write_cc_wrapper x86_64-linux-gnu-gcc x86_64-linux-gnu.2.28
-write_ar_wrapper x86_64-linux-gnu-ar
+chmod +x "${HOME}/.local/bin/${CROSS_PREFIX}-ar"
 
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   echo "${DIR}" >> "$GITHUB_PATH"
@@ -70,9 +81,8 @@ if [[ -n "${GITHUB_PATH:-}" ]]; then
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   echo "PATH=${DIR}:${HOME}/.local/bin:${PATH}" >> "$GITHUB_ENV"
-  echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${HOME}/.local/bin/aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-  echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${HOME}/.local/bin/x86_64-linux-gnu-gcc" >> "$GITHUB_ENV"
+  echo "${CROSS_LINKER_ENV}=${HOME}/.local/bin/${CROSS_PREFIX}-gcc" >> "$GITHUB_ENV"
 fi
 
-echo "cross-cc aarch64-linux-gnu-gcc -> zig cc -target aarch64-linux-gnu.2.28"
-echo "cross-cc x86_64-linux-gnu-gcc  -> zig cc -target x86_64-linux-gnu.2.28"
+echo "cross-cc ${CROSS_PREFIX}-gcc -> zig cc -target ${CROSS_ZIG} (strips --target=)"
+echo "native gcc left alone (${HOST_TRIPLE})"

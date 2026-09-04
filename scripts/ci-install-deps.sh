@@ -108,12 +108,6 @@ if ! mkosi_ok; then
 fi
 
 echo "mkosi=$(command -v mkosi) $(mkosi --version | head -n1)"
-
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
-# shellcheck source=ci-ensure-cross-cc.sh
-source "$ROOT/scripts/ci-ensure-cross-cc.sh"
-
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
 fi

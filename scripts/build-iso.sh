@@ -119,6 +119,12 @@ echo "building web ui"
 HOST="$(host_arch)"
 CARGO_ARGS=(build --release --locked -p pertisk-daemon -p pertisk-cli -p pertisk-tui)
 BINDIR="$ROOT/target/release"
+# Host gcc + host glibc. Zig must not link native binaries (glibc 2.38+ symbols
+# such as __isoc23_sscanf are missing from zig's 2.28 sysroot).
+unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER \
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
+  CC_x86_64_unknown_linux_gnu CC_aarch64_unknown_linux_gnu \
+  AR_x86_64_unknown_linux_gnu AR_aarch64_unknown_linux_gnu
 if [[ "$HOST" != "$ARCH" ]]; then
   echo "cross-compiling $ARCH on $HOST host ($RUST_TARGET)"
   if command -v rustup >/dev/null; then
