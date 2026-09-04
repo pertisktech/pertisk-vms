@@ -166,6 +166,16 @@ install -m 644 "$FIRMWARE" "$OVERLAY/usr/lib/cloud-hypervisor/hypervisor-fw"
 chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-firstboot" "$OVERLAY/usr/sbin/pertisk-install"
 printf '%s\n' "$VERSION" >"$OVERLAY/etc/pertisk/version"
 
+reclaim_tree() {
+  local path="$1"
+  [[ -e "$path" ]] || return 0
+  if [[ "$(id -u)" -eq 0 ]]; then
+    chown -R "${SUDO_UID:-0}:${SUDO_GID:-0}" "$path" || true
+  elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    sudo -n chown -R "$(id -u):$(id -g)" "$path" || true
+  fi
+}
+
 echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION (needs root for the image)"
 MKOSI_BIN="$(command -v mkosi)"
 mkosi_cmd=("$MKOSI_BIN")
@@ -183,6 +193,13 @@ fi
     --image-version "$VERSION" \
     --output "$OUTPUT_STEM"
 )
+# sudo mkosi leaves out/tools root-owned; that blocks the next actions/checkout.
+if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+  sudo -n rm -rf "$OUT/tools"
+fi
+rm -rf "$OUT/tools" 2>/dev/null || true
+reclaim_tree "$OUT"
+reclaim_tree "$RELEASE_DIR"
 
 SRC=""
 for candidate in "$OUT/$OUTPUT_RAW" "$OUT/${OUTPUT_STEM}" "$ROOT/iso/$OUTPUT_RAW"; do

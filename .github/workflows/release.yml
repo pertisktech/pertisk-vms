@@ -22,6 +22,7 @@ jobs:
     runs-on: [self-hosted, linux]
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - arch: amd64
@@ -30,8 +31,39 @@ jobs:
             rust_target: aarch64-unknown-linux-gnu
 
     steps:
+      # Repo is not available yet. sudo mkosi --tools-tree leaves root-owned
+      # out/tools, which makes actions/checkout fail with EACCES.
+      - name: Clear mkosi leftovers
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE}"
+          run_priv() {
+            if [[ "$(id -u)" -eq 0 ]]; then
+              "$@"
+            elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+              sudo -n "$@"
+            else
+              "$@"
+            fi
+          }
+          for d in "$ws/out/tools" "$ws/out" "$ws/release" "$ws/dist"; do
+            [[ -e "$d" ]] || continue
+            if command -v findmnt >/dev/null; then
+              findmnt -rn -o TARGET | grep "^${d}/" | sort -r | while read -r m; do
+                echo "Unmounting $m"
+                run_priv umount -l "$m" 2>/dev/null || true
+              done
+            fi
+            echo "Removing $d"
+            run_priv rm -rf "$d" || {
+              echo "::error::Failed to remove ${d} (root-owned leftover from mkosi)"
+              ls -la "$(dirname "$d")" 2>/dev/null || true
+              exit 1
+            }
+          done
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version from tag
         id: version
@@ -58,14 +90,14 @@ jobs:
 
       - name: Set up QEMU for cross-arch mkosi
         if: matrix.arch != steps.native_plat.outputs.arch
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
       - name: Setup Node (embedded web UI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
@@ -102,20 +134,56 @@ jobs:
           ls -lh dist/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-linux-${{ matrix.arch }}
           if-no-files-found: error
           path: dist/*
           retention-days: 1
 
+      - name: Reclaim mkosi leftovers
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/ci-reset-workspace.sh ]]; then
+            chmod +x scripts/ci-reset-workspace.sh
+            ./scripts/ci-reset-workspace.sh
+          else
+            ws="${GITHUB_WORKSPACE}"
+            sudo -n rm -rf "$ws/out" "$ws/release" "$ws/dist" 2>/dev/null \
+              || rm -rf "$ws/out" "$ws/release" "$ws/dist" 2>/dev/null \
+              || true
+          fi
+
   release:
     name: Create Release
     needs: build
     runs-on: [self-hosted, linux]
     steps:
+      - name: Clear mkosi leftovers
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE}"
+          run_priv() {
+            if [[ "$(id -u)" -eq 0 ]]; then
+              "$@"
+            elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+              sudo -n "$@"
+            else
+              "$@"
+            fi
+          }
+          for d in "$ws/out/tools" "$ws/out" "$ws/release" "$ws/dist"; do
+            [[ -e "$d" ]] || continue
+            echo "Removing $d"
+            run_priv rm -rf "$d" || {
+              echo "::error::Failed to remove ${d}"
+              exit 1
+            }
+          done
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version from tag
         id: version
@@ -126,7 +194,7 @@ jobs:
           echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-linux-*
           path: packages
