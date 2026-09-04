@@ -1,0 +1,187 @@
+# Release on push tag — build amd64 + arm64 node images and binaries, then GitHub Release.
+# Self-hosted Linux runner (same pattern as pertisk-proxy).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_BUILD_JOBS: "14"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: [self-hosted, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect native build platform
+        id: native_plat
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64)
+              echo "arch=amd64" >> "$GITHUB_OUTPUT"
+              ;;
+            aarch64|arm64)
+              echo "arch=arm64" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+      - name: Set up QEMU for cross-arch mkosi
+        if: matrix.arch != steps.native_plat.outputs.arch
+        uses: docker/setup-qemu-action@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - name: Setup Node (embedded web UI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+
+      - name: Build node image
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          CARGO_BUILD_JOBS: ${{ env.CARGO_BUILD_JOBS }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-iso.sh
+          ./scripts/build-iso.sh ${{ matrix.arch }} "$VERSION"
+
+      - name: Package binaries and compress image
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          RAW="release/pertisk-node-${VERSION}-${ARCH}.raw"
+          test -f "$RAW"
+          mkdir -p dist
+          tar -C iso/overlay/usr/bin -czf "dist/pertisk-vm-${VERSION}-linux-${ARCH}.tar.gz" \
+            pertiskd pertisk pertisk-tui
+          xz -T0 -6 -c "$RAW" > "dist/pertisk-node-${VERSION}-${ARCH}.raw.xz"
+          rm -f "$RAW"
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          path: dist/*
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-linux-*
+          path: packages
+          merge-multiple: true
+
+      - name: Checksums and notes
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          cd packages
+          ls -lh
+          test -f "pertisk-node-${VERSION}-amd64.raw.xz"
+          test -f "pertisk-node-${VERSION}-arm64.raw.xz"
+          test -f "pertisk-vm-${VERSION}-linux-amd64.tar.gz"
+          test -f "pertisk-vm-${VERSION}-linux-arm64.tar.gz"
+          sha256sum pertisk-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo "## pertisk-vm v${VERSION}"
+            echo
+            echo "Node appliance images and Linux binaries for **amd64** and **arm64**."
+            echo
+            echo "### Flash node image"
+            echo
+            echo '```bash'
+            echo "xzcat pertisk-node-${VERSION}-amd64.raw.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync"
+            echo '```'
+            echo
+            echo "Or decompress, then \`sudo ./scripts/flash.sh --image pertisk-node-${VERSION}-amd64.raw --disk /dev/sdX --yes\`."
+            echo
+            echo "Use the **arm64** image on aarch64 hosts."
+            echo
+            echo "After boot: \`pertisk-install --disk /dev/nvme0n1 --yes\`. Admin user is \`admin\`; password is in \`/etc/pertisk/admin\`."
+            echo
+            echo "### Binaries"
+            echo
+            echo "\`pertisk-vm-${VERSION}-linux-<arch>.tar.gz\` contains \`pertiskd\`, \`pertisk\`, and \`pertisk-tui\`."
+          } > RELEASE_BODY.md
+
+      - name: Publish GitHub Release
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          TAG: ${{ steps.version.outputs.TAG }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export PATH="${HOME}/.local/bin:${PATH}"
+          # shellcheck source=scripts/ci-install-gh.sh
+          source scripts/ci-install-gh.sh
+          ensure_gh
+          export GH_TOKEN="$GITHUB_TOKEN"
+          TITLE="Release ${TAG}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file packages/RELEASE_BODY.md
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file packages/RELEASE_BODY.md
+          fi
+          gh release upload "$TAG" \
+            packages/*.raw.xz \
+            packages/*.tar.gz \
+            packages/SHA256SUMS.txt \
+            --clobber
+          gh release view "$TAG" --json name,tagName,url --jq '"\(.name) \(.tagName) \(.url)"'

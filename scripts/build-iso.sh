@@ -149,9 +149,13 @@ chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-first
 printf '%s\n' "$VERSION" >"$OVERLAY/etc/pertisk/version"
 
 echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION (needs root for the image)"
+mkosi_cmd=(mkosi)
+if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+  mkosi_cmd=(sudo mkosi)
+fi
 (
   cd "$ROOT/iso"
-  mkosi --force --format "$FORMAT" \
+  "${mkosi_cmd[@]}" --force --format "$FORMAT" \
     --architecture "$MKOSI_ARCH" \
     --image-version "$VERSION" \
     --output "$OUTPUT_STEM"
