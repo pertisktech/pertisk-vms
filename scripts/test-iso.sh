@@ -20,7 +20,9 @@ check() {
 bash -n "$OVERLAY/usr/sbin/pertisk-kvm-check"
 bash -n "$OVERLAY/usr/sbin/pertisk-firstboot"
 bash -n "$OVERLAY/usr/sbin/pertisk-install"
+bash -n "$OVERLAY/usr/sbin/pertisk-host-bridge"
 bash -n "$ROOT/scripts/build-iso.sh"
+bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
 bash -n "$ROOT/scripts/install-node.sh"
 bash -n "$ROOT/scripts/test-qemu.sh"
@@ -30,11 +32,20 @@ echo "ok  bash -n overlay + scripts"
 [[ -f "$ROOT/Makefile" ]] || { echo "FAIL Makefile"; fail=1; }
 grep -q '^release-amd release-amd64:' "$ROOT/Makefile" || { echo "FAIL Makefile release-amd"; fail=1; }
 grep -q '^release-arm release-arm64:' "$ROOT/Makefile" || { echo "FAIL Makefile release-arm"; fail=1; }
-echo "ok  Makefile release-amd / release-arm"
+grep -q '^release-sbc:' "$ROOT/Makefile" || { echo "FAIL Makefile release-sbc"; fail=1; }
+echo "ok  Makefile release-amd / release-arm / release-sbc"
+
+[[ -f "$ROOT/iso/sbc/orangepi5plus.env" ]] || { echo "FAIL sbc orangepi5plus"; fail=1; }
+[[ -f "$ROOT/iso/sbc/orangepi5max.env" ]] || { echo "FAIL sbc orangepi5max"; fail=1; }
+[[ -f "$ROOT/iso/sbc/rpi5.env" ]] || { echo "FAIL sbc rpi5"; fail=1; }
+grep -q 'FAMILY=rockchip' "$ROOT/iso/sbc/orangepi5plus.env" || { echo "FAIL plus family"; fail=1; }
+echo "ok  sbc board recipes"
 
 out="$("$OVERLAY/usr/sbin/pertisk-install" --help)"
 echo "$out" | grep -q -- '--disk' || { echo "FAIL install --help"; fail=1; }
 echo "$out" | grep -q -- '--list' || { echo "FAIL install --help list"; fail=1; }
+grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rockchip"; fail=1; }
+grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -61,6 +72,9 @@ grep -q '^ExecStart=-/bin/bash --login$' \
 grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf" \
   || { echo "FAIL arm serial root shell"; fail=1; }
+grep -q '^ExecStart=-/bin/bash --login$' \
+  "$OVERLAY/etc/systemd/system/serial-getty@ttyS2.service.d/autologin.conf" \
+  || { echo "FAIL rk3588 serial root shell"; fail=1; }
 grep -q '^ConditionFirstBoot=no$' \
   "$OVERLAY/etc/systemd/system/systemd-firstboot.service.d/disable-interactive.conf" \
   || { echo "FAIL interactive firstboot is disabled"; fail=1; }

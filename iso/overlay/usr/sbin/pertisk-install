@@ -8,7 +8,10 @@ DISK=""
 YES=0
 LIST=0
 ESP_MIB=512
+BOOT_MIB=1024
 MIN_GIB=20
+# Rockchip idbloader / u-boot.itb live in the gap before the first partition.
+RK_GAP_MIB=32
 
 die() { echo "pertisk-install: $*" >&2; exit 1; }
 
@@ -30,7 +33,8 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
       echo "       pertisk-install --list"
-      echo "Installs this live image onto DISK (GPT: EFI + ext4). Wipes DISK."
+      echo "Installs this live image onto DISK. Wipes DISK."
+      echo "UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
       exit 0
       ;;
     *) die "unknown arg $1" ;;
@@ -44,7 +48,6 @@ fi
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 /usr/sbin/pertisk-kvm-check || die "refusing install: this machine cannot run KVM"
-[[ -d /sys/firmware/efi ]] || die "boot the installer in UEFI mode; legacy BIOS installation is not supported"
 if [[ -z "$DISK" ]]; then
   echo "pertisk-install: pass --disk (candidates):" >&2
   list_disks >&2
@@ -55,62 +58,278 @@ fi
 
 root_src="$(findmnt -n -o SOURCE / || true)"
 if [[ -n "$root_src" && "$root_src" == "$DISK"* ]]; then
-  die "$DISK looks like the current root ($root_src); boot the live ISO first"
+  die "$DISK looks like the current root ($root_src); boot the live image first"
 fi
 
 bytes="$(blockdev --getsize64 "$DISK")"
 gib=$((bytes / 1024 / 1024 / 1024))
 [[ "$gib" -ge "$MIN_GIB" ]] || die "$DISK is ${gib}GiB; need at least ${MIN_GIB}GiB"
 
-echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
-sgdisk --zap-all "$DISK"
-sgdisk -n1:0:+${ESP_MIB}M -t1:ef00 -c1:ESP \
-       -n2:0:0 -t2:8300 -c2:root \
-       "$DISK"
-partprobe "$DISK" || true
-sleep 1
+parts_for() {
+  local d="$1"
+  if [[ "$d" == *[0-9] ]]; then
+    echo "${d}p1" "${d}p2"
+  else
+    echo "${d}1" "${d}2"
+  fi
+}
 
-if [[ "$DISK" == *[0-9] ]]; then
-  p1="${DISK}p1"
-  p2="${DISK}p2"
-else
-  p1="${DISK}1"
-  p2="${DISK}2"
-fi
-[[ -b "$p1" && -b "$p2" ]] || die "partitions $p1 $p2 did not appear"
+wait_parts() {
+  local p1="$1" p2="$2"
+  partprobe "$DISK" || true
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    [[ -b "$p1" && -b "$p2" ]] && return 0
+    sleep 1
+    partprobe "$DISK" || true
+  done
+  die "partitions $p1 $p2 did not appear"
+}
 
-mkfs.fat -F32 -n PERTISKESP "$p1"
-mkfs.ext4 -F -L pertisk-root "$p2"
+rsync_root_to() {
+  local mnt="$1"
+  rsync -aHAX --numeric-ids --info=progress2 \
+    --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
+    --exclude=/mnt --exclude=/tmp --exclude=/media --exclude=/boot \
+    / "$mnt/"
+  mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp" "$mnt/boot"
+}
 
-mnt=/mnt/pertisk-install
-mkdir -p "$mnt"
-mount "$p2" "$mnt"
-mkdir -p "$mnt/boot/efi"
-mount "$p1" "$mnt/boot/efi"
+detect_family() {
+  if [[ -r /etc/pertisk/family ]]; then
+    cat /etc/pertisk/family
+    return
+  fi
+  if [[ -d /sys/firmware/efi ]]; then
+    echo uefi
+    return
+  fi
+  local compat=""
+  if [[ -r /proc/device-tree/compatible ]]; then
+    compat="$(tr '\0' '\n' </proc/device-tree/compatible)"
+  fi
+  case "$compat" in
+    *rk3588* | *rockchip*) echo rockchip ;;
+    *bcm2712* | *raspberrypi,5* | *brcm,bcm2712*) echo rpi ;;
+    *)
+      if [[ -d /sys/firmware/efi ]]; then
+        echo uefi
+      else
+        die "unknown board (no EFI, no RK3588/Pi5 device-tree). Set /etc/pertisk/family"
+      fi
+      ;;
+  esac
+}
 
-rsync -aHAX --numeric-ids --info=progress2 \
-  --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
-  --exclude=/mnt --exclude=/tmp --exclude=/media \
-  / "$mnt/"
+write_uboot_rockchip() {
+  local target="$1"
+  local dir img
+  if [[ -f /usr/lib/u-boot/platform_install.sh ]]; then
+    # shellcheck disable=SC1091
+    source /usr/lib/u-boot/platform_install.sh
+    dir="/usr/lib/u-boot"
+    if [[ "$(type -t write_uboot_platform)" == function ]]; then
+      write_uboot_platform "$dir" "$target" || true
+    fi
+    if [[ -b /dev/mtdblock0 && "$(type -t write_uboot_platform_mtd)" == function ]]; then
+      write_uboot_platform_mtd "$dir" /dev/mtdblock0 || \
+        echo "pertisk-install: SPI write failed; keep the SD until NVMe boots" >&2
+    fi
+    return
+  fi
+  img="$(find /usr/lib -name idbloader.img 2>/dev/null | head -n1 || true)"
+  [[ -n "$img" ]] || img="$(find /usr/share -name idbloader.img 2>/dev/null | head -n1 || true)"
+  dir="$(dirname "${img:-.}")"
+  if [[ -f "$dir/idbloader.img" && -f "$dir/u-boot.itb" ]]; then
+    dd if="$dir/idbloader.img" of="$target" seek=64 conv=notrunc status=none
+    dd if="$dir/u-boot.itb" of="$target" seek=16384 conv=notrunc status=none
+  else
+    echo "pertisk-install: no Rockchip U-Boot files; SD/SPI loader must stay" >&2
+  fi
+  if [[ -b /dev/mtdblock0 ]]; then
+    local spi
+    spi="$(find /usr/lib /usr/share -name rkspi_loader.img 2>/dev/null | head -n1 || true)"
+    if [[ -n "$spi" ]]; then
+      dd if="$spi" of=/dev/mtdblock0 conv=notrunc status=progress || \
+        echo "pertisk-install: SPI write failed; keep the SD until NVMe boots" >&2
+    fi
+  fi
+}
 
-mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp"
-mount --bind /dev "$mnt/dev"
-mount --bind /dev/pts "$mnt/dev/pts"
-mount -t proc proc "$mnt/proc"
-mount -t sysfs sys "$mnt/sys"
+patch_boot_root() {
+  local bootdir="$1" root_uuid="$2"
+  local f
+  for f in "$bootdir/orangepiEnv.txt" "$bootdir/armbianEnv.txt"; do
+    [[ -f "$f" ]] || continue
+    if grep -q '^rootdev=' "$f"; then
+      sed -i "s|^rootdev=.*|rootdev=UUID=${root_uuid}|" "$f"
+    else
+      printf 'rootdev=UUID=%s\n' "$root_uuid" >>"$f"
+    fi
+    if grep -q '^rootfstype=' "$f"; then
+      sed -i 's|^rootfstype=.*|rootfstype=ext4|' "$f"
+    fi
+  done
+  for f in "$bootdir/cmdline.txt" "$bootdir/firmware/cmdline.txt"; do
+    [[ -f "$f" ]] || continue
+    sed -i -E "s|root=[^ ]+|root=UUID=${root_uuid}|" "$f"
+  done
+  if [[ -f "$bootdir/extlinux/extlinux.conf" ]]; then
+    sed -i -E "s|root=UUID=[^ ]+|root=UUID=${root_uuid}|g" "$bootdir/extlinux/extlinux.conf"
+  fi
+}
 
-uuid_root="$(blkid -s UUID -o value "$p2")"
-uuid_esp="$(blkid -s UUID -o value "$p1")"
-cat >"$mnt/etc/fstab" <<EOF
+install_uefi() {
+  local p1 p2 mnt uuid_root uuid_esp
+  echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
+  sgdisk --zap-all "$DISK"
+  sgdisk -n1:0:+${ESP_MIB}M -t1:ef00 -c1:ESP \
+         -n2:0:0 -t2:8300 -c2:root \
+         "$DISK"
+  read -r p1 p2 <<<"$(parts_for "$DISK")"
+  wait_parts "$p1" "$p2"
+  mkfs.fat -F32 -n PERTISKESP "$p1"
+  mkfs.ext4 -F -L pertisk-root "$p2"
+  mnt=/mnt/pertisk-install
+  mkdir -p "$mnt"
+  mount "$p2" "$mnt"
+  mkdir -p "$mnt/boot/efi"
+  mount "$p1" "$mnt/boot/efi"
+  rsync -aHAX --numeric-ids --info=progress2 \
+    --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
+    --exclude=/mnt --exclude=/tmp --exclude=/media \
+    / "$mnt/"
+  mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp"
+  mount --bind /dev "$mnt/dev"
+  mount --bind /dev/pts "$mnt/dev/pts"
+  mount -t proc proc "$mnt/proc"
+  mount -t sysfs sys "$mnt/sys"
+  uuid_root="$(blkid -s UUID -o value "$p2")"
+  uuid_esp="$(blkid -s UUID -o value "$p1")"
+  cat >"$mnt/etc/fstab" <<EOF
 UUID=$uuid_root / ext4 defaults 0 1
 UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
+  if [[ "$(uname -m)" == aarch64 || "$(uname -m)" == arm64 ]]; then
+    chroot "$mnt" grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=pertisk --recheck
+  else
+    chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=pertisk --recheck
+  fi
+  chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
+  rm -f "$mnt/var/lib/pertisk/.firstboot-done"
+  touch "$mnt/var/lib/pertisk/.installed-to-disk"
+  umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
+}
 
-  chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=pertisk --recheck
-chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
+install_rockchip() {
+  local p1 p2 mnt uuid_root uuid_boot boot_fs
+  echo "Wiping $DISK (${gib}GiB): ${RK_GAP_MIB}MiB U-Boot + ${BOOT_MIB}MiB /boot + ext4 root"
+  sgdisk --zap-all "$DISK"
+  sgdisk -a 8 -n1:$((RK_GAP_MIB * 2048)):+${BOOT_MIB}M -t1:0700 -c1:boot \
+         -n2:0:0 -t2:8300 -c2:root \
+         "$DISK"
+  read -r p1 p2 <<<"$(parts_for "$DISK")"
+  wait_parts "$p1" "$p2"
+  boot_fs="vfat"
+  if findmnt -n /boot >/dev/null 2>&1; then
+    case "$(findmnt -n -o FSTYPE /boot)" in
+      ext4|ext3) boot_fs="ext4" ;;
+    esac
+  fi
+  if [[ "$boot_fs" == vfat ]]; then
+    mkfs.fat -F32 -n opi_boot "$p1"
+  else
+    mkfs.ext4 -F -L opi_boot "$p1"
+  fi
+  mkfs.ext4 -F -L opi_root "$p2"
+  mnt=/mnt/pertisk-install
+  mkdir -p "$mnt"
+  mount "$p2" "$mnt"
+  rsync_root_to "$mnt"
+  mkdir -p "$mnt/boot"
+  mount "$p1" "$mnt/boot"
+  if findmnt -n /boot >/dev/null 2>&1; then
+    rsync -aHAX --numeric-ids /boot/ "$mnt/boot/"
+  elif [[ -d /boot ]]; then
+    rsync -aHAX --numeric-ids /boot/ "$mnt/boot/"
+  fi
+  mount --bind /dev "$mnt/dev"
+  mount --bind /dev/pts "$mnt/dev/pts"
+  mount -t proc proc "$mnt/proc"
+  mount -t sysfs sys "$mnt/sys"
+  uuid_root="$(blkid -s UUID -o value "$p2")"
+  uuid_boot="$(blkid -s UUID -o value "$p1")"
+  patch_boot_root "$mnt/boot" "$uuid_root"
+  cat >"$mnt/etc/fstab" <<EOF
+UUID=${uuid_root} / ext4 defaults,noatime,commit=600,errors=remount-ro 0 1
+UUID=${uuid_boot} /boot ${boot_fs} defaults 0 2
+EOF
+  write_uboot_rockchip "$DISK"
+  rm -f "$mnt/var/lib/pertisk/.firstboot-done"
+  touch "$mnt/var/lib/pertisk/.installed-to-disk"
+  printf 'rockchip\n' >"$mnt/etc/pertisk/family"
+  umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot" "$mnt"
+}
 
-rm -f "$mnt/var/lib/pertisk/.firstboot-done"
-touch "$mnt/var/lib/pertisk/.installed-to-disk"
-umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
-echo "pertisk-install: done. Remove the USB and reboot from $DISK."
+install_rpi() {
+  local p1 p2 mnt uuid_root uuid_boot
+  echo "Wiping $DISK (${gib}GiB): 512MiB firmware + ext4 root"
+  sgdisk --zap-all "$DISK" 2>/dev/null || true
+  parted -s "$DISK" mklabel gpt \
+    mkpart firmware fat32 1MiB 513MiB \
+    mkpart root ext4 513MiB 100%
+  parted -s "$DISK" set 1 boot on || true
+  read -r p1 p2 <<<"$(parts_for "$DISK")"
+  wait_parts "$p1" "$p2"
+  mkfs.fat -F32 -n bootfs "$p1"
+  mkfs.ext4 -F -L rootfs "$p2"
+  mnt=/mnt/pertisk-install
+  mkdir -p "$mnt"
+  mount "$p2" "$mnt"
+  rsync_root_to "$mnt"
+  mkdir -p "$mnt/boot/firmware"
+  if [[ -d /boot/firmware ]]; then
+    mount "$p1" "$mnt/boot/firmware"
+    rsync -aHAX --numeric-ids /boot/firmware/ "$mnt/boot/firmware/"
+  else
+    mount "$p1" "$mnt/boot"
+    rsync -aHAX --numeric-ids /boot/ "$mnt/boot/"
+  fi
+  uuid_root="$(blkid -s UUID -o value "$p2")"
+  uuid_boot="$(blkid -s UUID -o value "$p1")"
+  if [[ -d "$mnt/boot/firmware" ]]; then
+    patch_boot_root "$mnt/boot/firmware" "$uuid_root"
+    cat >"$mnt/etc/fstab" <<EOF
+UUID=${uuid_root} / ext4 defaults,noatime 0 1
+UUID=${uuid_boot} /boot/firmware vfat defaults 0 2
+EOF
+  else
+    patch_boot_root "$mnt/boot" "$uuid_root"
+    cat >"$mnt/etc/fstab" <<EOF
+UUID=${uuid_root} / ext4 defaults,noatime 0 1
+UUID=${uuid_boot} /boot vfat defaults 0 2
+EOF
+  fi
+  rm -f "$mnt/var/lib/pertisk/.firstboot-done"
+  touch "$mnt/var/lib/pertisk/.installed-to-disk"
+  printf 'rpi\n' >"$mnt/etc/pertisk/family"
+  umount -R "$mnt"
+}
+
+family="$(detect_family)"
+case "$family" in
+  uefi) install_uefi ;;
+  rockchip) install_rockchip ;;
+  rpi) install_rpi ;;
+  *) die "unsupported family $family" ;;
+esac
+
+sync
+echo "pertisk-install: done."
+if [[ "$family" == rockchip ]]; then
+  echo "Power off, remove the SD card, then boot from $DISK (SPI + NVMe)."
+  echo "If it does not start, put the SD back in."
+else
+  echo "Remove the USB/SD installer and reboot from $DISK."
+fi
 echo "UI will be http://<host>:7480/  (admin password in /etc/pertisk/admin after first boot)"

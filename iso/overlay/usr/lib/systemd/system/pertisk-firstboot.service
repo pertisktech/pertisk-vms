@@ -1,6 +1,7 @@
 [Unit]
 Description=pertisk-vm first boot (config, admin password, kvm check)
-After=local-fs.target
+After=local-fs.target network-online.target
+Wants=network-online.target
 Before=pertiskd.service
 ConditionPathExists=!/var/lib/pertisk/.firstboot-done
 

@@ -62,8 +62,20 @@ if [[ "$(readlink -f "$ch_src")" != "$(readlink -f /usr/bin/cloud-hypervisor)" ]
 fi
 install -m 644 "$FIRMWARE" /usr/lib/cloud-hypervisor/hypervisor-fw
 
-cp -a "$OVERLAY/." /
-chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot /usr/sbin/pertisk-install
+# Orange Pi / Armbian / Raspberry Pi OS use NetworkManager. Copying the
+# mkosi systemd-networkd overlay there takes the LAN NIC away from NM.
+if [[ -d /etc/NetworkManager || -x /usr/bin/nmcli ]]; then
+  rsync -a \
+    --exclude 'etc/systemd/network/' \
+    --exclude 'usr/lib/systemd/system-preset/50-pertisk.preset' \
+    "$OVERLAY/" /
+  install -m 644 "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk-sbc.preset" \
+    /usr/lib/systemd/system-preset/50-pertisk-sbc.preset
+else
+  cp -a "$OVERLAY/." /
+fi
+chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot \
+  /usr/sbin/pertisk-install /usr/sbin/pertisk-host-bridge
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 

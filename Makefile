@@ -1,12 +1,15 @@
-.PHONY: release release-amd release-arm release-amd64 release-arm64
+.PHONY: release release-amd release-arm release-amd64 release-arm64 release-sbc
 
 # make release-amd VERSION=0.1.0
 # make release-arm VERSION=0.1.0
+# make release-sbc BOARD=orangepi5plus VERSION=0.1.0
 # Images: release/pertisk-node-$(VERSION)-amd64.raw
 #         release/pertisk-node-$(VERSION)-arm64.raw
+#         release/pertisk-node-$(VERSION)-$(BOARD).img.xz
 GIT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 CARGO_VERSION := $(shell awk '/^\[workspace.package\]/{p=1} p && /^version =/{gsub(/"/,"",$$3); print $$3; exit}' Cargo.toml)
 VERSION ?= $(if $(GIT_VERSION),$(GIT_VERSION),$(or $(CARGO_VERSION),0.1.0))
+BOARD ?= orangepi5plus
 
 release: release-amd release-arm
 
@@ -15,6 +18,10 @@ release-amd release-amd64:
 
 release-arm release-arm64:
 	./scripts/build-iso.sh arm64 $(VERSION)
+
+# Board appliance (not the generic UEFI arm64.raw). Linux root + loop mounts.
+release-sbc:
+	sudo ./scripts/build-sbc-image.sh $(BOARD) $(VERSION)
 
 
 # Delete a tag (local and remote).

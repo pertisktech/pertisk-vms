@@ -85,53 +85,55 @@ pertisk vm cdrom attach --iso web-1-cidata.iso <id>
 
 Attach that seed last; firmware boots an installer ISO or the OS disk, not the cidata volume.
 
-**Node install / flashable image (phase 7):** not a custom hypervisor — Debian Trixie + pertiskd.
+**Node install (phase 7):** Debian/Armbian + pertiskd, flashed like Proxmox. No tarball, no `br0` by hand.
 
-**Real machine (recommended):** on Ubuntu/Debian with KVM:
+Pick the image for the **machine**, not the CPU architecture:
 
-```bash
-sudo ./upgrade.sh          # first install and later version upgrades
-```
+| Machine | Image | Notes |
+|---|---|---|
+| x86_64 UEFI PC | `pertisk-node-VERSION-amd64.raw.xz` | USB live → `pertisk-install` to NVMe |
+| UEFI ARM server | `pertisk-node-VERSION-arm64.raw.xz` | Same as amd64; GRUB EFI |
+| Orange Pi 5 Plus | `pertisk-node-VERSION-orangepi5plus.img.xz` | Vendor U-Boot + kernel |
+| Orange Pi 5 Max | `pertisk-node-VERSION-orangepi5max.img.xz` | Not the Plus image |
+| Raspberry Pi 5 | `pertisk-node-VERSION-rpi5.img.xz` | 64-bit; needs `/dev/kvm` |
 
-See `node.txt`. Guests stay in `/var/lib/pertisk`.
+**Do not** flash `pertisk-node-*-arm64.raw` onto Orange Pi or Raspberry Pi. That file is generic Debian EFI/GRUB and will not boot vendor firmware.
 
-**ARM SBC (Orange Pi 5 Max / 5 Plus, Raspberry Pi 5):** do **not** flash `pertisk-node-*-arm64.raw`. That image is generic Debian EFI. These boards boot vendor U-Boot / EEPROM, so the `.raw` will not start. Install vendor OS first, then the **arm64 tarball**.
-
-1. Flash the **vendor** image for that exact board (Orange Pi 5 Plus ≠ 5 Max ≠ Raspberry Pi 5) onto a **healthy** SD (16–64GB Class 10). Unplug NVMe until SSH works.
-2. Boot, enable SSH (`systemctl enable --now ssh`). Default login is usually `root` / `orangepi`.
-3. Download the **tagged** release (not `untagged-…` draft URLs):
-
-```bash
-VER=0.1.1
-curl -fL -o pertisk-vm-${VER}-linux-arm64.tar.gz \
-  https://github.com/pertisktech/pertisk-vms/releases/download/${VER}/pertisk-vm-${VER}-linux-arm64.tar.gz
-sudo tar -C /usr/bin -xzf pertisk-vm-${VER}-linux-arm64.tar.gz
-sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 ipxe-qemu qemu-utils
-```
-
-Copy `iso/overlay` systemd units + `/etc/pertisk` from the repo (`pertiskd.service`, `pertisk-kvm-check`, `config.toml` with `driver = "qemu"` and `qemu_img = "/usr/bin/qemu-img"`). Do **not** enable overlay `systemd-networkd` on Orange Pi (it uses NetworkManager). Then `systemctl enable --now pertisk-firstboot pertiskd`.
-
-4. Create host `br0` **before** any pertisk network (LAN NIC enslaved, STP off, cloned MAC, DHCP). Then:
+**SBC (download → dd → boot):**
 
 ```bash
-pertisk net create --name lan --mode bridge --bridge br0 --cidr 10.1.1.0/24 --gateway 10.1.1.10
-pertisk net create --name vmnet --mode bridge --bridge br0 --cidr 0.0.0.0/0
+VER=0.1.2
+BOARD=orangepi5plus   # or orangepi5max / rpi5
+curl -fL -O https://github.com/pertisktech/pertisk-vms/releases/download/${VER}/pertisk-node-${VER}-${BOARD}.img.xz
+xzcat pertisk-node-${VER}-${BOARD}.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-5. NVMe: keep `/boot` on SD, put `/` on NVMe. Do not remove the SD (U-Boot loads the kernel from the card). Do not `dd` the pertisk `.raw` onto NVMe. If the SD remounts read-only, stop using it as root — copy root to NVMe while `/boot` is still writable.
+Insert the SD, boot, open **http://board-ip:7480/** (`admin` / password in `/etc/pertisk/admin`). First boot creates LAN `br0` and a `lan` network on it.
 
-RK3588 (Max/Plus) is mixed A55+A76; 0.1.1 QEMU pins guests to one cluster. Raspberry Pi 5 is all A76; use 64-bit Raspberry Pi OS with `/dev/kvm` (prefer kernel 6.6, not a broken 6.12 VGIC).
+Move the OS to NVMe (one command, then pull the SD):
 
-USB image (only when the box has no OS yet, **x86_64 UEFI PCs**):
+```bash
+pertisk-install --disk /dev/nvme0n1 --yes
+```
+
+Power off, remove the SD, power on. If it does not start, put the SD back.
+
+Build a board image on Linux: `sudo make release-sbc BOARD=orangepi5plus VERSION=0.1.2` (or `--base-image` with a vendor `.img` if the Armbian URL is missing).
+
+RK3588 is mixed A55+A76; QEMU pins guests to one cluster. Raspberry Pi 5 is all A76 (prefer kernel 6.6).
+
+**x86_64 UEFI PC:**
 
 ```bash
 make release-amd VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-Then boot USB (UEFI) and `pertisk-install --disk /dev/nvme0n1 --yes`. After that, upgrades are still `sudo ./upgrade.sh`.
+Then boot USB (UEFI) and `pertisk-install --disk /dev/nvme0n1 --yes`. Later upgrades: `sudo ./upgrade.sh`.
 
-Admin password: `/etc/pertisk/admin`. Optional: `make release-arm VERSION=0.1.0` for arm64 images (needs mkosi).
+Admin password: `/etc/pertisk/admin`. Existing Ubuntu/Debian with KVM can still use `sudo ./upgrade.sh` instead of flashing.
+
+See `node.txt`. Guests stay in `/var/lib/pertisk`.
 
 Test the image in QEMU before flashing (AlmaLinux: `dnf install qemu-system-x86 edk2-ovmf`):
 

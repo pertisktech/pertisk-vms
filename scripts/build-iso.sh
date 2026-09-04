@@ -162,7 +162,7 @@ ensure_cloud_hypervisor "$UNAME_ARCH"
 ensure_firmware "$UNAME_ARCH"
 install -m 755 "$CLOUD_HYPERVISOR" "$OVERLAY/usr/bin/cloud-hypervisor"
 install -m 644 "$FIRMWARE" "$OVERLAY/usr/lib/cloud-hypervisor/hypervisor-fw"
-chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-firstboot" "$OVERLAY/usr/sbin/pertisk-install"
+chmod 755 "$OVERLAY/usr/sbin/pertisk-kvm-check" "$OVERLAY/usr/sbin/pertisk-firstboot" "$OVERLAY/usr/sbin/pertisk-install" "$OVERLAY/usr/sbin/pertisk-host-bridge"
 printf '%s\n' "$VERSION" >"$OVERLAY/etc/pertisk/version"
 
 echo "mkosi format=$FORMAT architecture=$MKOSI_ARCH version=$VERSION output=$OUT"

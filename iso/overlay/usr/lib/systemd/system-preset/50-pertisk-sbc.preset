@@ -1,0 +1,8 @@
+# Used by board images (Armbian / Raspberry Pi OS / Orange Pi OS).
+# Do not enable systemd-networkd — those images use NetworkManager or dhcpcd.
+enable pertisk-firstboot.service
+enable pertiskd.service
+enable ssh.service
+enable sshd.service
+disable systemd-networkd.service
+disable systemd-networkd-wait-online.service

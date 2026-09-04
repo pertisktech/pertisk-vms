@@ -1,0 +1,121 @@
+#!/bin/bash
+# Persist a LAN bridge named br0 (Proxmox vmbr0 equivalent). Idempotent.
+set -euo pipefail
+
+BRIDGE="${PERTISK_LAN_BRIDGE:-br0}"
+
+is_bridge() {
+  [[ -d "/sys/class/net/$1/bridge" ]]
+}
+
+pick_nic() {
+  local nic=""
+  nic="$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
+  if [[ -z "$nic" || "$nic" == "$BRIDGE" ]]; then
+    nic="$(ls -1 /sys/class/net 2>/dev/null | grep -E '^(eth|en|end)' | head -n1 || true)"
+  fi
+  case "$nic" in
+    "" | lo | "$BRIDGE" | docker* | veth* | tap* | wlan* | wl*) return 1 ;;
+  esac
+  [[ -d "/sys/class/net/$nic" ]] || return 1
+  printf '%s\n' "$nic"
+}
+
+mac_of() {
+  cat "/sys/class/net/$1/address" 2>/dev/null || true
+}
+
+if is_bridge "$BRIDGE"; then
+  exit 0
+fi
+
+nic="$(pick_nic || true)"
+[[ -n "$nic" ]] || exit 0
+mac="$(mac_of "$nic")"
+
+if command -v nmcli >/dev/null 2>&1 && {
+  systemctl is-active --quiet NetworkManager 2>/dev/null \
+    || [[ -d /etc/NetworkManager ]]
+}; then
+  while IFS=: read -r uuid device _; do
+    [[ "$device" == "$nic" ]] || continue
+    nmcli connection down "$uuid" >/dev/null 2>&1 || true
+    nmcli connection delete "$uuid" >/dev/null 2>&1 || true
+  done < <(nmcli -t -f UUID,DEVICE connection show 2>/dev/null || true)
+  nmcli connection delete "$BRIDGE" >/dev/null 2>&1 || true
+  nmcli connection delete "${BRIDGE}-${nic}" >/dev/null 2>&1 || true
+  nmcli connection add type bridge ifname "$BRIDGE" con-name "$BRIDGE" \
+    connection.autoconnect yes bridge.stp no \
+    ipv4.method auto ipv6.method auto \
+    ${mac:+ethernet.cloned-mac-address "$mac"} >/dev/null
+  nmcli connection add type ethernet ifname "$nic" con-name "${BRIDGE}-${nic}" \
+    slave-type bridge master "$BRIDGE" connection.autoconnect yes >/dev/null
+  nmcli connection up "$BRIDGE" >/dev/null || true
+  nmcli connection up "${BRIDGE}-${nic}" >/dev/null || true
+  exit 0
+fi
+
+if command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]; then
+  cat >"/etc/netplan/99-pertisk-${BRIDGE}.yaml" <<EOF
+network:
+  version: 2
+  ethernets:
+    ${nic}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${BRIDGE}:
+      interfaces: [${nic}]
+      dhcp4: true
+      dhcp6: true
+      macaddress: ${mac}
+      parameters:
+        stp: false
+        forward-delay: 0
+EOF
+  chmod 600 "/etc/netplan/99-pertisk-${BRIDGE}.yaml"
+  netplan apply >/dev/null 2>&1 || true
+  exit 0
+fi
+
+if command -v networkctl >/dev/null 2>&1 || [[ -d /etc/systemd/network ]]; then
+  mkdir -p /etc/systemd/network
+  if [[ -f /etc/systemd/network/20-wired-dhcp.network ]]; then
+    mv -f /etc/systemd/network/20-wired-dhcp.network \
+      /etc/systemd/network/20-wired-dhcp.network.disabled
+  fi
+  cat >"/etc/systemd/network/15-${BRIDGE}.netdev" <<EOF
+[NetDev]
+Name=${BRIDGE}
+Kind=bridge
+MACAddress=${mac}
+EOF
+  cat >"/etc/systemd/network/15-${BRIDGE}.network" <<EOF
+[Match]
+Name=${BRIDGE}
+
+[Network]
+DHCP=yes
+EOF
+  cat >"/etc/systemd/network/15-${BRIDGE}-bind.network" <<EOF
+[Match]
+Name=${nic}
+
+[Network]
+Bridge=${BRIDGE}
+EOF
+  systemctl enable systemd-networkd >/dev/null 2>&1 || true
+  systemctl restart systemd-networkd >/dev/null 2>&1 || true
+  exit 0
+fi
+
+ip link add name "$BRIDGE" type bridge 2>/dev/null || true
+[[ -n "$mac" ]] && ip link set "$BRIDGE" address "$mac" || true
+ip addr flush dev "$nic" || true
+ip link set "$nic" master "$BRIDGE" || true
+ip link set "$nic" up || true
+ip link set "$BRIDGE" up || true
+if command -v dhclient >/dev/null 2>&1; then
+  dhclient -1 "$BRIDGE" >/dev/null 2>&1 || true
+fi
+exit 0

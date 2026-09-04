@@ -15,6 +15,7 @@ firmware = "/usr/lib/cloud-hypervisor/hypervisor-fw"
 root = "/var/lib/pertisk/storage"
 backend = "replica"
 replica_count = 1
+qemu_img = "/usr/bin/qemu-img"
 
 [network]
 apply_host_links = true

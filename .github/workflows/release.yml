@@ -195,7 +195,9 @@ jobs:
             echo
             echo "Or decompress, then \`sudo ./scripts/flash.sh --image pertisk-node-${VERSION}-amd64.raw --disk /dev/sdX --yes\`."
             echo
-            echo "Use the **arm64** image on aarch64 hosts."
+            echo "Use the **arm64** image on UEFI aarch64 hosts only."
+            echo
+            echo "Orange Pi / Raspberry Pi: build \`pertisk-node-${VERSION}-<board>.img.xz\` with \`make release-sbc BOARD=orangepi5plus\` (orangepi5plus, orangepi5max, rpi5). Do **not** dd the generic arm64.raw onto those boards."
             echo
             echo "After boot: \`pertisk-install --disk /dev/nvme0n1 --yes\`. Admin user is \`admin\`; password is in \`/etc/pertisk/admin\`."
             echo

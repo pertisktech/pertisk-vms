@@ -117,6 +117,38 @@ show_install_hint() {
 
 ensure_fstab
 
+if [[ -x /usr/sbin/pertisk-host-bridge ]]; then
+  /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
+fi
+
+seed_lan_network() {
+  local state nets id
+  state="$HOME_DIR/state"
+  nets="$state/networks.json"
+  mkdir -p "$state"
+  [[ -f "$nets" ]] && return 0
+  [[ -d /sys/class/net/br0/bridge ]] || return 0
+  id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  [[ -n "$id" ]] || id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeee0001"
+  cat >"$nets" <<EOF
+{
+  "networks": {
+    "$id": {
+      "id": "$id",
+      "name": "lan",
+      "bridge": "br0",
+      "cidr": "0.0.0.0/0",
+      "dhcp": false,
+      "isolate": false,
+      "mode": "bridge"
+    }
+  }
+}
+EOF
+}
+
+seed_lan_network
+
 cat >"$ISSUE" <<EOF
 pertisk-vm  https://${ips}:7443/   user admin   password ${PERTISK_ADMIN_PASSWORD}
 Run pertisk-tui on this console for VM control.
