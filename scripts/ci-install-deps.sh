@@ -6,6 +6,7 @@ set -euo pipefail
 export PATH="${HOME}/.local/bin:${PATH}"
 
 MIN_MKOSI=25
+MKOSI_TAG="${MKOSI_TAG:-v25.3}"
 VENV="${HOME}/.local/share/pertisk-mkosi"
 
 mkosi_major() {
@@ -67,13 +68,26 @@ install_host_packages() {
 }
 
 install_mkosi_pip() {
+  # mkosi is not published on PyPI; install a tagged GitHub source tarball.
   mkdir -p "${HOME}/.local/bin"
+  local tmp src
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  echo "Downloading systemd/mkosi ${MKOSI_TAG}"
+  curl -fsSL "https://github.com/systemd/mkosi/archive/refs/tags/${MKOSI_TAG}.tar.gz" -o "$tmp/mkosi.tgz"
+  tar -xzf "$tmp/mkosi.tgz" -C "$tmp"
+  src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'mkosi-*' | head -n1)"
+  [[ -n "$src" ]] || {
+    echo "::error::Failed to unpack mkosi ${MKOSI_TAG}" >&2
+    return 1
+  }
   if python3 -m venv "$VENV" 2>/dev/null; then
-    "$VENV/bin/pip" install --upgrade pip
-    "$VENV/bin/pip" install "mkosi>=${MIN_MKOSI}"
+    "$VENV/bin/pip" install setuptools wheel
+    "$VENV/bin/pip" install "$src"
     ln -sfn "$VENV/bin/mkosi" "${HOME}/.local/bin/mkosi"
   else
-    python3 -m pip install --user "mkosi>=${MIN_MKOSI}"
+    python3 -m pip install --user setuptools wheel
+    python3 -m pip install --user "$src"
   fi
 }
 
@@ -82,14 +96,14 @@ if mkosi_ok; then
 else
   install_host_packages
   if ! mkosi_ok; then
-    echo "Installing mkosi>=${MIN_MKOSI} via pip"
+    echo "Installing mkosi ${MKOSI_TAG} from GitHub"
     install_mkosi_pip
   fi
 fi
 
 if ! mkosi_ok; then
   echo "::error::mkosi ${MIN_MKOSI}+ is required (iso/mkosi.conf MinimumVersion=${MIN_MKOSI})." >&2
-  echo "Install: python3 -m pip install --user 'mkosi>=${MIN_MKOSI}'" >&2
+  echo "Install: ./scripts/ci-install-deps.sh  (or pip install git+https://github.com/systemd/mkosi.git@${MKOSI_TAG})" >&2
   exit 1
 fi
 
