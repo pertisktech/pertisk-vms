@@ -84,4 +84,11 @@ grep -q 'pertiskd.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.pr
   || { echo "FAIL preset"; fail=1; }
 echo "ok  mkosi disk image + systemd preset"
 
+wf="$ROOT/.github/workflows/release.yml"
+grep -q 'rm -rf dist' "$wf" || { echo "FAIL release.yml must wipe dist/"; fail=1; }
+grep -q 'rm -rf packages' "$wf" || { echo "FAIL release.yml must wipe packages/"; fail=1; }
+grep -Fq 'find dist -type f ! -name "*${VERSION}*"' "$wf" \
+  || { echo "FAIL release.yml must reject leftover dist files"; fail=1; }
+echo "ok  release.yml does not mix versioned assets"
+
 exit "$fail"

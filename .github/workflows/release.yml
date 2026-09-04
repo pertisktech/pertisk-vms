@@ -108,19 +108,30 @@ jobs:
           set -euo pipefail
           RAW="release/pertisk-node-${VERSION}-${ARCH}.raw"
           test -f "$RAW"
+          # Self-hosted runners keep dist/ across tags (checkout clean: false).
+          rm -rf dist
           mkdir -p dist
           tar -C iso/overlay/usr/bin -czf "dist/pertisk-vm-${VERSION}-linux-${ARCH}.tar.gz" \
             pertiskd pertisk pertisk-tui
           xz -T0 -6 -c "$RAW" > "dist/pertisk-node-${VERSION}-${ARCH}.raw.xz"
           rm -f "$RAW"
           ls -lh dist/
+          # Refuse leftover files from a previous version.
+          leftover=$(find dist -type f ! -name "*${VERSION}*" || true)
+          if [[ -n "$leftover" ]]; then
+            echo "unexpected files in dist/:" >&2
+            echo "$leftover" >&2
+            exit 1
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: release-linux-${{ matrix.arch }}
           if-no-files-found: error
-          path: dist/*
+          path: |
+            dist/pertisk-node-${{ steps.version.outputs.VERSION }}-${{ matrix.arch }}.raw.xz
+            dist/pertisk-vm-${{ steps.version.outputs.VERSION }}-linux-${{ matrix.arch }}.tar.gz
           retention-days: 1
 
   release:
@@ -141,6 +152,9 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Clear leftover package dir
+        run: rm -rf packages
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
@@ -153,13 +167,20 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           set -euo pipefail
+          # Drop leftover files from earlier tags on this self-hosted runner.
+          find packages -type f ! -name "*${VERSION}*" -delete
           cd packages
           ls -lh
           test -f "pertisk-node-${VERSION}-amd64.raw.xz"
           test -f "pertisk-node-${VERSION}-arm64.raw.xz"
           test -f "pertisk-vm-${VERSION}-linux-amd64.tar.gz"
           test -f "pertisk-vm-${VERSION}-linux-arm64.tar.gz"
-          sha256sum pertisk-* > SHA256SUMS.txt
+          sha256sum \
+            "pertisk-node-${VERSION}-amd64.raw.xz" \
+            "pertisk-node-${VERSION}-arm64.raw.xz" \
+            "pertisk-vm-${VERSION}-linux-amd64.tar.gz" \
+            "pertisk-vm-${VERSION}-linux-arm64.tar.gz" \
+            > SHA256SUMS.txt
           cat SHA256SUMS.txt
           {
             echo "## pertisk-vm v${VERSION}"
@@ -202,8 +223,10 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes-file packages/RELEASE_BODY.md
           fi
           gh release upload "$TAG" \
-            packages/*.raw.xz \
-            packages/*.tar.gz \
+            "packages/pertisk-node-${VERSION}-amd64.raw.xz" \
+            "packages/pertisk-node-${VERSION}-arm64.raw.xz" \
+            "packages/pertisk-vm-${VERSION}-linux-amd64.tar.gz" \
+            "packages/pertisk-vm-${VERSION}-linux-arm64.tar.gz" \
             packages/SHA256SUMS.txt \
             --clobber
           gh release view "$TAG" --json name,tagName,url --jq '"\(.name) \(.tagName) \(.url)"'
