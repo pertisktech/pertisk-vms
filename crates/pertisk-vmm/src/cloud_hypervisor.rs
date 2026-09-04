@@ -229,6 +229,8 @@ struct ChVmConfig {
 struct ChCpus {
     boot_vcpus: u8,
     max_vcpus: u8,
+    /// RK3588 / many ARM hosts hang at 100% CPU with nested KVM.
+    nested: bool,
 }
 
 #[derive(Serialize)]
@@ -298,7 +300,10 @@ impl ChVmConfig {
             Some(ChPayload {
                 firmware,
                 kernel: None,
-                cmdline: spec.cmdline.clone(),
+                cmdline: spec
+                    .cmdline
+                    .clone()
+                    .or_else(|| Some("console=ttyAMA0 console=ttyS0 reboot=k panic=1".into())),
                 initramfs: None,
             })
         } else {
@@ -340,6 +345,7 @@ impl ChVmConfig {
             cpus: ChCpus {
                 boot_vcpus: spec.vcpus,
                 max_vcpus: spec.vcpus,
+                nested: false,
             },
             memory: ChMemory {
                 size: u64::from(spec.memory_mib) * 1024 * 1024,

@@ -39,7 +39,14 @@ echo "building release pertiskd + pertisk + pertisk-tui"
 cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
 
 if command -v apt-get >/dev/null 2>&1; then
-  DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils || true
+  case "$(uname -m)" in
+    aarch64|arm64)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-arm qemu-efi-aarch64 ipxe-qemu qemu-utils || true
+      ;;
+    *)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils || true
+      ;;
+  esac
 fi
 
 ensure_cloud_hypervisor

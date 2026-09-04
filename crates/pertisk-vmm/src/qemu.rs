@@ -82,11 +82,11 @@ impl QemuDriver {
             }
         }
 
-        let mut cmd = Command::new(&self.binary);
+        let mut cmd = qemu_command(&self.binary);
         cmd.arg("-name")
             .arg(format!("pertisk-{id}"))
             .arg("-machine")
-            .arg("q35,accel=kvm:tcg")
+            .arg(qemu_machine())
             .arg("-m")
             .arg(spec.memory_mib.to_string())
             .arg("-smp")
@@ -94,8 +94,6 @@ impl QemuDriver {
             .arg("-nodefaults")
             .arg("-display")
             .arg("none")
-            .arg("-vga")
-            .arg("std")
             .arg("-S")
             .arg("-qmp")
             .arg(format!("unix:{},server,nowait", qmp.display()))
@@ -107,23 +105,30 @@ impl QemuDriver {
             .arg(format!(
                 "socket,path={},server=on,wait=off,id=qga0",
                 qga_socket.display()
-            ))
-            .arg("-device")
+            ));
+        if host_is_aarch64() {
+            cmd.arg("-device").arg("virtio-gpu-pci");
+        } else {
+            cmd.arg("-vga").arg("std");
+        }
+        cmd.arg("-device")
             .arg("virtio-serial-pci,id=virtio-serial0")
             .arg("-device")
             .arg("virtserialport,chardev=qga0,name=org.qemu.guest_agent.0");
 
         if pertisk_types::kvm_available() {
             cmd.arg("-enable-kvm").arg("-cpu").arg("host");
+        } else if host_is_aarch64() {
+            cmd.arg("-cpu").arg("max");
         }
 
         if spec.kernel.is_none() {
-            if let Some((code, vars_template)) = find_ovmf() {
+            if let Some((code, vars_template)) = find_uefi() {
                 let vars = self.run_dir.join(format!("{id}.OVMF_VARS.fd"));
                 // Always start from the template. A previous failed Talos/UKI boot stores
                 // Boot0001=empty virtio + Boot0002=EFI shell in NVRAM, which then wins forever.
                 tokio::fs::copy(&vars_template, &vars).await?;
-                info!(vm = %id, firmware = %code.display(), "ovmf");
+                info!(vm = %id, firmware = %code.display(), "uefi");
                 cmd.arg("-drive")
                     .arg(format!(
                         "if=pflash,format=raw,readonly=on,file={}",
@@ -150,7 +155,7 @@ impl QemuDriver {
         let disk_bootable = ordered
             .iter()
             .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path));
-        if ordered.iter().any(|disk| disk.cdrom) {
+        if ordered.iter().any(|disk| disk.cdrom) && !host_is_aarch64() {
             cmd.arg("-device").arg("ich9-ahci,id=ahci");
         }
         let mut bootindex = 1u8;
@@ -164,9 +169,14 @@ impl QemuDriver {
                     "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",
                     disk.path.display()
                 ));
-                cmd.arg("-device")
-                    .arg(format!("ide-cd,drive={drive_id},bus=ahci.{cd_index}{boot}"));
-                cd_index = cd_index.saturating_add(1);
+                if host_is_aarch64() {
+                    cmd.arg("-device")
+                        .arg(format!("virtio-blk-pci,drive={drive_id}{boot}"));
+                } else {
+                    cmd.arg("-device")
+                        .arg(format!("ide-cd,drive={drive_id},bus=ahci.{cd_index}{boot}"));
+                    cd_index = cd_index.saturating_add(1);
+                }
             } else {
                 cmd.arg("-drive").arg(format!(
                     "file={},if=none,id={drive_id},format={format},cache=none,discard=unmap",
@@ -190,7 +200,7 @@ impl QemuDriver {
                 cmd.arg("-netdev").arg(format!(
                     "tap,id={id_net},ifname={tap},script=no,downscript=no"
                 ));
-                let mut nic = format!("virtio-net-pci,netdev={id_net}");
+                let mut nic = format!("virtio-net-pci,netdev={id_net},romfile=");
                 if let Some(mac) = &net.mac {
                     nic.push_str(&format!(",mac={mac}"));
                 }
@@ -415,30 +425,156 @@ fn drive_bootindex(
     format!(",bootindex={idx}")
 }
 
-fn find_ovmf() -> Option<(PathBuf, PathBuf)> {
-    const PAIRS: &[(&str, &str)] = &[
-        (
-            "/usr/share/OVMF/OVMF_CODE_4M.fd",
-            "/usr/share/OVMF/OVMF_VARS_4M.fd",
-        ),
-        (
-            "/usr/share/edk2/ovmf/OVMF_CODE_4M.fd",
-            "/usr/share/edk2/ovmf/OVMF_VARS_4M.fd",
-        ),
-        (
-            "/usr/share/OVMF/OVMF_CODE.fd",
-            "/usr/share/OVMF/OVMF_VARS.fd",
-        ),
-        (
-            "/usr/share/edk2/ovmf/OVMF_CODE.fd",
-            "/usr/share/edk2/ovmf/OVMF_VARS.fd",
-        ),
-        (
-            "/usr/share/pve-edk2-firmware/OVMF_CODE.fd",
-            "/usr/share/pve-edk2-firmware/OVMF_VARS.fd",
-        ),
-    ];
-    for (code, vars) in PAIRS {
+fn host_is_aarch64() -> bool {
+    cfg!(target_arch = "aarch64")
+}
+
+/// On big.LITTLE hosts (RK3588 A55+A76), pin QEMU to one cluster.
+/// Mixed cores + `-cpu host` + smp>1 crash AAVMF with "Synchronous Exception".
+fn qemu_command(binary: &Path) -> Command {
+    if let Some(cpus) = qemu_taskset_cpus() {
+        let taskset = ["/usr/bin/taskset", "/bin/taskset"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists());
+        if let Some(taskset) = taskset {
+            info!(%cpus, "pinning qemu to one CPU cluster");
+            let mut cmd = Command::new(taskset);
+            cmd.arg("-c").arg(cpus).arg(binary);
+            return cmd;
+        }
+        warn!("heterogeneous CPUs but taskset is missing; qemu may fail UEFI");
+    }
+    Command::new(binary)
+}
+
+fn qemu_taskset_cpus() -> Option<String> {
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    preferred_homogeneous_cpuset(&cpuinfo)
+}
+
+fn preferred_homogeneous_cpuset(cpuinfo: &str) -> Option<String> {
+    let groups = cpu_part_groups(cpuinfo);
+    if groups.len() <= 1 {
+        return None;
+    }
+    let cpus = groups
+        .into_iter()
+        .max_by(|left, right| left.1.len().cmp(&right.1.len()).then(left.0.cmp(&right.0)))?
+        .1;
+    if cpus.is_empty() {
+        return None;
+    }
+    Some(compact_cpu_list(&cpus))
+}
+
+fn cpu_part_groups(cpuinfo: &str) -> Vec<(u32, Vec<u32>)> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut cpu: Option<u32> = None;
+    for line in cpuinfo.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("processor") {
+            cpu = rest.split(':').nth(1).and_then(|s| s.trim().parse().ok());
+            continue;
+        }
+        let key = line.split(':').next().unwrap_or("").trim();
+        if !key.eq_ignore_ascii_case("cpu part") {
+            continue;
+        }
+        let part = line.split(':').nth(1).map(str::trim).and_then(|raw| {
+            raw.strip_prefix("0x")
+                .or_else(|| raw.strip_prefix("0X"))
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .or_else(|| raw.parse().ok())
+        });
+        if let (Some(id), Some(part)) = (cpu, part) {
+            groups.entry(part).or_default().push(id);
+        }
+    }
+    groups.into_iter().collect()
+}
+
+fn compact_cpu_list(cpus: &[u32]) -> String {
+    let mut cpus = cpus.to_vec();
+    cpus.sort_unstable();
+    cpus.dedup();
+    let Some(&first) = cpus.first() else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    let mut start = first;
+    let mut prev = first;
+    for &cpu in &cpus[1..] {
+        if cpu == prev + 1 {
+            prev = cpu;
+            continue;
+        }
+        parts.push(format_cpu_range(start, prev));
+        start = cpu;
+        prev = cpu;
+    }
+    parts.push(format_cpu_range(start, prev));
+    parts.join(",")
+}
+
+fn format_cpu_range(start: u32, end: u32) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    }
+}
+
+fn qemu_machine() -> &'static str {
+    if host_is_aarch64() {
+        "virt,gic-version=3,accel=kvm:tcg"
+    } else {
+        "q35,accel=kvm:tcg"
+    }
+}
+
+fn find_uefi() -> Option<(PathBuf, PathBuf)> {
+    let pairs: &[(&str, &str)] = if host_is_aarch64() {
+        &[
+            (
+                "/usr/share/AAVMF/AAVMF_CODE.fd",
+                "/usr/share/AAVMF/AAVMF_VARS.fd",
+            ),
+            (
+                "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+                "/usr/share/AAVMF/AAVMF_VARS.fd",
+            ),
+            (
+                "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+                "/usr/share/edk2/aarch64/QEMU_VARS.fd",
+            ),
+        ]
+    } else {
+        &[
+            (
+                "/usr/share/OVMF/OVMF_CODE_4M.fd",
+                "/usr/share/OVMF/OVMF_VARS_4M.fd",
+            ),
+            (
+                "/usr/share/edk2/ovmf/OVMF_CODE_4M.fd",
+                "/usr/share/edk2/ovmf/OVMF_VARS_4M.fd",
+            ),
+            (
+                "/usr/share/OVMF/OVMF_CODE.fd",
+                "/usr/share/OVMF/OVMF_VARS.fd",
+            ),
+            (
+                "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+                "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+            ),
+            (
+                "/usr/share/pve-edk2-firmware/OVMF_CODE.fd",
+                "/usr/share/pve-edk2-firmware/OVMF_VARS.fd",
+            ),
+        ]
+    };
+    for (code, vars) in pairs {
         let code = PathBuf::from(code);
         let vars = PathBuf::from(vars);
         if code.is_file() && vars.is_file() {
@@ -566,5 +702,42 @@ mod tests {
         let mut idx = 1u8;
         assert_eq!(drive_bootindex(&iso, true, &mut idx), "");
         assert_eq!(drive_bootindex(&disk, true, &mut idx), ",bootindex=1");
+    }
+
+    #[test]
+    fn rk3588_pins_to_a76_cluster() {
+        let cpuinfo = "\
+processor\t: 0
+CPU part\t: 0xd05
+processor\t: 1
+CPU part\t: 0xd05
+processor\t: 2
+CPU part\t: 0xd05
+processor\t: 3
+CPU part\t: 0xd05
+processor\t: 4
+CPU part\t: 0xd0b
+processor\t: 5
+CPU part\t: 0xd0b
+processor\t: 6
+CPU part\t: 0xd0b
+processor\t: 7
+CPU part\t: 0xd0b
+";
+        assert_eq!(
+            preferred_homogeneous_cpuset(cpuinfo).as_deref(),
+            Some("4-7")
+        );
+    }
+
+    #[test]
+    fn homogeneous_host_does_not_pin() {
+        let cpuinfo = "\
+processor\t: 0
+CPU part\t: 0xd0b
+processor\t: 1
+CPU part\t: 0xd0b
+";
+        assert_eq!(preferred_homogeneous_cpuset(cpuinfo), None);
     }
 }

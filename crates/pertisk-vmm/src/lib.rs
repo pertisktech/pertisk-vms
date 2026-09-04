@@ -25,7 +25,7 @@ pub enum VmmError {
     InvalidState { state: VmState, op: &'static str },
     #[error("cloud-hypervisor binary not found")]
     BinaryMissing,
-    #[error("qemu-system-x86_64 binary not found")]
+    #[error("qemu-system binary not found")]
     QemuBinaryMissing,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -74,9 +74,7 @@ impl VmmBackend {
                 )))
             }
             DriverKind::Qemu => {
-                let binary = pertisk_types::find_in_path("qemu-system-x86_64")
-                    .or_else(|| pertisk_types::find_in_path("qemu-system-x86"))
-                    .ok_or(VmmError::QemuBinaryMissing)?;
+                let binary = qemu_system_binary().ok_or(VmmError::QemuBinaryMissing)?;
                 Ok(Self::Qemu(QemuDriver::new(binary, run_dir)))
             }
         }
@@ -152,4 +150,13 @@ pub struct CreateResult {
 #[derive(Debug, Clone)]
 pub struct StartResult {
     pub pid: Option<u32>,
+}
+
+fn qemu_system_binary() -> Option<PathBuf> {
+    if cfg!(target_arch = "aarch64") {
+        pertisk_types::find_in_path("qemu-system-aarch64")
+    } else {
+        pertisk_types::find_in_path("qemu-system-x86_64")
+            .or_else(|| pertisk_types::find_in_path("qemu-system-x86"))
+    }
 }

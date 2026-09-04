@@ -99,8 +99,7 @@ fn qga_command(path: &Path, execute: &str, arguments: Option<Value>) -> std::io:
 
     let mut body = serde_json::json!({ "execute": execute });
     if let Some(args) = arguments {
-        body
-            .as_object_mut()
+        body.as_object_mut()
             .expect("object")
             .insert("arguments".into(), args);
     }
@@ -206,7 +205,13 @@ mod tests {
             }
         ]);
         let addrs = parse_guest_addrs(&raw);
-        assert_eq!(addrs.ipv4, vec![("52:54:00:12:34:56".into(), "10.88.0.12".into())]);
-        assert_eq!(addrs.ipv6, vec![("52:54:00:12:34:56".into(), "fd00:3::10".into())]);
+        assert_eq!(
+            addrs.ipv4,
+            vec![("52:54:00:12:34:56".into(), "10.88.0.12".into())]
+        );
+        assert_eq!(
+            addrs.ipv6,
+            vec![("52:54:00:12:34:56".into(), "fd00:3::10".into())]
+        );
     }
 }

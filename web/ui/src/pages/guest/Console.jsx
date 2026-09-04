@@ -22,6 +22,8 @@ export default function GuestConsole() {
   const { vm, vmId } = useGuest()
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(true)
+  const [wsError, setWsError] = useState('')
+  const [gotOutput, setGotOutput] = useState(false)
   const [tab, setTab] = useState('serial')
   const hasGraphics = Boolean(vm?.graphics_socket)
   const termRef = useRef(null)
@@ -34,6 +36,8 @@ export default function GuestConsole() {
   useEffect(() => {
     setConnected(false)
     setConnecting(true)
+    setWsError('')
+    setGotOutput(false)
     if (hasGraphics && vm?.spec?.console_type === 'graphics') {
       setTab('display')
     } else {
@@ -76,25 +80,45 @@ export default function GuestConsole() {
     socket = new WebSocket(
       `${proto}//${location.host}/v1/vms/${vmId}/console/ws?token=${encodeURIComponent(getToken())}`,
     )
+    socket.binaryType = 'arraybuffer'
     wsRef.current = socket
     socket.onopen = () => {
       if (!cancelled) {
         setConnected(true)
         setConnecting(false)
+        setWsError('')
         scheduleFit(fit)
       }
     }
-    socket.onclose = () => {
+    socket.onclose = (ev) => {
       if (!cancelled) {
         setConnected(false)
         setConnecting(false)
+        if (!ev.wasClean && ev.code !== 1000) {
+          setWsError(
+            `WebSocket closed (${ev.code}). Use http://${location.hostname}:7480/ in Chrome or Safari — Cursor's preview and HTTPS wss:// often fail.`,
+          )
+        }
       }
     }
     socket.onerror = () => {
-      if (!cancelled) setConnecting(false)
+      if (!cancelled) {
+        setConnecting(false)
+        setWsError('WebSocket failed. Open the UI at http://' + location.hostname + ':7480/ in a normal browser.')
+      }
     }
-    socket.onmessage = (e) =>
-      term.write(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data))
+    socket.onmessage = (e) => {
+      let text = ''
+      if (typeof e.data === 'string') text = e.data
+      else if (e.data instanceof ArrayBuffer) text = new TextDecoder().decode(e.data)
+      else return
+      if (text) setGotOutput(true)
+      try {
+        term.write(text)
+      } catch {
+        /* terminal may already be disposed */
+      }
+    }
     term.onData((data) => {
       if (socket.readyState === 1) socket.send(data)
     })
@@ -214,11 +238,15 @@ export default function GuestConsole() {
         </div>
         <span className={`badge ${statusClass}`}>{statusLabel}</span>
         <span className="muted">
-          {tab === 'display'
-            ? 'Graphics (VNC). Click the screen to focus keyboard and mouse.'
-            : vm?.state === 'running'
-              ? 'Serial console (xterm). Anaconda text UI works here.'
-              : 'Guest is not running; serial shows the last log.'}
+          {wsError
+            ? wsError
+            : tab === 'display'
+              ? 'Graphics (VNC). Click the screen to focus keyboard and mouse.'
+              : connected && !gotOutput && vm?.state === 'running'
+                ? 'Connected; waiting for guest serial (cloud-hypervisor has no VGA).'
+                : vm?.state === 'running'
+                  ? 'Serial console (xterm). Anaconda text UI works here.'
+                  : 'Guest is not running; serial shows the last log.'}
         </span>
         <span className="pve-header-spacer" />
         {tab === 'serial' && (

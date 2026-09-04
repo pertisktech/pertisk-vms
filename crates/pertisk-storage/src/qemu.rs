@@ -40,7 +40,10 @@ impl QemuImg {
     }
 
     pub fn resize(&self, path: &Path, size: u64) -> Result<()> {
-        self.run(&["resize", &path.display().to_string(), &size.to_string()])
+        let path_s = path.display().to_string();
+        let size_s = format_qemu_size(size);
+        // `-f qcow2` avoids probe failures; `NG` avoids 32-bit parsers choking on raw bytes.
+        self.run(&["resize", "-f", "qcow2", &path_s, &size_s])
     }
 
     pub fn linked_clone(
@@ -95,5 +98,34 @@ impl QemuImg {
                 String::from_utf8_lossy(&output.stderr).trim()
             )))
         }
+    }
+}
+
+/// qemu-img SIZE with a unit suffix so ARM/32-bit builds don't overflow on raw bytes.
+pub(crate) fn format_qemu_size(size: u64) -> String {
+    const G: u64 = 1024 * 1024 * 1024;
+    const M: u64 = 1024 * 1024;
+    const K: u64 = 1024;
+    if size > 0 && size % G == 0 {
+        format!("{}G", size / G)
+    } else if size > 0 && size % M == 0 {
+        format!("{}M", size / M)
+    } else if size > 0 && size % K == 0 {
+        format!("{}K", size / K)
+    } else {
+        size.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_qemu_size;
+
+    #[test]
+    fn qemu_size_uses_gib_suffix() {
+        assert_eq!(format_qemu_size(50 * 1024 * 1024 * 1024), "50G");
+        assert_eq!(format_qemu_size(75 * 1024 * 1024 * 1024), "75G");
+        assert_eq!(format_qemu_size(1024 * 1024), "1M");
+        assert_eq!(format_qemu_size(4097), "4097");
     }
 }
