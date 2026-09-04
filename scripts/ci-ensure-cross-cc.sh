@@ -1,107 +1,120 @@
 #!/usr/bin/env bash
-# User-local GCC shims via zig cc (no root) for **cross** compiles only.
-# Never wrap the host gcc: aws-lc built with host glibc cannot link against zig's 2.28 libc.
+# User-local GNU cross-gcc (Bootlin), no root. Zig cc is not used: cc-rs treats
+# zig as clang, and zig's driver then invokes ld.lld for `-c` and never writes .o
+# (ring, libsqlite3-sys, aws-lc-sys).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ZIG_VERSION="${ZIG_VERSION:-0.13.0}"
+BOOTLIN_REL="${BOOTLIN_REL:-2024.05-1}"
 
 case "$(uname -m)" in
   x86_64|amd64)
-    ZIG_ARCH=x86_64
     HOST_TRIPLE=x86_64-linux-gnu
     CROSS_PREFIX=aarch64-linux-gnu
-    CROSS_ZIG=aarch64-linux-gnu.2.28
+    BOOTLIN_ARCH=aarch64
     CROSS_LINKER_ENV=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
     ;;
   aarch64|arm64)
-    ZIG_ARCH=aarch64
     HOST_TRIPLE=aarch64-linux-gnu
     CROSS_PREFIX=x86_64-linux-gnu
-    CROSS_ZIG=x86_64-linux-gnu.2.28
+    BOOTLIN_ARCH=x86-64
     CROSS_LINKER_ENV=CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
     ;;
   *)
-    echo "unsupported arch for zig: $(uname -m)" >&2
+    echo "unsupported arch for cross-gcc: $(uname -m)" >&2
     exit 1
     ;;
 esac
 
-PREFIX="${HOME}/.local/zig"
-DIR="${PREFIX}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}"
+TARBALL="${BOOTLIN_ARCH}--glibc--stable-${BOOTLIN_REL}.tar.xz"
+URL="https://toolchains.bootlin.com/downloads/releases/toolchains/${BOOTLIN_ARCH}/tarballs/${TARBALL}"
+PREFIX="${HOME}/.local/bootlin"
+EXTRACT="${PREFIX}/${BOOTLIN_ARCH}--glibc--stable-${BOOTLIN_REL}"
 mkdir -p "$PREFIX" "${HOME}/.local/bin"
 
 rm -f "${HOME}/.local/bin/${HOST_TRIPLE}-gcc" "${HOME}/.local/bin/${HOST_TRIPLE}-g++" \
   "${HOME}/.local/bin/${HOST_TRIPLE}-ar"
 
-if [[ ! -x "${DIR}/zig" ]]; then
+if [[ ! -d "$EXTRACT/bin" ]]; then
   tmp="$(mktemp)"
-  url="https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz"
-  alt="https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz"
-  echo "Downloading zig ${ZIG_VERSION} (${ZIG_ARCH})..."
-  if ! curl -fsSL --retry 5 --retry-delay 2 -o "$tmp" "$url"; then
-    curl -fsSL --retry 5 --retry-delay 2 -o "$tmp" "$alt"
-  fi
+  echo "Downloading Bootlin ${TARBALL}"
+  curl -fsSL --retry 5 --retry-delay 2 -o "$tmp" "$URL"
   tar -xJf "$tmp" -C "$PREFIX"
   rm -f "$tmp"
 fi
 
-export PATH="${DIR}:${HOME}/.local/bin:${PATH}"
-command -v zig >/dev/null || {
-  echo "::error::zig not found after install" >&2
-  exit 1
+find_tool() {
+  local suffix="$1"
+  local found
+  found="$(find "$EXTRACT/bin" -maxdepth 1 \( -type f -o -type l \) -name "*-${suffix}" 2>/dev/null | sort | head -n1 || true)"
+  [[ -n "$found" && -x "$found" ]] || {
+    echo "::error::no *-${suffix} in ${EXTRACT}/bin" >&2
+    ls -la "$EXTRACT/bin" >&2 || true
+    exit 1
+  }
+  echo "$found"
 }
-echo "zig $(zig version)"
 
-install -m 755 "$ROOT/scripts/zig-cc.sh" "${HOME}/.local/bin/zig-cc.sh"
+REAL_GCC="$(find_tool gcc)"
+REAL_GPP="$(find_tool g++)"
+REAL_AR="$(find_tool ar)"
 
-write_cc() {
+echo "cross-gcc ${REAL_GCC}"
+"$REAL_GCC" --version | head -n1
+
+# cc-rs may still pass clang-style --target= when the wrapper looks unusual.
+# Real gcc does not accept that flag.
+write_gnu_cc() {
   local name="$1"
+  local real="$2"
   cat >"${HOME}/.local/bin/${name}" <<EOF
-#!/bin/sh
-export ZIG="${DIR}/zig"
-export ZIG_CC_TARGET="${CROSS_ZIG}"
-exec "${HOME}/.local/bin/zig-cc.sh" "\$@"
+#!/usr/bin/env bash
+set -euo pipefail
+args=()
+skip_next=0
+for arg in "\$@"; do
+  if [[ "\$skip_next" -eq 1 ]]; then
+    skip_next=0
+    continue
+  fi
+  case "\$arg" in
+    --target=*|-target=*|--triple=*|-triple=*)
+      continue
+      ;;
+    --target|-target|--triple|-triple)
+      skip_next=1
+      continue
+      ;;
+  esac
+  args+=("\$arg")
+done
+exec "${real}" "\${args[@]}"
 EOF
   chmod +x "${HOME}/.local/bin/${name}"
 }
 
-write_cc "${CROSS_PREFIX}-gcc"
-write_cc "${CROSS_PREFIX}-g++"
+write_gnu_cc "${CROSS_PREFIX}-gcc" "$REAL_GCC"
+write_gnu_cc "${CROSS_PREFIX}-g++" "$REAL_GPP"
+ln -sfn "$REAL_AR" "${HOME}/.local/bin/${CROSS_PREFIX}-ar"
 
-cat >"${HOME}/.local/bin/${CROSS_PREFIX}-ar" <<EOF
-#!/bin/sh
-exec "${DIR}/zig" ar "\$@"
-EOF
-chmod +x "${HOME}/.local/bin/${CROSS_PREFIX}-ar"
+export PATH="${EXTRACT}/bin:${HOME}/.local/bin:${PATH}"
 
 if [[ -n "${GITHUB_PATH:-}" ]]; then
-  echo "${DIR}" >> "$GITHUB_PATH"
+  echo "${EXTRACT}/bin" >> "$GITHUB_PATH"
   echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
-  echo "PATH=${DIR}:${HOME}/.local/bin:${PATH}" >> "$GITHUB_ENV"
+  echo "PATH=${EXTRACT}/bin:${HOME}/.local/bin:${PATH}" >> "$GITHUB_ENV"
   echo "${CROSS_LINKER_ENV}=${HOME}/.local/bin/${CROSS_PREFIX}-gcc" >> "$GITHUB_ENV"
 fi
 
-echo "cross-cc ${CROSS_PREFIX}-gcc -> zig cc -target ${CROSS_ZIG} (strips --target=)"
-echo "native gcc left alone (${HOST_TRIPLE})"
-
-# Fail fast if the wrapper still forwards Rust/LLVM triples to zig.
 probe_dir="$(mktemp -d)"
 printf 'void foo(void) {}\n' > "$probe_dir/foo.c"
-case "$CROSS_PREFIX" in
-  aarch64-linux-gnu) probe_target=aarch64-unknown-linux-gnu ;;
-  x86_64-linux-gnu) probe_target=x86_64-unknown-linux-gnu ;;
-  *) probe_target="" ;;
-esac
-if [[ -n "$probe_target" ]]; then
-  if ! "${HOME}/.local/bin/${CROSS_PREFIX}-gcc" --target="$probe_target" -c "$probe_dir/foo.c" -o "$probe_dir/foo.o"; then
-    rm -rf "$probe_dir"
-    echo "::error::zig-cc wrapper rejected --target=${probe_target} (UnknownOperatingSystem). Update scripts/zig-cc.sh." >&2
-    exit 1
-  fi
-  echo "zig-cc wrapper accepted (and stripped) --target=${probe_target}"
+if ! "${HOME}/.local/bin/${CROSS_PREFIX}-gcc" --target=aarch64-unknown-linux-gnu \
+  -c "$probe_dir/foo.c" -o "$probe_dir/foo.o"; then
+  rm -rf "$probe_dir"
+  echo "::error::cross gcc failed to compile a probe (after stripping --target=)" >&2
+  exit 1
 fi
 rm -rf "$probe_dir"
-
+echo "cross-cc ${CROSS_PREFIX}-gcc -> ${REAL_GCC} (GNU, not zig)"
+echo "native gcc left alone (${HOST_TRIPLE})"

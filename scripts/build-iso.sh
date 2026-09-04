@@ -127,8 +127,8 @@ echo "building web ui"
 HOST="$(host_arch)"
 CARGO_ARGS=(build --release --locked -p pertisk-daemon -p pertisk-cli -p pertisk-tui)
 BINDIR="$ROOT/target/release"
-# Host gcc + host glibc. Zig must not link native binaries (glibc 2.38+ symbols
-# such as __isoc23_sscanf are missing from zig's 2.28 sysroot).
+# Host gcc + host glibc for native builds. Cross builds use a user-local
+# Bootlin GNU toolchain (not zig cc — cc-rs+zig never writes C .o files).
 unset CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER \
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
   CC_x86_64_unknown_linux_gnu CC_aarch64_unknown_linux_gnu \
@@ -138,19 +138,16 @@ if [[ "$HOST" != "$ARCH" ]]; then
   if command -v rustup >/dev/null; then
     rustup target add "$RUST_TARGET"
   fi
-  # Always refresh zig wrappers. A leftover ~/.local/bin/aarch64-linux-gnu-gcc
-  # from an earlier job would skip install and keep forwarding Rust --target=
-  # triples that zig rejects (UnknownOperatingSystem).
-  echo "build-iso: installing/refreshing user-local zig cc wrappers for ${CROSS_CC}"
+  echo "build-iso: installing/refreshing user-local GNU cross-gcc for ${CROSS_CC}"
   chmod +x "$ROOT/scripts/ci-ensure-cross-cc.sh"
   # shellcheck source=ci-ensure-cross-cc.sh
   source "$ROOT/scripts/ci-ensure-cross-cc.sh"
   CROSS_CC_BIN="${HOME}/.local/bin/${CROSS_CC}"
-  [[ -x "$CROSS_CC_BIN" ]] || die "${CROSS_CC_BIN} not found after zig wrapper install"
-  # zig cc cannot assemble s2n-bignum .S files; missing .o then breaks ld.lld.
+  [[ -x "$CROSS_CC_BIN" ]] || die "${CROSS_CC_BIN} not found after cross-gcc install"
+  # Drop stale zig-produced object dirs from earlier arm64 attempts.
+  rm -rf "$ROOT/target/${RUST_TARGET}"
   export AWS_LC_SYS_NO_ASM=1
   export AWS_LC_SYS_NO_JITTER_ENTROPY=1
-  rm -rf "$ROOT/target/${RUST_TARGET}/release/build/aws-lc-sys-"*
   case "$ARCH" in
     arm64)
       export CC_aarch64_unknown_linux_gnu="$CROSS_CC_BIN"
