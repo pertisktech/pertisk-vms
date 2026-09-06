@@ -52,6 +52,29 @@ grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL i
 grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
 grep -q 'pertisk-esp-boot' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install esp-boot"; fail=1; }
 grep -q 'LABEL=pertisk-root' "$OVERLAY/usr/sbin/pertisk-esp-boot" || { echo "FAIL FAT root label"; fail=1; }
+grep -q 'grub-mkimage' "$OVERLAY/usr/sbin/pertisk-esp-boot" || { echo "FAIL embedded GRUB efi"; fail=1; }
+grep -q 'is_usb_or_removable' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install skips removable disks"; fail=1; }
+if grep -q 'pertisk-kvm-check' "$OVERLAY/usr/sbin/pertisk-install"; then
+  echo "FAIL pertisk-install must not require KVM"
+  fail=1
+fi
+grep -q 'is_installer_media' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot installer-media detect"; fail=1; }
+grep -q 'skip br0 on USB installer' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot skip br0 on USB"; fail=1; }
+if grep -q 'network-online.target' "$OVERLAY/usr/lib/systemd/system/pertisk-firstboot.service"; then
+  echo "FAIL firstboot must not wait for DHCP"
+  fail=1
+fi
+grep -q 'firmware-realtek' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL firmware-realtek (G11 2.5G NIC)"; fail=1; }
+grep -q 'non-free-firmware' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL debian non-free-firmware repo"; fail=1; }
+grep -q -- '--any' "$OVERLAY/etc/systemd/system/systemd-networkd-wait-online.service.d/any.conf" \
+  || { echo "FAIL wait-online --any (dual NIC)"; fail=1; }
+grep -q '^RequiredForOnline=no$' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
+  || { echo "FAIL unplugged NIC must not block boot"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then

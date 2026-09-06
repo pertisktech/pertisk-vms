@@ -3,3 +3,8 @@ Type=ether
 
 [Network]
 DHCP=yes
+IPv6AcceptRA=yes
+
+# Dual-NIC boxes (G11) must not block boot waiting for the unplugged port.
+[Link]
+RequiredForOnline=no

@@ -1,7 +1,7 @@
 [Unit]
-Description=pertisk-vm first boot (config, admin password, kvm check)
-After=local-fs.target network-online.target
-Wants=network-online.target
+Description=pertisk-vm first boot (NVMe install, config, admin password)
+# Do not wait for DHCP. USB→NVMe copy must run with no cable / no IP.
+After=local-fs.target
 Before=pertiskd.service
 ConditionPathExists=!/var/lib/pertisk/.firstboot-done
 

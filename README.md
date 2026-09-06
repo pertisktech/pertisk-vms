@@ -129,7 +129,7 @@ make release-amd VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** (wipes it), then reboot and **unplug the USB**. No GRUB typing. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`. Later upgrades: `sudo ./upgrade.sh`.
+Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** with **no network**. If that does not start, the HDMI console is already root — run `pertisk-install --auto` (or `--list` then `--disk /dev/nvme0n1 --yes`). Unplug USB after it reboots. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`. Later upgrades: `sudo ./upgrade.sh`.
 
 Admin password: `/etc/pertisk/admin`. Existing Ubuntu/Debian with KVM can still use `sudo ./upgrade.sh` instead of flashing.
 
@@ -151,11 +151,11 @@ The appliance opens a local root shell on its physical or QEMU serial console. D
 
 To test remote LAN access through a Proxmox bridge, run `sudo ./scripts/test-qemu.sh --bridge vmbr0`. The guest receives an address from the bridge's DHCP network.
 
-Boot the USB in UEFI mode. First boot installs to NVMe by itself. To pick a disk by hand:
+Boot the USB in UEFI mode. First boot installs to NVMe by itself (no IP needed). On the console if it does not:
 
 ```bash
 pertisk-install --list
 pertisk-install --disk /dev/nvme0n1 --yes
 ```
 
-Install refuses if `/dev/kvm` is missing. Optional cluster join: put `PERTISK_JOIN=http://<peer>:7480` in `/etc/pertisk/join` before first boot.
+Guests need SVM/VT-x in firmware; the disk copy does not. Optional cluster join: put `PERTISK_JOIN=http://<peer>:7480` in `/etc/pertisk/join` before first boot.

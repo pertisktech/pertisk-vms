@@ -8,17 +8,38 @@ is_bridge() {
   [[ -d "/sys/class/net/$1/bridge" ]]
 }
 
-pick_nic() {
-  local nic=""
-  nic="$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
-  if [[ -z "$nic" || "$nic" == "$BRIDGE" ]]; then
-    nic="$(ls -1 /sys/class/net 2>/dev/null | grep -E '^(eth|en|end)' | head -n1 || true)"
-  fi
-  case "$nic" in
-    "" | lo | "$BRIDGE" | docker* | veth* | tap* | wlan* | wl*) return 1 ;;
+skip_nic() {
+  case "$1" in
+    "" | lo | "$BRIDGE" | docker* | veth* | tap* | wlan* | wl* | wwan*) return 0 ;;
   esac
-  [[ -d "/sys/class/net/$nic" ]] || return 1
-  printf '%s\n' "$nic"
+  return 1
+}
+
+pick_nic() {
+  local nic="" cand carrier
+  nic="$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
+  if [[ -n "$nic" ]] && ! skip_nic "$nic" && [[ -d "/sys/class/net/$nic" ]]; then
+    printf '%s\n' "$nic"
+    return 0
+  fi
+  for cand in /sys/class/net/*; do
+    nic="${cand##*/}"
+    skip_nic "$nic" && continue
+    [[ -d "$cand/device" ]] || continue
+    carrier="$(cat "$cand/carrier" 2>/dev/null || echo 0)"
+    if [[ "$carrier" == 1 ]]; then
+      printf '%s\n' "$nic"
+      return 0
+    fi
+  done
+  for cand in /sys/class/net/*; do
+    nic="${cand##*/}"
+    skip_nic "$nic" && continue
+    [[ -d "$cand/device" ]] || continue
+    printf '%s\n' "$nic"
+    return 0
+  done
+  return 1
 }
 
 mac_of() {

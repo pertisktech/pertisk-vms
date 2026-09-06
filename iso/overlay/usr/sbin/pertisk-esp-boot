@@ -60,31 +60,21 @@ fi
 
 cp -fL "$k" "$esp/vmlinuz"
 cp -fL "$i" "$esp/initrd.img"
+mkdir -p "$esp/EFI/BOOT" "$esp/boot/grub"
+cp -fL "$k" "$esp/EFI/BOOT/vmlinuz"
+cp -fL "$i" "$esp/EFI/BOOT/initrd.img"
+cp -fL "$k" "$esp/boot/grub/vmlinuz"
+cp -fL "$i" "$esp/boot/grub/initrd.img"
 
-grub_efi=""
 case "$(uname -m)" in
   x86_64|amd64)
     bootname=BOOTX64.EFI
-    for grub_efi in \
-      /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi \
-      /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed \
-      /usr/lib/grub/x86_64-efi/grubx64.efi \
-      "$esp/EFI/debian/grubx64.efi" \
-      "$esp/EFI/pertisk/grubx64.efi"; do
-      [[ -f "$grub_efi" ]] && break
-      grub_efi=""
-    done
+    grub_fmt=x86_64-efi
     extra="nomodeset modprobe.blacklist=amdgpu"
     ;;
   aarch64|arm64)
     bootname=BOOTAA64.EFI
-    for grub_efi in \
-      /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi \
-      /usr/lib/grub/arm64-efi/grubaa64.efi \
-      "$esp/EFI/debian/grubaa64.efi"; do
-      [[ -f "$grub_efi" ]] && break
-      grub_efi=""
-    done
+    grub_fmt=arm64-efi
     extra=""
     ;;
   *)
@@ -92,23 +82,42 @@ case "$(uname -m)" in
     exit 1
     ;;
 esac
-[[ -n "$grub_efi" && -f "$grub_efi" ]] || { echo "pertisk-esp-boot: no grub *.efi (install grub-efi-*-bin)" >&2; exit 1; }
 
-cp -f "$grub_efi" "$esp/EFI/BOOT/$bootname"
-cp -f "$grub_efi" "$esp/EFI/BOOT/grubx64.efi" 2>/dev/null || true
-
-cfg="$esp/EFI/BOOT/grub.cfg"
-cat >"$cfg" <<EOF
-set timeout=5
-set timeout_style=menu
+embed="$(mktemp)"
+cfg_body="$(cat <<EOF
+echo "pertisk loading kernel"
 search --no-floppy --file --set=root /vmlinuz
 linux /vmlinuz root=LABEL=pertisk-root rootwait rw console=tty0 console=ttyS0 ${extra}
 initrd /initrd.img
 boot
 EOF
-cp -f "$cfg" "$esp/grub/grub.cfg"
-cp -f "$cfg" "$esp/EFI/debian/grub.cfg"
-cp -f "$cfg" "$esp/EFI/pertisk/grub.cfg"
+)"
+printf '%s\n' "$cfg_body" >"$embed"
+
+efi_out="$esp/EFI/BOOT/$bootname"
+if command -v grub-mkimage >/dev/null && [[ -d "/usr/lib/grub/${grub_fmt}" ]]; then
+  # Config is inside the .efi so AMI never searches /boot/grub on the USB/NVMe.
+  grub-mkimage -O "$grub_fmt" -o "$efi_out" -p /EFI/BOOT -c "$embed" \
+    part_gpt fat ext2 search linux echo normal boot configfile ls reboot halt \
+    serial gzio || {
+    echo "pertisk-esp-boot: grub-mkimage failed" >&2
+    exit 1
+  }
+else
+  echo "pertisk-esp-boot: grub-mkimage missing" >&2
+  exit 1
+fi
+rm -f "$embed"
+cp -f "$efi_out" "$esp/EFI/BOOT/grubx64.efi" 2>/dev/null || true
+cp -f "$efi_out" "$esp/EFI/debian/grubx64.efi" 2>/dev/null || true
+cp -f "$efi_out" "$esp/EFI/debian/$bootname" 2>/dev/null || true
+
+printf '%s\n' "$cfg_body" >"$esp/EFI/BOOT/grub.cfg"
+mkdir -p "$esp/boot/grub" "$esp/grub" "$esp/EFI/debian" "$esp/EFI/pertisk"
+cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/boot/grub/grub.cfg"
+cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/grub/grub.cfg"
+cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/EFI/debian/grub.cfg"
+cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/EFI/pertisk/grub.cfg"
 sync
-echo "pertisk-esp-boot: $esp/EFI/BOOT/$bootname + vmlinuz (root=LABEL=pertisk-root)"
+echo "pertisk-esp-boot: embedded $efi_out + vmlinuz (root=LABEL=pertisk-root)"
 exit 0

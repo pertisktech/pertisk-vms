@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
       echo "       pertisk-install --auto"
       echo "       pertisk-install --list"
       echo "Installs this live image onto DISK (or the largest NVMe/SATA disk with --auto). Wipes the target."
-      echo "UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
+      echo "Needs no network and no KVM. UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
       exit 0
       ;;
     *) die "unknown arg $1" ;;
@@ -50,7 +50,18 @@ if [[ "$LIST" -eq 1 ]]; then
 fi
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
-/usr/sbin/pertisk-kvm-check || die "refusing install: this machine cannot run KVM"
+# Disk copy does not need KVM or a network. Guests still need SVM/VT-x later.
+
+is_usb_or_removable() {
+  local d="$1" tran rem
+  [[ -n "$d" ]] || return 1
+  tran="$(lsblk -dno TRAN "/dev/${d}" 2>/dev/null || true)"
+  case "$tran" in
+    usb|mmc) return 0 ;;
+  esac
+  rem="$(cat "/sys/block/${d}/removable" 2>/dev/null || echo 0)"
+  [[ "$rem" == 1 ]]
+}
 
 pick_install_disk() {
   local live="" name size tran best="" best_sz=0
@@ -58,9 +69,7 @@ pick_install_disk() {
   while read -r name size tran; do
     [[ -n "$name" ]] || continue
     [[ "$name" == "$live" ]] && continue
-    case "$tran" in
-      usb|mmc) continue ;;
-    esac
+    is_usb_or_removable "$name" && continue
     case "$name" in
       nvme*|sd*|vd*|hd*|xvd*) ;;
       *) continue ;;
@@ -88,10 +97,16 @@ fi
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 
 require_healthy_live_root() {
+  local src dev
   if findmnt -n -o OPTIONS / 2>/dev/null | tr ',' '\n' | grep -qx 'ro'; then
     die "live USB root is read-only (ext4 I/O). Re-flash a 16GB+ USB with xzcat|dd; do not install from this stick"
   fi
-  if dmesg 2>/dev/null | grep -qi 'EXT4-fs error'; then
+  src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+  src="${src#/dev/}"
+  src="${src%% *}"
+  [[ -n "$src" ]] || return 0
+  dev="${src##*/}"
+  if dmesg 2>/dev/null | grep -i 'EXT4-fs error' | grep -Fq "(device ${dev})"; then
     die "live USB ext4 is already failing (EIO / directory block). Re-flash a 16GB+ USB; installing now would copy a broken disk"
   fi
 }

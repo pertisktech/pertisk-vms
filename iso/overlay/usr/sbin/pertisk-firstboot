@@ -10,19 +10,22 @@ ISSUE=/etc/issue.d/pertisk.issue
 mkdir -p "$HOME_DIR/run" "$HOME_DIR/storage" "$HOME_DIR/state" /etc/pertisk /etc/issue.d
 chmod 755 /etc/pertisk
 
-if ! /usr/sbin/pertisk-kvm-check; then
-  cat >"$ISSUE" <<'EOF'
-pertisk-vm: this machine cannot run guests (/dev/kvm or SVM/VMX missing).
-Fix firmware virtualization, then: systemctl restart pertisk-firstboot pertiskd
-EOF
-  echo "pertisk-firstboot: kvm check failed (see $ISSUE)"
-  exit 1
-fi
+is_installer_media() {
+  local live tran rem
+  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+  [[ -n "$live" ]] || return 1
+  tran="$(lsblk -dno TRAN "/dev/${live}" 2>/dev/null || true)"
+  case "$tran" in
+    usb|mmc) return 0 ;;
+  esac
+  rem="$(cat "/sys/block/${live}/removable" 2>/dev/null || echo 0)"
+  [[ "$rem" == 1 ]]
+}
 
 maybe_auto_disk_install() {
   [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 0
   [[ -x /usr/sbin/pertisk-install ]] || return 0
-  local auto=1 live tran
+  local auto=1
   if [[ -r /etc/pertisk/install ]]; then
     # shellcheck disable=SC1091
     set +u
@@ -32,14 +35,8 @@ maybe_auto_disk_install() {
     auto="${PERTISK_AUTO_INSTALL:-1}"
   fi
   [[ "$auto" == "1" ]] || return 0
-  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
-  [[ -n "$live" ]] || return 0
-  tran="$(lsblk -dno TRAN "/dev/${live}" 2>/dev/null || true)"
-  case "$tran" in
-    usb|mmc) ;;
-    *) return 0 ;;
-  esac
-  echo "pertisk-firstboot: installer media — copying OS to the largest NVMe/SATA disk (wipes it)"
+  is_installer_media || return 0
+  echo "pertisk-firstboot: USB/SD installer — copying OS to the largest NVMe/SATA disk (no network needed; wipes the target)"
   if /usr/sbin/pertisk-install --auto; then
     touch "$HOME_DIR/.installed-to-disk"
     echo "pertisk-firstboot: installed. Unplug the USB stick. Rebooting..."
@@ -47,10 +44,17 @@ maybe_auto_disk_install() {
     systemctl reboot
     exit 0
   fi
-  echo "pertisk-firstboot: auto-install failed; continuing on USB" >&2
+  echo "pertisk-firstboot: auto-install failed. On this console run: pertisk-install --list && pertisk-install --auto" >&2
 }
 
+# Copy to NVMe before any KVM or DHCP check. Console install must work with no IP.
 maybe_auto_disk_install
+
+kvm_ok=1
+if ! /usr/sbin/pertisk-kvm-check; then
+  kvm_ok=0
+  echo "pertisk-firstboot: KVM/SVM is off — disk install is fine; guests will not start until firmware virtualization is enabled" >&2
+fi
 
 if [[ ! -f "$HOME_DIR/config.toml" ]]; then
   if [[ -f /etc/pertisk/config.toml ]]; then
@@ -106,8 +110,9 @@ if [[ -n "${PERTISK_JOIN:-}" ]]; then
   echo "pertisk-firstboot: will join $PERTISK_JOIN"
 fi
 
-ips="$(hostname -I 2>/dev/null | awk '{print $1}')"
-ips="${ips:-<this-host>}"
+ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+ips="${ips:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+ips="${ips:-none}"
 
 ensure_fstab() {
   [[ -f /etc/fstab ]] && return 0
@@ -140,12 +145,7 @@ ensure_fstab() {
 
 show_install_hint() {
   [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 1
-  local root_src
-  root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
-  case "$root_src" in
-    /dev/{vd,sd,hd,xvd,nvme}*) return 1 ;;
-  esac
-  return 0
+  is_installer_media
 }
 
 ensure_fstab
@@ -155,7 +155,11 @@ if [[ -x /usr/sbin/pertisk-bootfix ]]; then
 fi
 
 if [[ -x /usr/sbin/pertisk-host-bridge ]]; then
-  /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
+  if is_installer_media; then
+    echo "pertisk-firstboot: skip br0 on USB installer so DHCP stays on the NIC" >&2
+  else
+    /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
+  fi
 fi
 
 seed_lan_network() {
@@ -186,22 +190,34 @@ EOF
 
 seed_lan_network
 
-cat >"$ISSUE" <<EOF
-pertisk-vm  https://${ips}:7443/   user admin   password ${PERTISK_ADMIN_PASSWORD}
-Run pertisk-tui on this console for VM control.
+if [[ "$kvm_ok" -eq 0 ]]; then
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm: enable SVM/VT-x in firmware for guests. Disk install does not need it.
+Then: systemctl restart pertiskd
 EOF
+else
+  cat >"$ISSUE" <<EOF
+pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
+No IP yet? Plug a LAN cable. NVMe install: pertisk-install --auto
+EOF
+fi
 
 {
   echo "pertisk-vm node"
   if show_install_hint; then
-    echo "USB installer auto-copies to NVMe on first boot. Or: pertisk-install --auto"
+    echo "No network needed to flash NVMe. Run: pertisk-install --auto"
+    echo "Or: pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes"
   else
     echo "Running from disk (no pertisk-install needed)."
   fi
+  if [[ "$ips" == none ]]; then
+    echo "No DHCP yet. Plug either 2.5G LAN port; UI is http://<ip>:7480/"
+  else
+    echo "UI:               http://${ips}:7480/  user admin  password ${PERTISK_ADMIN_PASSWORD}"
+  fi
   echo "Console TUI:      pertisk-tui"
-  echo "UI:               https://${ips}:7443/  user admin  password ${PERTISK_ADMIN_PASSWORD}"
 } >/etc/motd
 
 touch "$HOME_DIR/.firstboot-done"
-echo "pertisk-firstboot: done. UI https://${ips}:7443/"
+echo "pertisk-firstboot: done. UI http://${ips}:7480/"
 exit 0
