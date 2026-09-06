@@ -1,14 +1,11 @@
 #!/bin/bash
-# mkosi GRUB defaults to timeout=0 (no menu). Give a few seconds on mini PCs
-# so nomodeset can be added by hand if HDMI still resets.
+# After packages are in the image, stage a FAT-only UEFI boot chain under /efi
+# (copied onto the ESP by mkosi.repart CopyFiles=/efi:/).
 set -euo pipefail
-for f in /efi/grub/grub.cfg /boot/efi/grub/grub.cfg /boot/grub/grub.cfg; do
-  [[ -f "$f" ]] || continue
-  if grep -q '^set timeout=' "$f"; then
-    sed -i 's/^set timeout=.*/set timeout=8/' "$f"
-  else
-    printf 'set timeout=8\nset timeout_style=menu\n' | cat - "$f" >"$f.new"
-    mv "$f.new" "$f"
-  fi
-done
+mkdir -p /efi /boot/efi
+if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
+  /usr/sbin/pertisk-esp-boot /efi
+  mkdir -p /boot/efi
+  cp -a /efi/. /boot/efi/ || true
+fi
 exit 0

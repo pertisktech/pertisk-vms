@@ -222,63 +222,6 @@ patch_boot_root() {
   fi
 }
 
-install_uefi_bootloader() {
-  local mnt="$1" disk="$2" p1="$3"
-  local efi grub_src
-  efi="$mnt/boot/efi"
-  if [[ "$(uname -m)" == aarch64 || "$(uname -m)" == arm64 ]]; then
-    chroot "$mnt" grub-install --target=arm64-efi --efi-directory=/boot/efi \
-      --bootloader-id=pertisk --recheck --no-nvram --removable
-    chroot "$mnt" grub-install --target=arm64-efi --efi-directory=/boot/efi \
-      --bootloader-id=pertisk --recheck --no-nvram || true
-  else
-    # --removable writes EFI/BOOT/BOOTX64.EFI so AMI mini PCs boot with no USB
-    # and no NVRAM entry (G11: "no boot device" after unplugging the stick).
-    chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-      --bootloader-id=pertisk --recheck --no-nvram --removable
-    chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-      --bootloader-id=pertisk --recheck --no-nvram || true
-  fi
-  mkdir -p "$efi/EFI/BOOT"
-  grub_src=""
-  for grub_src in \
-    "$efi/EFI/BOOT/BOOTX64.EFI" \
-    "$efi/EFI/BOOT/BOOTAA64.EFI" \
-    "$efi/EFI/pertisk/grubx64.efi" \
-    "$efi/EFI/pertisk/grubaa64.efi" \
-    "$efi/EFI/debian/grubx64.efi" \
-    "$efi/EFI/debian/grubaa64.efi"; do
-    [[ -f "$grub_src" ]] && break
-    grub_src=""
-  done
-  [[ -n "$grub_src" ]] || die "grub-install left no .efi on the ESP"
-  if [[ "$grub_src" == *aa64* || "$grub_src" == *BOOTAA64* ]]; then
-    cp -f "$grub_src" "$efi/EFI/BOOT/BOOTAA64.EFI"
-  else
-    cp -f "$grub_src" "$efi/EFI/BOOT/BOOTX64.EFI"
-  fi
-  if command -v efibootmgr >/dev/null && [[ -d /sys/firmware/efi ]]; then
-    efibootmgr -c -d "$disk" -p 1 -L pertisk \
-      -l '\EFI\BOOT\BOOTX64.EFI' >/dev/null 2>&1 || true
-  fi
-  sgdisk -t1:ef00 "$disk" >/dev/null 2>&1 || true
-}
-
-write_esp_grub_stub() {
-  local efi="$1" root_uuid="$2"
-  mkdir -p "$efi/EFI/BOOT" "$efi/EFI/debian" "$efi/EFI/pertisk" "$efi/grub"
-  # Removable GRUB looks on the FAT ESP, not (hd0) from the USB install.
-  cat >"$efi/EFI/BOOT/grub.cfg" <<EOF
-search.fs_uuid ${root_uuid} root
-set prefix=(\$root)/boot/grub
-insmod normal
-configfile \$prefix/grub.cfg
-EOF
-  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/grub/grub.cfg"
-  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/debian/grub.cfg"
-  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/pertisk/grub.cfg" 2>/dev/null || true
-}
-
 install_uefi() {
   local p1 p2 mnt uuid_root uuid_esp
   echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
@@ -311,10 +254,7 @@ install_uefi() {
 UUID=$uuid_root / ext4 defaults 0 1
 UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
-  install_uefi_bootloader "$mnt" "$DISK" "$p1"
-  chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
-  write_esp_grub_stub "$mnt/boot/efi" "$uuid_root"
-  chroot "$mnt" /usr/sbin/pertisk-bootfix >/dev/null 2>&1 || true
+  chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"
   touch "$mnt/var/lib/pertisk/.installed-to-disk"
   umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"

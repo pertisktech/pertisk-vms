@@ -1,0 +1,92 @@
+#!/bin/bash
+# Put a complete UEFI boot chain on a FAT ESP: monolithic GRUB + kernel +
+# initrd + grub.cfg. GRUB never has to read ext4 (AMI mini PCs drop to grub>
+# when prefix still points at the USB).
+#
+# Usage: pertisk-esp-boot [ESP_DIR]
+#   ESP_DIR defaults to /boot/efi, or /efi during mkosi.
+set -euo pipefail
+
+esp="${1:-}"
+if [[ -z "$esp" ]]; then
+  if [[ -d /efi ]]; then
+    esp=/efi
+  else
+    esp=/boot/efi
+  fi
+fi
+mkdir -p "$esp/EFI/BOOT" "$esp/EFI/debian" "$esp/EFI/pertisk" "$esp/grub"
+
+k=""
+i=""
+if [[ -e /boot/vmlinuz ]]; then
+  k="$(readlink -f /boot/vmlinuz 2>/dev/null || true)"
+  [[ -f "$k" ]] || k=/boot/vmlinuz
+fi
+if [[ -z "$k" || ! -f "$k" ]]; then
+  k="$(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
+fi
+if [[ -e /boot/initrd.img ]]; then
+  i="$(readlink -f /boot/initrd.img 2>/dev/null || true)"
+  [[ -f "$i" ]] || i=/boot/initrd.img
+fi
+if [[ -z "$i" || ! -f "$i" ]]; then
+  i="$(ls -1 /boot/initrd.img-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
+fi
+[[ -n "$k" && -f "$k" ]] || { echo "pertisk-esp-boot: no kernel in /boot" >&2; exit 1; }
+[[ -n "$i" && -f "$i" ]] || { echo "pertisk-esp-boot: no initrd in /boot" >&2; exit 1; }
+
+cp -fL "$k" "$esp/vmlinuz"
+cp -fL "$i" "$esp/initrd.img"
+
+grub_efi=""
+case "$(uname -m)" in
+  x86_64|amd64)
+    bootname=BOOTX64.EFI
+    for grub_efi in \
+      /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi \
+      /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed \
+      /usr/lib/grub/x86_64-efi/grubx64.efi \
+      "$esp/EFI/debian/grubx64.efi" \
+      "$esp/EFI/pertisk/grubx64.efi"; do
+      [[ -f "$grub_efi" ]] && break
+      grub_efi=""
+    done
+    extra="nomodeset modprobe.blacklist=amdgpu"
+    ;;
+  aarch64|arm64)
+    bootname=BOOTAA64.EFI
+    for grub_efi in \
+      /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi \
+      /usr/lib/grub/arm64-efi/grubaa64.efi \
+      "$esp/EFI/debian/grubaa64.efi"; do
+      [[ -f "$grub_efi" ]] && break
+      grub_efi=""
+    done
+    extra=""
+    ;;
+  *)
+    echo "pertisk-esp-boot: unsupported arch $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+[[ -n "$grub_efi" && -f "$grub_efi" ]] || { echo "pertisk-esp-boot: no grub *.efi (install grub-efi-*-bin)" >&2; exit 1; }
+
+cp -f "$grub_efi" "$esp/EFI/BOOT/$bootname"
+cp -f "$grub_efi" "$esp/EFI/BOOT/grubx64.efi" 2>/dev/null || true
+
+cfg="$esp/EFI/BOOT/grub.cfg"
+cat >"$cfg" <<EOF
+set timeout=5
+set timeout_style=menu
+search --no-floppy --file --set=root /vmlinuz
+linux /vmlinuz root=LABEL=pertisk-root rootwait rw console=tty0 console=ttyS0 ${extra}
+initrd /initrd.img
+boot
+EOF
+cp -f "$cfg" "$esp/grub/grub.cfg"
+cp -f "$cfg" "$esp/EFI/debian/grub.cfg"
+cp -f "$cfg" "$esp/EFI/pertisk/grub.cfg"
+sync
+echo "pertisk-esp-boot: $esp/EFI/BOOT/$bootname + vmlinuz (root=LABEL=pertisk-root)"
+exit 0

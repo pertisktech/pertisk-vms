@@ -1,0 +1,8 @@
+#!/bin/bash
+# Run after mkosi bootloader steps so /efi wins on the ESP.
+set -euo pipefail
+mkdir -p /efi
+if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
+  /usr/sbin/pertisk-esp-boot /efi
+fi
+exit 0
