@@ -1,0 +1,14 @@
+#!/bin/bash
+# mkosi GRUB defaults to timeout=0 (no menu). Give a few seconds on mini PCs
+# so nomodeset can be added by hand if HDMI still resets.
+set -euo pipefail
+for f in /efi/grub/grub.cfg /boot/efi/grub/grub.cfg /boot/grub/grub.cfg; do
+  [[ -f "$f" ]] || continue
+  if grep -q '^set timeout=' "$f"; then
+    sed -i 's/^set timeout=.*/set timeout=8/' "$f"
+  else
+    printf 'set timeout=8\nset timeout_style=menu\n' | cat - "$f" >"$f.new"
+    mv "$f.new" "$f"
+  fi
+done
+exit 0

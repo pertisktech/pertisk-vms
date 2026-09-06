@@ -68,9 +68,14 @@ grep -q '^KernelCommandLine=.*console=tty0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL HDMI kernel console"; fail=1; }
 grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL serial kernel console"; fail=1; }
-grep -q 'agetty --autologin root' \
+grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
   || { echo "FAIL tty1 root shell"; fail=1; }
+grep -q '^Restart=no$' \
+  "$OVERLAY/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
+  || { echo "FAIL tty1 no restart loop"; fail=1; }
+grep -q 'nomodeset' "$ROOT/iso/mkosi.conf.d/10-amd64.conf" \
+  || { echo "FAIL amd64 nomodeset"; fail=1; }
 grep -q '^SizeMinBytes=12G$' "$ROOT/iso/mkosi.repart/10-root.conf" \
   || { echo "FAIL 12GiB ISO storage root"; fail=1; }
 grep -q '^ExecStart=-/bin/bash --login$' \
