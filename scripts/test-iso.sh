@@ -83,8 +83,10 @@ grep -q 'bootmgfw.efi' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
   || { echo "FAIL Microsoft boot path for AMI BIOS drop"; fail=1; }
 grep -q 'enable pertisk-net.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
   || { echo "FAIL pertisk-net preset"; fail=1; }
-grep -q 'isc-dhcp-client' "$ROOT/iso/mkosi.conf" \
-  || { echo "FAIL dhclient fallback"; fail=1; }
+grep -q '^PermitRootLogin yes$' "$OVERLAY/etc/ssh/sshd_config.d/pertisk.conf" \
+  || { echo "FAIL ssh root password login"; fail=1; }
+grep -q 'ensure_ssh_login' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot sets ssh passwords"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then

@@ -100,6 +100,30 @@ fi
 printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
 chmod 600 "$ENV_FILE" "$PASS_FILE"
 
+ensure_ssh_login() {
+  local oldumask
+  oldumask="$(umask)"
+  umask 022
+  mkdir -p /etc/ssh/sshd_config.d
+  cat >/etc/ssh/sshd_config.d/pertisk.conf <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+EOF
+  echo "root:pertisk" | chpasswd 2>/dev/null || true
+  if ! id -u admin >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G sudo admin 2>/dev/null || true
+  fi
+  if id -u admin >/dev/null 2>&1; then
+    echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
+  fi
+  umask "$oldumask"
+  systemctl reload ssh.service 2>/dev/null || systemctl restart ssh.service 2>/dev/null || true
+}
+
+ensure_ssh_login
+
 if [[ -n "${PERTISK_JOIN:-}" ]]; then
   if ! grep -q '^PERTISK_JOIN=' "$ENV_FILE" 2>/dev/null; then
     printf 'PERTISK_JOIN=%s\n' "$PERTISK_JOIN" >>"$ENV_FILE"
