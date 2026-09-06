@@ -91,7 +91,7 @@ Pick the image for the **machine**, not the CPU architecture:
 
 | Machine | Image | Notes |
 |---|---|---|
-| x86_64 UEFI PC | `pertisk-node-VERSION-amd64.raw.xz` | USB live → `pertisk-install` to NVMe |
+| x86_64 UEFI PC (GMKtec G11, etc.) | `pertisk-node-VERSION-amd64.raw.xz` | USB live → `pertisk-install` to NVMe. Disable Secure Boot. |
 | UEFI ARM server | `pertisk-node-VERSION-arm64.raw.xz` | Same as amd64; GRUB EFI |
 | Orange Pi 5 Plus | `pertisk-node-VERSION-orangepi5plus.img.xz` | Vendor U-Boot + kernel |
 | Orange Pi 5 Max | `pertisk-node-VERSION-orangepi5max.img.xz` | Not the Plus image |
