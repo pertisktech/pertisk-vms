@@ -76,8 +76,8 @@ grep -q '^Restart=no$' \
   || { echo "FAIL tty1 no restart loop"; fail=1; }
 grep -q 'nomodeset' "$ROOT/iso/mkosi.conf.d/10-amd64.conf" \
   || { echo "FAIL amd64 nomodeset"; fail=1; }
-grep -q '^SizeMinBytes=12G$' "$ROOT/iso/mkosi.repart/10-root.conf" \
-  || { echo "FAIL 12GiB ISO storage root"; fail=1; }
+grep -q '^SizeMinBytes=6G$' "$ROOT/iso/mkosi.repart/10-root.conf" \
+  || { echo "FAIL 6GiB live USB root (must fit 8GB sticks)"; fail=1; }
 grep -q '^ExecStart=-/bin/bash --login$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
   || { echo "FAIL serial root shell"; fail=1; }

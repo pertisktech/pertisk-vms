@@ -56,6 +56,17 @@ fi
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 
+require_healthy_live_root() {
+  if findmnt -n -o OPTIONS / 2>/dev/null | tr ',' '\n' | grep -qx 'ro'; then
+    die "live USB root is read-only (ext4 I/O). Re-flash a 16GB+ USB with xzcat|dd; do not install from this stick"
+  fi
+  if dmesg 2>/dev/null | grep -qi 'EXT4-fs error'; then
+    die "live USB ext4 is already failing (EIO / directory block). Re-flash a 16GB+ USB; installing now would copy a broken disk"
+  fi
+}
+
+require_healthy_live_root
+
 root_src="$(findmnt -n -o SOURCE / || true)"
 if [[ -n "$root_src" && "$root_src" == "$DISK"* ]]; then
   die "$DISK looks like the current root ($root_src); boot the live image first"
@@ -88,11 +99,12 @@ wait_parts() {
 
 rsync_root_to() {
   local mnt="$1"
-  rsync -aHAX --numeric-ids --info=progress2 \
+  rsync -aHAX --numeric-ids --one-file-system --info=progress2 \
     --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
     --exclude=/mnt --exclude=/tmp --exclude=/media --exclude=/boot \
     / "$mnt/"
   mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp" "$mnt/boot"
+  sync
 }
 
 detect_family() {
@@ -195,11 +207,12 @@ install_uefi() {
   mount "$p2" "$mnt"
   mkdir -p "$mnt/boot/efi"
   mount "$p1" "$mnt/boot/efi"
-  rsync -aHAX --numeric-ids --info=progress2 \
+  rsync -aHAX --numeric-ids --one-file-system --info=progress2 \
     --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
     --exclude=/mnt --exclude=/tmp --exclude=/media \
     / "$mnt/"
   mkdir -p "$mnt/proc" "$mnt/sys" "$mnt/dev" "$mnt/run" "$mnt/tmp"
+  sync
   mount --bind /dev "$mnt/dev"
   mount --bind /dev/pts "$mnt/dev/pts"
   mount -t proc proc "$mnt/proc"
