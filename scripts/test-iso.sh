@@ -46,6 +46,7 @@ echo "$out" | grep -q -- '--disk' || { echo "FAIL install --help"; fail=1; }
 echo "$out" | grep -q -- '--list' || { echo "FAIL install --help list"; fail=1; }
 grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rockchip"; fail=1; }
 grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
+grep -q -- '--removable' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install EFI removable"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
