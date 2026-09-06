@@ -62,8 +62,8 @@ fi
 [[ -f "$ROOT/iso/mkosi.conf.d/10-arm64.conf" ]] || { echo "FAIL mkosi arm64 conf"; fail=1; }
 grep -q '^Format=disk' "$ROOT/iso/mkosi.conf" || { echo "FAIL Format=disk"; fail=1; }
 grep -q '^Bootloader=grub' "$ROOT/iso/mkosi.conf" || { echo "FAIL Bootloader=grub"; fail=1; }
-grep -q '^UnifiedKernelImages=none' "$ROOT/iso/mkosi.conf" \
-  || { echo "FAIL UnifiedKernelImages=none (EFI stub hang on mini PCs)"; fail=1; }
+grep -q '^UnifiedKernelImages=no' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL UnifiedKernelImages=no (EFI stub hang on mini PCs)"; fail=1; }
 grep -q '^KernelCommandLine=.*console=tty0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL HDMI kernel console"; fail=1; }
 grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
