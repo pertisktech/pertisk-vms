@@ -1,4 +1,4 @@
 pertisk-vm node
-Install to disk:  pertisk-install --disk /dev/nvme0n1 --yes
+USB first boot installs to the largest NVMe automatically. Unplug USB when it reboots.
 Console TUI:      pertisk-tui
 UI after first boot: http://<this-host>:7480/  user admin  password admin (or /etc/pertisk/admin)

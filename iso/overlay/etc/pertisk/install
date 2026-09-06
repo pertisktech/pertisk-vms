@@ -1,0 +1,2 @@
+# Set to 0 to keep the USB as a live OS (no automatic NVMe wipe).
+PERTISK_AUTO_INSTALL=1

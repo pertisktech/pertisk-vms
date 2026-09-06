@@ -129,7 +129,7 @@ make release-amd VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-Then boot USB (UEFI) and `pertisk-install --disk /dev/nvme0n1 --yes`. Later upgrades: `sudo ./upgrade.sh`.
+Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** (wipes it), then reboot and **unplug the USB**. No GRUB typing. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`. Later upgrades: `sudo ./upgrade.sh`.
 
 Admin password: `/etc/pertisk/admin`. Existing Ubuntu/Debian with KVM can still use `sudo ./upgrade.sh` instead of flashing.
 
@@ -147,11 +147,11 @@ ip route add default via 10.1.1.10 dev br0
 ./scripts/test-qemu.sh --bridge br0
 ```
 
-The appliance opens a local root shell on its physical or QEMU serial console. Debian's interactive first-boot wizard is disabled; Pertisk initializes itself automatically. The Pertisk web account remains `admin`; its password is in `/etc/pertisk/admin`.
+The appliance opens a local root shell on its physical or QEMU serial console. Debian's interactive first-boot wizard is disabled; Pertisk initializes itself automatically. On a USB stick, first boot copies the OS to the largest NVMe. The Pertisk web account remains `admin`; its password is in `/etc/pertisk/admin`.
 
 To test remote LAN access through a Proxmox bridge, run `sudo ./scripts/test-qemu.sh --bridge vmbr0`. The guest receives an address from the bridge's DHCP network.
 
-Boot the USB in UEFI mode. List disks, then install to NVMe:
+Boot the USB in UEFI mode. First boot installs to NVMe by itself. To pick a disk by hand:
 
 ```bash
 pertisk-install --list

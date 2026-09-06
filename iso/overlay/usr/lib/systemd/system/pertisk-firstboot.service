@@ -9,6 +9,7 @@ ConditionPathExists=!/var/lib/pertisk/.firstboot-done
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/pertisk-firstboot
+TimeoutStartSec=infinity
 StandardOutput=journal+console
 
 [Install]

@@ -19,6 +19,39 @@ EOF
   exit 1
 fi
 
+maybe_auto_disk_install() {
+  [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 0
+  [[ -x /usr/sbin/pertisk-install ]] || return 0
+  local auto=1 live tran
+  if [[ -r /etc/pertisk/install ]]; then
+    # shellcheck disable=SC1091
+    set +u
+    # shellcheck source=/dev/null
+    source /etc/pertisk/install
+    set -u
+    auto="${PERTISK_AUTO_INSTALL:-1}"
+  fi
+  [[ "$auto" == "1" ]] || return 0
+  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+  [[ -n "$live" ]] || return 0
+  tran="$(lsblk -dno TRAN "/dev/${live}" 2>/dev/null || true)"
+  case "$tran" in
+    usb|mmc) ;;
+    *) return 0 ;;
+  esac
+  echo "pertisk-firstboot: installer media — copying OS to the largest NVMe/SATA disk (wipes it)"
+  if /usr/sbin/pertisk-install --auto; then
+    touch "$HOME_DIR/.installed-to-disk"
+    echo "pertisk-firstboot: installed. Unplug the USB stick. Rebooting..."
+    sleep 8
+    systemctl reboot
+    exit 0
+  fi
+  echo "pertisk-firstboot: auto-install failed; continuing on USB" >&2
+}
+
+maybe_auto_disk_install
+
 if [[ ! -f "$HOME_DIR/config.toml" ]]; then
   if [[ -f /etc/pertisk/config.toml ]]; then
     cp /etc/pertisk/config.toml "$HOME_DIR/config.toml"
@@ -117,6 +150,10 @@ show_install_hint() {
 
 ensure_fstab
 
+if [[ -x /usr/sbin/pertisk-bootfix ]]; then
+  /usr/sbin/pertisk-bootfix || echo "pertisk-firstboot: bootfix skipped" >&2
+fi
+
 if [[ -x /usr/sbin/pertisk-host-bridge ]]; then
   /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
 fi
@@ -157,7 +194,7 @@ EOF
 {
   echo "pertisk-vm node"
   if show_install_hint; then
-    echo "Install to disk:  pertisk-install --disk /dev/nvme0n1 --yes"
+    echo "USB installer auto-copies to NVMe on first boot. Or: pertisk-install --auto"
   else
     echo "Running from disk (no pertisk-install needed)."
   fi

@@ -21,6 +21,7 @@ bash -n "$OVERLAY/usr/sbin/pertisk-kvm-check"
 bash -n "$OVERLAY/usr/sbin/pertisk-firstboot"
 bash -n "$OVERLAY/usr/sbin/pertisk-install"
 bash -n "$OVERLAY/usr/sbin/pertisk-host-bridge"
+bash -n "$OVERLAY/usr/sbin/pertisk-bootfix"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
@@ -43,10 +44,13 @@ echo "ok  sbc board recipes"
 
 out="$("$OVERLAY/usr/sbin/pertisk-install" --help)"
 echo "$out" | grep -q -- '--disk' || { echo "FAIL install --help"; fail=1; }
-echo "$out" | grep -q -- '--list' || { echo "FAIL install --help list"; fail=1; }
+echo "$out" | grep -q -- '--auto' || { echo "FAIL install --help auto"; fail=1; }
+grep -q 'pertisk-bootfix.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
+  || { echo "FAIL bootfix preset"; fail=1; }
 grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rockchip"; fail=1; }
 grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
 grep -q -- '--removable' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install EFI removable"; fail=1; }
+grep -q 'search.fs_uuid' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL ESP grub stub"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then

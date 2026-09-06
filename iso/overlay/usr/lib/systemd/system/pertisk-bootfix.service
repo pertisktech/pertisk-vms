@@ -1,0 +1,13 @@
+[Unit]
+Description=pertisk-vm repair EFI boot (BOOTX64.EFI + GRUB stub)
+After=local-fs.target
+ConditionDirectoryNotEmpty=/sys/firmware/efi
+ConditionPathIsMountPoint=/boot/efi
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/pertisk-bootfix
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

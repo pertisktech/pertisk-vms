@@ -1,0 +1,46 @@
+#!/bin/bash
+# Keep UEFI files on the ESP so the machine boots without the USB stick.
+# Safe to run on every boot. No-op on non-EFI / missing ESP.
+set -euo pipefail
+
+[[ "$(id -u)" -eq 0 ]] || exit 0
+[[ -d /sys/firmware/efi ]] || exit 0
+
+if ! mountpoint -q /boot/efi; then
+  mkdir -p /boot/efi
+  mount /boot/efi >/dev/null 2>&1 || exit 0
+fi
+
+root_uuid="$(findmnt -n -o UUID / 2>/dev/null || true)"
+[[ -n "$root_uuid" ]] || exit 0
+
+efi=/boot/efi
+mkdir -p "$efi/EFI/BOOT" "$efi/EFI/debian" "$efi/EFI/pertisk" "$efi/grub"
+cat >"$efi/EFI/BOOT/grub.cfg" <<EOF
+search.fs_uuid ${root_uuid} root
+set prefix=(\$root)/boot/grub
+insmod normal
+configfile \$prefix/grub.cfg
+EOF
+cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/grub/grub.cfg"
+cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/debian/grub.cfg"
+cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/pertisk/grub.cfg"
+
+if command -v grub-install >/dev/null && [[ "$(uname -m)" == x86_64 ]]; then
+  grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+    --bootloader-id=pertisk --recheck --no-nvram --removable >/dev/null 2>&1 || true
+fi
+
+grub_src=""
+for grub_src in \
+  "$efi/EFI/BOOT/BOOTX64.EFI" \
+  "$efi/EFI/pertisk/grubx64.efi" \
+  "$efi/EFI/debian/grubx64.efi"; do
+  [[ -f "$grub_src" ]] && break
+  grub_src=""
+done
+if [[ -n "$grub_src" ]]; then
+  cp -f "$grub_src" "$efi/EFI/BOOT/BOOTX64.EFI"
+fi
+sync
+exit 0

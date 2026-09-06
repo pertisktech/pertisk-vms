@@ -7,6 +7,7 @@ set -euo pipefail
 DISK=""
 YES=0
 LIST=0
+AUTO=0
 ESP_MIB=512
 BOOT_MIB=1024
 MIN_GIB=20
@@ -28,12 +29,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --disk) DISK="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
+    --auto) AUTO=1; YES=1; shift ;;
     --list) LIST=1; shift ;;
     --min-gib) MIN_GIB="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
+      echo "       pertisk-install --auto"
       echo "       pertisk-install --list"
-      echo "Installs this live image onto DISK. Wipes DISK."
+      echo "Installs this live image onto DISK (or the largest NVMe/SATA disk with --auto). Wipes the target."
       echo "UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
       exit 0
       ;;
@@ -48,10 +51,38 @@ fi
 
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
 /usr/sbin/pertisk-kvm-check || die "refusing install: this machine cannot run KVM"
+
+pick_install_disk() {
+  local live="" name size tran best="" best_sz=0
+  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+  while read -r name size tran; do
+    [[ -n "$name" ]] || continue
+    [[ "$name" == "$live" ]] && continue
+    case "$tran" in
+      usb|mmc) continue ;;
+    esac
+    case "$name" in
+      nvme*|sd*|vd*|hd*|xvd*) ;;
+      *) continue ;;
+    esac
+    if [[ "$size" -gt "$best_sz" ]]; then
+      best="$name"
+      best_sz="$size"
+    fi
+  done < <(lsblk -d -b -n -o NAME,SIZE,TRAN 2>/dev/null || true)
+  [[ -n "$best" ]] || return 1
+  printf '/dev/%s\n' "$best"
+}
+
+if [[ -z "$DISK" && "$AUTO" -eq 1 ]]; then
+  DISK="$(pick_install_disk || true)"
+  [[ -n "$DISK" ]] || die "no NVMe/SATA disk found to install to"
+  echo "pertisk-install: auto target $DISK"
+fi
 if [[ -z "$DISK" ]]; then
-  echo "pertisk-install: pass --disk (candidates):" >&2
+  echo "pertisk-install: pass --disk or --auto (candidates):" >&2
   list_disks >&2
-  die "pass --disk /dev/sdX or /dev/nvme0n1"
+  die "pass --disk /dev/nvme0n1 --yes  or  --auto"
 fi
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
@@ -233,6 +264,21 @@ install_uefi_bootloader() {
   sgdisk -t1:ef00 "$disk" >/dev/null 2>&1 || true
 }
 
+write_esp_grub_stub() {
+  local efi="$1" root_uuid="$2"
+  mkdir -p "$efi/EFI/BOOT" "$efi/EFI/debian" "$efi/EFI/pertisk" "$efi/grub"
+  # Removable GRUB looks on the FAT ESP, not (hd0) from the USB install.
+  cat >"$efi/EFI/BOOT/grub.cfg" <<EOF
+search.fs_uuid ${root_uuid} root
+set prefix=(\$root)/boot/grub
+insmod normal
+configfile \$prefix/grub.cfg
+EOF
+  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/grub/grub.cfg"
+  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/debian/grub.cfg"
+  cp -f "$efi/EFI/BOOT/grub.cfg" "$efi/EFI/pertisk/grub.cfg" 2>/dev/null || true
+}
+
 install_uefi() {
   local p1 p2 mnt uuid_root uuid_esp
   echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
@@ -267,6 +313,8 @@ UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
   install_uefi_bootloader "$mnt" "$DISK" "$p1"
   chroot "$mnt" update-grub || chroot "$mnt" grub-mkconfig -o /boot/grub/grub.cfg
+  write_esp_grub_stub "$mnt/boot/efi" "$uuid_root"
+  chroot "$mnt" /usr/sbin/pertisk-bootfix >/dev/null 2>&1 || true
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"
   touch "$mnt/var/lib/pertisk/.installed-to-disk"
   umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
@@ -376,6 +424,8 @@ case "$family" in
 esac
 
 sync
+mkdir -p /var/lib/pertisk
+touch /var/lib/pertisk/.installed-to-disk
 echo "pertisk-install: done."
 if [[ "$family" == rockchip ]]; then
   echo "Power off, remove the SD card, then boot from $DISK (SPI + NVMe)."

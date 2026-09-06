@@ -1,4 +1,5 @@
 enable pertisk-firstboot.service
+enable pertisk-bootfix.service
 enable pertiskd.service
 enable ssh.service
 enable systemd-networkd.service
