@@ -98,8 +98,8 @@ efi_out="$esp/EFI/BOOT/$bootname"
 if command -v grub-mkimage >/dev/null && [[ -d "/usr/lib/grub/${grub_fmt}" ]]; then
   # Config is inside the .efi so AMI never searches /boot/grub on the USB/NVMe.
   grub-mkimage -O "$grub_fmt" -o "$efi_out" -p /EFI/BOOT -c "$embed" \
-    part_gpt fat ext2 search linux echo normal boot configfile ls reboot halt \
-    serial gzio || {
+    part_gpt fat ext2 search search_fs_file search_label linux echo normal boot \
+    configfile ls reboot halt serial gzio || {
     echo "pertisk-esp-boot: grub-mkimage failed" >&2
     exit 1
   }
@@ -111,6 +111,12 @@ rm -f "$embed"
 cp -f "$efi_out" "$esp/EFI/BOOT/grubx64.efi" 2>/dev/null || true
 cp -f "$efi_out" "$esp/EFI/debian/grubx64.efi" 2>/dev/null || true
 cp -f "$efi_out" "$esp/EFI/debian/$bootname" 2>/dev/null || true
+cp -f "$efi_out" "$esp/EFI/pertisk/$bootname" 2>/dev/null || true
+# AMI Aptio on mini PCs often ignores EFI/BOOT on internal NVMe and only
+# auto-discovers the Windows Boot Manager path — otherwise it drops to BIOS.
+mkdir -p "$esp/EFI/Microsoft/Boot"
+cp -f "$efi_out" "$esp/EFI/Microsoft/Boot/bootmgfw.efi"
+cp -f "$efi_out" "$esp/EFI/Microsoft/Boot/$bootname"
 
 printf '%s\n' "$cfg_body" >"$esp/EFI/BOOT/grub.cfg"
 mkdir -p "$esp/boot/grub" "$esp/grub" "$esp/EFI/debian" "$esp/EFI/pertisk"

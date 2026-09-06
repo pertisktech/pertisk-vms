@@ -1,10 +1,15 @@
 [Match]
-Type=ether
+# Physical NICs only (G11 has two 2.5G ports; either may be cabled).
+Name=en* eth* end*
 
 [Network]
 DHCP=yes
 IPv6AcceptRA=yes
+LinkLocalAddressing=yes
 
-# Dual-NIC boxes (G11) must not block boot waiting for the unplugged port.
+[DHCPv4]
+UseDNS=yes
+UseRoutes=yes
+
 [Link]
 RequiredForOnline=no

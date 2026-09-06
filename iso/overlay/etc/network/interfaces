@@ -1,0 +1,3 @@
+# ifupdown must not claim NICs; systemd-networkd does DHCP.
+auto lo
+iface lo inet loopback

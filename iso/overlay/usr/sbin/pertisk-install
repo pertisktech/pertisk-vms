@@ -36,7 +36,8 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
       echo "       pertisk-install --auto"
       echo "       pertisk-install --list"
-      echo "Installs this live image onto DISK (or the largest NVMe/SATA disk with --auto). Wipes the target."
+      echo "Installs this live image onto DISK (or the largest NVMe/SATA disk with --auto). Wipes the whole disk."
+      echo "A partition like /dev/nvme0n1p2 is accepted; the whole SSD is used (p1=ESP, p2=root)."
       echo "Needs no network and no KVM. UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
       exit 0
       ;;
@@ -83,6 +84,19 @@ pick_install_disk() {
   printf '/dev/%s\n' "$best"
 }
 
+whole_disk() {
+  local d pk
+  d="${1#/dev/}"
+  d="${d%/}"
+  [[ -n "$d" ]] || return 1
+  pk="$(lsblk -no PKNAME "/dev/${d}" 2>/dev/null | awk 'NF{print; exit}' || true)"
+  if [[ -n "$pk" ]]; then
+    printf '/dev/%s\n' "$pk"
+    return 0
+  fi
+  printf '/dev/%s\n' "$d"
+}
+
 if [[ -z "$DISK" && "$AUTO" -eq 1 ]]; then
   DISK="$(pick_install_disk || true)"
   [[ -n "$DISK" ]] || die "no NVMe/SATA disk found to install to"
@@ -94,6 +108,9 @@ if [[ -z "$DISK" ]]; then
   die "pass --disk /dev/nvme0n1 --yes  or  --auto"
 fi
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
+DISK="$(whole_disk "$DISK")"
+[[ -b "$DISK" ]] || die "$DISK is not a block device"
+echo "pertisk-install: whole disk $DISK (creates ${DISK}p1 ESP + ${DISK}p2 root, or ${DISK}1/${DISK}2)"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 
 require_healthy_live_root() {
@@ -237,15 +254,65 @@ patch_boot_root() {
   fi
 }
 
+register_uefi_boot() {
+  local disk="$1" part="${2:-1}" loader num order
+  [[ -d /sys/firmware/efi ]] || return 0
+  command -v efibootmgr >/dev/null || return 0
+  # Drop stale "pertisk" / leftover GRUB entries from failed installs.
+  while read -r num; do
+    [[ -n "$num" ]] || continue
+    efibootmgr -b "$num" -B >/dev/null 2>&1 || true
+  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|GRUB\).*/\1/p')
+  loader='\EFI\BOOT\BOOTX64.EFI'
+  case "$(uname -m)" in
+    aarch64|arm64) loader='\EFI\BOOT\BOOTAA64.EFI' ;;
+  esac
+  if ! efibootmgr -c -d "$disk" -p "$part" -l "$loader" -L pertisk; then
+    echo "pertisk-install: efibootmgr could not create a boot entry (AMI may still find EFI/BOOT or EFI/Microsoft)" >&2
+    return 0
+  fi
+  num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
+  if [[ -n "$num" ]]; then
+    efibootmgr -n "$num" >/dev/null 2>&1 || true
+    order="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
+    if [[ -n "$order" ]]; then
+      efibootmgr -o "${num},${order}" >/dev/null 2>&1 || true
+    else
+      efibootmgr -o "$num" >/dev/null 2>&1 || true
+    fi
+    echo "pertisk-install: UEFI BootNext=$num → $disk partition $part $loader"
+  fi
+}
+
+wipe_target_disk() {
+  local d="$1" p
+  echo "pertisk-install: clearing leftover partitions/ESP/GRUB on $d"
+  for p in $(lsblk -ln -o NAME "$d" 2>/dev/null | tail -n +2); do
+    umount -R "/dev/${p}" >/dev/null 2>&1 || true
+    wipefs -a "/dev/${p}" >/dev/null 2>&1 || true
+  done
+  umount -R "$d" >/dev/null 2>&1 || true
+  wipefs -a "$d" >/dev/null 2>&1 || true
+  sgdisk --zap-all "$d" >/dev/null 2>&1 || true
+  dd if=/dev/zero of="$d" bs=1M count=16 status=none conv=fsync 2>/dev/null || \
+    dd if=/dev/zero of="$d" bs=1M count=16 >/dev/null 2>&1 || true
+  partprobe "$d" >/dev/null 2>&1 || true
+}
+
 install_uefi() {
   local p1 p2 mnt uuid_root uuid_esp
-  echo "Wiping $DISK (${gib}GiB): ${ESP_MIB}MiB ESP + remainder ext4"
+  echo "Wiping $DISK (${gib}GiB): p1 ESP ${ESP_MIB}MiB + p2 ext4 root"
+  wipe_target_disk "$DISK"
   sgdisk --zap-all "$DISK"
   sgdisk -n1:0:+${ESP_MIB}M -t1:ef00 -c1:ESP \
          -n2:0:0 -t2:8300 -c2:root \
          "$DISK"
+  sgdisk -A 1:set:0 "$DISK" >/dev/null 2>&1 || true
+  parted -s "$DISK" set 1 esp on >/dev/null 2>&1 || true
+  parted -s "$DISK" set 1 boot on >/dev/null 2>&1 || true
   read -r p1 p2 <<<"$(parts_for "$DISK")"
   wait_parts "$p1" "$p2"
+  echo "pertisk-install: ESP $p1  root $p2"
   mkfs.fat -F32 -n PERTISKESP "$p1"
   mkfs.ext4 -F -L pertisk-root "$p2"
   mnt=/mnt/pertisk-install
@@ -270,6 +337,7 @@ UUID=$uuid_root / ext4 defaults 0 1
 UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
   chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
+  register_uefi_boot "$DISK" 1
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"
   touch "$mnt/var/lib/pertisk/.installed-to-disk"
   umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
@@ -386,6 +454,7 @@ if [[ "$family" == rockchip ]]; then
   echo "Power off, remove the SD card, then boot from $DISK (SPI + NVMe)."
   echo "If it does not start, put the SD back in."
 else
-  echo "Remove the USB/SD installer and reboot from $DISK."
+  echo "Reboot. Firmware should start $DISK p1 (ESP); Linux root is p2."
+  echo "If it goes to BIOS: unplug USB, pick the NVMe / pertisk / Windows Boot Manager entry."
 fi
 echo "UI will be http://<host>:7480/  (admin password in /etc/pertisk/admin after first boot)"

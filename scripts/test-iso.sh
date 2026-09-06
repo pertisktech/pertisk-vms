@@ -23,6 +23,8 @@ bash -n "$OVERLAY/usr/sbin/pertisk-install"
 bash -n "$OVERLAY/usr/sbin/pertisk-host-bridge"
 bash -n "$OVERLAY/usr/sbin/pertisk-bootfix"
 bash -n "$OVERLAY/usr/sbin/pertisk-esp-boot"
+bash -n "$OVERLAY/usr/sbin/pertisk-net"
+bash -n "$OVERLAY/usr/sbin/pertisk-console"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
@@ -73,8 +75,16 @@ grep -q 'non-free-firmware' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL debian non-free-firmware repo"; fail=1; }
 grep -q -- '--any' "$OVERLAY/etc/systemd/system/systemd-networkd-wait-online.service.d/any.conf" \
   || { echo "FAIL wait-online --any (dual NIC)"; fail=1; }
-grep -q '^RequiredForOnline=no$' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
-  || { echo "FAIL unplugged NIC must not block boot"; fail=1; }
+grep -q 'wipe_target_disk' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must wipe leftover NVMe"; fail=1; }
+grep -q 'register_uefi_boot' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install registers NVMe in EFI NVRAM"; fail=1; }
+grep -q 'bootmgfw.efi' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
+  || { echo "FAIL Microsoft boot path for AMI BIOS drop"; fail=1; }
+grep -q 'enable pertisk-net.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
+  || { echo "FAIL pertisk-net preset"; fail=1; }
+grep -q 'isc-dhcp-client' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL dhclient fallback"; fail=1; }
 echo "ok  pertisk-install --help"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -97,7 +107,7 @@ grep -q '^KernelCommandLine=.*console=tty0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL HDMI kernel console"; fail=1; }
 grep -q '^KernelCommandLine=.*console=ttyS0' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL serial kernel console"; fail=1; }
-grep -q '^ExecStart=-/bin/bash --login$' \
+grep -q '^ExecStart=-/usr/sbin/pertisk-console$' \
   "$OVERLAY/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
   || { echo "FAIL tty1 root shell"; fail=1; }
 grep -q '^Restart=no$' \
@@ -107,13 +117,13 @@ grep -q 'nomodeset' "$ROOT/iso/mkosi.conf.d/10-amd64.conf" \
   || { echo "FAIL amd64 nomodeset"; fail=1; }
 grep -q '^SizeMinBytes=6G$' "$ROOT/iso/mkosi.repart/10-root.conf" \
   || { echo "FAIL 6GiB live USB root (must fit 8GB sticks)"; fail=1; }
-grep -q '^ExecStart=-/bin/bash --login$' \
+grep -q '^ExecStart=-/usr/sbin/pertisk-console$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
   || { echo "FAIL serial root shell"; fail=1; }
-grep -q '^ExecStart=-/bin/bash --login$' \
+grep -q '^ExecStart=-/usr/sbin/pertisk-console$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf" \
   || { echo "FAIL arm serial root shell"; fail=1; }
-grep -q '^ExecStart=-/bin/bash --login$' \
+grep -q '^ExecStart=-/usr/sbin/pertisk-console$' \
   "$OVERLAY/etc/systemd/system/serial-getty@ttyS2.service.d/autologin.conf" \
   || { echo "FAIL rk3588 serial root shell"; fail=1; }
 grep -q '^ConditionFirstBoot=no$' \
@@ -121,6 +131,8 @@ grep -q '^ConditionFirstBoot=no$' \
   || { echo "FAIL interactive firstboot is disabled"; fail=1; }
 grep -q '^DHCP=yes' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
   || { echo "FAIL wired DHCP configuration"; fail=1; }
+grep -q '^RequiredForOnline=no$' "$OVERLAY/etc/systemd/network/20-wired-dhcp.network" \
+  || { echo "FAIL unplugged NIC must not block boot"; fail=1; }
 grep -q '^enable systemd-networkd.service$' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
   || { echo "FAIL systemd-networkd preset"; fail=1; }
 if grep -R -q --include='*.conf' '^ *grub-pc$' "$ROOT/iso"; then

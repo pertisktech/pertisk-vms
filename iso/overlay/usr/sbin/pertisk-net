@@ -1,0 +1,85 @@
+#!/bin/bash
+# DHCP on every cabled ethernet. Fast exit if nothing is plugged in.
+set -euo pipefail
+
+mkdir -p /run /etc/issue.d
+exec 9>/run/pertisk-net.lock
+flock -n 9 || exit 0
+
+ISSUE=/etc/issue.d/pertisk-ip.issue
+
+skip() {
+  case "$1" in
+    lo | br* | docker* | veth* | tap* | wlan* | wl* | wwan*) return 0 ;;
+  esac
+  return 1
+}
+
+systemctl start systemd-networkd.service >/dev/null 2>&1 || true
+
+for path in /sys/class/net/*; do
+  nic="${path##*/}"
+  skip "$nic" && continue
+  [[ -d "$path/device" ]] || continue
+  ip link set "$nic" up || true
+done
+
+# Carrier can take a second after link-up.
+sleep 2
+
+if command -v networkctl >/dev/null; then
+  networkctl reload >/dev/null 2>&1 || true
+fi
+
+have_ip() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | grep -q /
+}
+
+cabled=0
+for path in /sys/class/net/*; do
+  nic="${path##*/}"
+  skip "$nic" && continue
+  carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
+  if [[ "$carrier" == 1 ]]; then
+    cabled=1
+    break
+  fi
+done
+
+if [[ "$cabled" -eq 0 ]]; then
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm  no cable — plug either 2.5G LAN port.
+NVMe install does not need an IP:  pertisk-install --auto
+EOF
+  echo "pertisk-net: no carrier (plug a LAN cable)"
+  ip -br link || true
+  exit 0
+fi
+
+for _ in 1 2 3 4 5; do
+  have_ip && break
+  for path in /sys/class/net/*; do
+    nic="${path##*/}"
+    skip "$nic" && continue
+    carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
+    [[ "$carrier" == 1 ]] || continue
+    if command -v dhclient >/dev/null; then
+      dhclient -1 "$nic" >/dev/null 2>&1 || true
+    fi
+  done
+  sleep 2
+done
+
+ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+if [[ -n "$ips" ]]; then
+  printf 'pertisk-vm  http://%s:7480/  user admin  password in /etc/pertisk/admin\n' "$ips" >"$ISSUE"
+  echo "pertisk-net: $ips"
+else
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm  cable up but no DHCP. Check the switch/router.
+NVMe install does not need an IP:  pertisk-install --auto
+EOF
+  echo "pertisk-net: carrier but no IPv4"
+fi
+ip -br a || true
+exit 0

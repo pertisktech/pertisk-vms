@@ -1,0 +1,17 @@
+[Unit]
+Description=pertisk-vm DHCP + console IP
+After=systemd-networkd.service
+Wants=systemd-networkd.service
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/pertisk-net
+RemainAfterExit=yes
+StandardOutput=journal+console
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

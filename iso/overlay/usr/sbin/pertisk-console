@@ -1,0 +1,13 @@
+#!/bin/bash
+# HDMI/serial login: show NICs, start DHCP in the background, then a root shell.
+# USB live install does not need an address.
+echo
+echo "pertisk live     pertisk-install --auto     (no IP needed)"
+echo "root password:   pertisk     UI later: http://<ip>:7480/  admin"
+echo
+ip -br link 2>/dev/null || true
+echo
+if [[ -x /usr/sbin/pertisk-net ]]; then
+  /usr/sbin/pertisk-net >/tmp/pertisk-net.log 2>&1 &
+fi
+exec /bin/bash --login
