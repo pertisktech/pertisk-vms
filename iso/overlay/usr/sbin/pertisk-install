@@ -271,6 +271,9 @@ register_uefi_boot() {
     echo "pertisk-install: efibootmgr could not create a boot entry (AMI may still find EFI/BOOT or EFI/Microsoft)" >&2
     return 0
   fi
+  # AMI Aptio often only auto-discovers "Windows Boot Manager" on internal NVMe.
+  efibootmgr -c -d "$disk" -p "$part" -l '\EFI\Microsoft\Boot\bootmgfw.efi' \
+    -L 'Windows Boot Manager' >/dev/null 2>&1 || true
   num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
   if [[ -n "$num" ]]; then
     efibootmgr -n "$num" >/dev/null 2>&1 || true

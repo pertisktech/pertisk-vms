@@ -25,6 +25,7 @@ bash -n "$OVERLAY/usr/sbin/pertisk-bootfix"
 bash -n "$OVERLAY/usr/sbin/pertisk-esp-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-net"
 bash -n "$OVERLAY/usr/sbin/pertisk-console"
+bash -n "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
@@ -81,6 +82,10 @@ grep -q 'register_uefi_boot' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install registers NVMe in EFI NVRAM"; fail=1; }
 grep -q 'bootmgfw.efi' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
   || { echo "FAIL Microsoft boot path for AMI BIOS drop"; fail=1; }
+grep -q 'Windows Boot Manager' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL NVRAM Windows Boot Manager for AMI"; fail=1; }
+grep -q 'EFI/Microsoft/Boot' "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot" \
+  || { echo "FAIL nvme boot repair script"; fail=1; }
 grep -q 'enable pertisk-net.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
   || { echo "FAIL pertisk-net preset"; fail=1; }
 grep -q '^PermitRootLogin yes$' "$OVERLAY/etc/ssh/sshd_config.d/pertisk.conf" \

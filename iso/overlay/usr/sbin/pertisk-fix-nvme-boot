@@ -1,0 +1,99 @@
+#!/bin/bash
+# Repair NVMe UEFI boot from a live USB. AMI mini PCs ignore an ESP that
+# only has EFI/debian and NVRAM still pointing at the USB.
+# Usage: pertisk-fix-nvme-boot [/dev/nvme0n1]
+set -euo pipefail
+
+die() { echo "pertisk-fix-nvme-boot: $*" >&2; exit 1; }
+[[ "$(id -u)" -eq 0 ]] || die "run as root"
+[[ -d /sys/firmware/efi ]] || die "boot this USB in UEFI mode (not legacy)"
+
+live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+DISK="${1:-}"
+if [[ -z "$DISK" ]]; then
+  DISK="$(blkid -L pertisk-root 2>/dev/null || true)"
+  if [[ -n "$DISK" ]]; then
+    DISK="/dev/$(lsblk -no PKNAME "$DISK" | head -n1)"
+  fi
+fi
+if [[ -z "$DISK" ]]; then
+  DISK="$(lsblk -dpn -o NAME,TRAN | awk '$2!="usb" && $2!="mmc" && $1 ~ /nvme|sd/ {print $1; exit}')"
+fi
+[[ -n "$DISK" && -b "$DISK" ]] || die "no NVMe found (pass /dev/nvme0n1)"
+DISK="${DISK#/dev/}"
+DISK="/dev/${DISK}"
+[[ "$(basename "$DISK")" != "$live" ]] || die "$DISK is the USB; pass the NVMe"
+
+if [[ "$DISK" == *[0-9] ]]; then
+  p1="${DISK}p1"
+  p2="${DISK}p2"
+else
+  p1="${DISK}1"
+  p2="${DISK}2"
+fi
+[[ -b "$p1" && -b "$p2" ]] || die "expected $p1 (ESP) and $p2 (root)"
+
+mnt=/mnt/pertisk-fix-nvme
+mkdir -p "$mnt"
+umount -R "$mnt" >/dev/null 2>&1 || true
+mount "$p2" "$mnt"
+mkdir -p "$mnt/boot/efi"
+mount "$p1" "$mnt/boot/efi"
+mount --bind /dev "$mnt/dev"
+mount --bind /dev/pts "$mnt/dev/pts"
+mount -t proc proc "$mnt/proc"
+mount -t sysfs sys "$mnt/sys"
+
+cleanup() {
+  umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+echo "pertisk-fix-nvme-boot: ESP $p1  root $p2"
+if [[ -x "$mnt/usr/sbin/pertisk-esp-boot" ]]; then
+  chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
+elif command -v grub-install >/dev/null; then
+  chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+    --bootloader-id=BOOT --removable --no-nvram --recheck || \
+    grub-install --target=x86_64-efi --efi-directory="$mnt/boot/efi" \
+      --boot-directory="$mnt/boot" --bootloader-id=BOOT --removable --no-nvram --recheck "$DISK"
+else
+  die "no pertisk-esp-boot or grub-install on $p2"
+fi
+
+esp="$mnt/boot/efi"
+mkdir -p "$esp/EFI/BOOT" "$esp/EFI/Microsoft/Boot"
+efi=""
+for f in "$esp/EFI/BOOT/BOOTX64.EFI" "$esp/EFI/BOOT/grubx64.efi" \
+         "$esp/EFI/debian/grubx64.efi" "$esp/EFI/pertisk/BOOTX64.EFI"; do
+  if [[ -f "$f" ]]; then
+    efi="$f"
+    break
+  fi
+done
+[[ -n "$efi" ]] || die "no .EFI on $p1 after install"
+cp -f "$efi" "$esp/EFI/BOOT/BOOTX64.EFI"
+cp -f "$efi" "$esp/EFI/Microsoft/Boot/bootmgfw.efi"
+cp -f "$efi" "$esp/EFI/Microsoft/Boot/BOOTX64.EFI"
+sync
+ls -la "$esp/EFI/BOOT" "$esp/EFI/Microsoft/Boot"
+
+if command -v efibootmgr >/dev/null; then
+  while read -r num; do
+    [[ -n "$num" ]] || continue
+    efibootmgr -b "$num" -B >/dev/null 2>&1 || true
+  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|Windows Boot Manager\).*/\1/pi')
+  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\BOOT\BOOTX64.EFI' -L pertisk
+  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\Microsoft\Boot\bootmgfw.efi' -L 'Windows Boot Manager'
+  num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
+  if [[ -n "$num" ]]; then
+    efibootmgr -n "$num" >/dev/null 2>&1 || true
+    order="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
+    efibootmgr -o "${num}${order:+,$order}" >/dev/null 2>&1 || true
+  fi
+  efibootmgr -v
+fi
+
+echo "pertisk-fix-nvme-boot: done. Power off, unplug USB, boot NVMe."
+echo "If BIOS still says no device: ESC → Boot → Windows Boot Manager or pertisk."
+exit 0
