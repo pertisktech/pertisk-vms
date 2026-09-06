@@ -54,7 +54,8 @@ grep -q 'pertisk-bootfix.service' "$OVERLAY/usr/lib/systemd/system-preset/50-per
 grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rockchip"; fail=1; }
 grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
 grep -q 'pertisk-esp-boot' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install esp-boot"; fail=1; }
-grep -q 'LABEL=pertisk-root' "$OVERLAY/usr/sbin/pertisk-esp-boot" || { echo "FAIL FAT root label"; fail=1; }
+grep -q '/boot/efi/vmlinuz' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
+  || { echo "FAIL esp-boot finds kernel on ESP"; fail=1; }
 grep -q 'grub-mkimage' "$OVERLAY/usr/sbin/pertisk-esp-boot" || { echo "FAIL embedded GRUB efi"; fail=1; }
 grep -q 'is_usb_or_removable' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install skips removable disks"; fail=1; }
@@ -64,8 +65,8 @@ if grep -q 'pertisk-kvm-check' "$OVERLAY/usr/sbin/pertisk-install"; then
 fi
 grep -q 'is_installer_media' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot installer-media detect"; fail=1; }
-grep -q 'skip br0 on USB installer' "$OVERLAY/usr/sbin/pertisk-firstboot" \
-  || { echo "FAIL firstboot skip br0 on USB"; fail=1; }
+grep -q 'chmod 644' "$OVERLAY/usr/sbin/pertisk-host-bridge" \
+  || { echo "FAIL host-bridge networkd files must be world-readable"; fail=1; }
 if grep -q 'network-online.target' "$OVERLAY/usr/lib/systemd/system/pertisk-firstboot.service"; then
   echo "FAIL firstboot must not wait for DHCP"
   fail=1

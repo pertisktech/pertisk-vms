@@ -109,15 +109,8 @@ impl NetworkPool {
         }
 
         if req.mode == NetworkMode::Bridge {
-            if self.apply_host_links && !host::interface_exists(&bridge) {
-                return Err(NetError::Invalid(format!(
-                    "host bridge '{bridge}' not found; create it first (e.g. br0 on the LAN NIC)"
-                )));
-            }
-            if self.apply_host_links && !host::is_bridge(&bridge) {
-                return Err(NetError::Invalid(format!(
-                    "'{bridge}' is a network interface, not a Linux bridge; bridge mode needs br0 (or another existing bridge), not a plain NIC like enp0s2"
-                )));
+            if self.apply_host_links {
+                host::ensure_lan_bridge(&bridge)?;
             }
             let record = NetworkRecord {
                 id,
@@ -256,18 +249,7 @@ impl NetworkPool {
             Err(err) => return Err(err),
         };
         if network.mode == NetworkMode::Bridge {
-            if !host::interface_exists(&network.bridge) {
-                return Err(NetError::Invalid(format!(
-                    "host bridge '{}' not found",
-                    network.bridge
-                )));
-            }
-            if !host::is_bridge(&network.bridge) {
-                return Err(NetError::Invalid(format!(
-                    "'{}' is not a Linux bridge (plain NICs like enp0s2 cannot enslave guest TAPs)",
-                    network.bridge
-                )));
-            }
+            host::ensure_lan_bridge(&network.bridge)?;
             return host::provision_nic(&network.bridge, tap, None, 0, network.isolate);
         }
         let net = Ipv4Net::parse(&network.cidr)?;

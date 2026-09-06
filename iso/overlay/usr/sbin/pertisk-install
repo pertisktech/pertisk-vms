@@ -110,7 +110,7 @@ fi
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
 DISK="$(whole_disk "$DISK")"
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
-echo "pertisk-install: whole disk $DISK (creates ${DISK}p1 ESP + ${DISK}p2 root, or ${DISK}1/${DISK}2)"
+echo "pertisk-install: whole disk $DISK (ESP + root partitions)"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 
 require_healthy_live_root() {
@@ -141,22 +141,38 @@ gib=$((bytes / 1024 / 1024 / 1024))
 
 parts_for() {
   local d="$1"
-  if [[ "$d" == *[0-9] ]]; then
-    echo "${d}p1" "${d}p2"
-  else
-    echo "${d}1" "${d}2"
-  fi
+  case "$d" in
+    *[0-9]) echo "${d}p1" "${d}p2" ;;
+    *) echo "${d}1" "${d}2" ;;
+  esac
+}
+
+rescan_parts() {
+  local d="$1"
+  sync
+  blockdev --rereadpt "$d" >/dev/null 2>&1 || true
+  partprobe "$d" >/dev/null 2>&1 || true
+  partx -u "$d" >/dev/null 2>&1 || partx -a "$d" >/dev/null 2>&1 || true
+  udevadm settle --timeout=8 >/dev/null 2>&1 || true
 }
 
 wait_parts() {
-  local p1="$1" p2="$2"
-  partprobe "$DISK" || true
-  local i
-  for i in 1 2 3 4 5 6 7 8; do
+  local p1="$1" p2="$2" i sys
+  rescan_parts "$DISK"
+  for i in $(seq 1 20); do
     [[ -b "$p1" && -b "$p2" ]] && return 0
+    sys="/sys/class/block/$(basename "$p1")"
+    if [[ -d "$sys" && ! -b "$p1" ]]; then
+      udevadm trigger --action=add --sysname-match="$(basename "$p1")" >/dev/null 2>&1 || true
+      udevadm trigger --action=add --sysname-match="$(basename "$p2")" >/dev/null 2>&1 || true
+      udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    fi
     sleep 1
-    partprobe "$DISK" || true
+    rescan_parts "$DISK"
   done
+  echo "pertisk-install: kernel partition table:" >&2
+  sgdisk -p "$DISK" >&2 || true
+  lsblk "$DISK" >&2 || true
   die "partitions $p1 $p2 did not appear"
 }
 
@@ -297,22 +313,20 @@ wipe_target_disk() {
   umount -R "$d" >/dev/null 2>&1 || true
   wipefs -a "$d" >/dev/null 2>&1 || true
   sgdisk --zap-all "$d" >/dev/null 2>&1 || true
-  dd if=/dev/zero of="$d" bs=1M count=16 status=none conv=fsync 2>/dev/null || \
-    dd if=/dev/zero of="$d" bs=1M count=16 >/dev/null 2>&1 || true
-  partprobe "$d" >/dev/null 2>&1 || true
+  # Do not dd the start of NVMe here: zeroing 16MiB after zap leaves some
+  # kernels with no /dev/nvme0n1p* until reboot.
+  rescan_parts "$d"
 }
 
 install_uefi() {
   local p1 p2 mnt uuid_root uuid_esp
   echo "Wiping $DISK (${gib}GiB): p1 ESP ${ESP_MIB}MiB + p2 ext4 root"
   wipe_target_disk "$DISK"
-  sgdisk --zap-all "$DISK"
-  sgdisk -n1:0:+${ESP_MIB}M -t1:ef00 -c1:ESP \
-         -n2:0:0 -t2:8300 -c2:root \
-         "$DISK"
-  sgdisk -A 1:set:0 "$DISK" >/dev/null 2>&1 || true
-  parted -s "$DISK" set 1 esp on >/dev/null 2>&1 || true
-  parted -s "$DISK" set 1 boot on >/dev/null 2>&1 || true
+  parted -s "$DISK" mklabel gpt
+  parted -s "$DISK" mkpart ESP fat32 1MiB $((ESP_MIB + 1))MiB
+  parted -s "$DISK" mkpart root ext4 $((ESP_MIB + 1))MiB 100%
+  parted -s "$DISK" set 1 esp on
+  parted -s "$DISK" set 1 boot on || true
   read -r p1 p2 <<<"$(parts_for "$DISK")"
   wait_parts "$p1" "$p2"
   echo "pertisk-install: ESP $p1  root $p2"
@@ -339,6 +353,15 @@ install_uefi() {
 UUID=$uuid_root / ext4 defaults 0 1
 UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
+  # Kernel lives on the live USB ESP (/boot/efi). rsync --one-file-system skips it.
+  mkdir -p "$mnt/boot"
+  for f in vmlinuz initrd.img; do
+    if [[ -f "/boot/efi/${f}" ]]; then
+      cp -f "/boot/efi/${f}" "$mnt/boot/${f}"
+    elif [[ -f "/boot/efi/EFI/BOOT/${f}" ]]; then
+      cp -f "/boot/efi/EFI/BOOT/${f}" "$mnt/boot/${f}"
+    fi
+  done
   chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
   register_uefi_boot "$DISK" 1
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"

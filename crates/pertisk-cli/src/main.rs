@@ -1096,7 +1096,7 @@ async fn run() -> Result<()> {
                     other => bail!("unknown network mode '{other}' (nat | bridge)"),
                 };
                 if mode == pertisk_types::NetworkMode::Bridge && bridge.is_none() {
-                    bail!("--mode bridge requires --bridge NAME (existing host bridge)");
+                    bail!("--mode bridge requires --bridge NAME (created on the host if missing)");
                 }
                 let net: NetworkRecord = post_json(
                     &client,

@@ -124,6 +124,10 @@ EOF
 
 ensure_ssh_login
 
+if ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then
+  echo "127.0.1.1 pertisk" >>/etc/hosts
+fi
+
 if [[ -n "${PERTISK_JOIN:-}" ]]; then
   if ! grep -q '^PERTISK_JOIN=' "$ENV_FILE" 2>/dev/null; then
     printf 'PERTISK_JOIN=%s\n' "$PERTISK_JOIN" >>"$ENV_FILE"
@@ -179,11 +183,8 @@ if [[ -x /usr/sbin/pertisk-bootfix ]]; then
 fi
 
 if [[ -x /usr/sbin/pertisk-host-bridge ]]; then
-  if is_installer_media; then
-    echo "pertisk-firstboot: skip br0 on USB installer so DHCP stays on the NIC" >&2
-  else
-    /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
-  fi
+  umask 022
+  /usr/sbin/pertisk-host-bridge || echo "pertisk-firstboot: br0 setup skipped" >&2
 fi
 
 seed_lan_network() {

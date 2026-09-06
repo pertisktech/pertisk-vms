@@ -12,6 +12,125 @@ pub fn ensure_bridge(bridge: &str, gateway: Option<&str>, prefix: u8) -> Result<
     run_ip(&["link", "set", "dev", bridge, "up"], false)
 }
 
+/// LAN/bridge-mode: create `br0` and attach the cabled NIC.
+/// The UI create-network path must do this; do not require a pre-made bridge.
+pub fn ensure_lan_bridge(bridge: &str) -> Result<()> {
+    check_name(bridge)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bridge;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if is_bridge(bridge) {
+            run_ip(&["link", "set", "dev", bridge, "up"], true)?;
+            return Ok(());
+        }
+        if interface_exists(bridge) {
+            return Err(NetError::Invalid(format!(
+                "'{bridge}' is a network interface, not a Linux bridge"
+            )));
+        }
+        if std::path::Path::new("/usr/sbin/pertisk-host-bridge").is_file() {
+            let status = Command::new("/usr/sbin/pertisk-host-bridge")
+                .env("PERTISK_LAN_BRIDGE", bridge)
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) && is_bridge(bridge) {
+                run_ip(&["link", "set", "dev", bridge, "up"], true)?;
+                return Ok(());
+            }
+        }
+        let nic = default_uplink().or_else(|_| first_cabled_nic())?;
+        if nic == bridge {
+            return Err(NetError::Host("LAN NIC and bridge name are the same".into()));
+        }
+        let mac = std::fs::read_to_string(format!("/sys/class/net/{nic}/address"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        run_ip(&["link", "add", "name", bridge, "type", "bridge"], true)?;
+        if let Some(mac) = mac.as_deref() {
+            run_ip(&["link", "set", "dev", bridge, "address", mac], true)?;
+        }
+        run_ip(&["link", "set", "dev", bridge, "up"], false)?;
+        move_ipv4_to_bridge(&nic, bridge)?;
+        run_ip(&["link", "set", "dev", &nic, "master", bridge], false)?;
+        run_ip(&["link", "set", "dev", &nic, "up"], true)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn first_cabled_nic() -> Result<String> {
+    let mut fallback = None;
+    let entries = std::fs::read_dir("/sys/class/net")
+        .map_err(|err| NetError::Host(format!("/sys/class/net: {err}")))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !valid_ifname(&name)
+            || name == "lo"
+            || name.starts_with("br")
+            || name.starts_with("docker")
+            || name.starts_with("veth")
+            || name.starts_with("tap")
+            || name.starts_with("wl")
+        {
+            continue;
+        }
+        if !entry.path().join("device").exists() {
+            continue;
+        }
+        if fallback.is_none() {
+            fallback = Some(name.clone());
+        }
+        let carrier = std::fs::read_to_string(entry.path().join("carrier")).unwrap_or_default();
+        if carrier.trim() == "1" {
+            return Ok(name);
+        }
+    }
+    fallback.ok_or_else(|| NetError::Host("no ethernet NIC found to attach to the LAN bridge".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn move_ipv4_to_bridge(nic: &str, bridge: &str) -> Result<()> {
+    let output = Command::new("ip")
+        .args(["-o", "-4", "addr", "show", "dev", nic])
+        .output()
+        .map_err(|err| NetError::Host(format!("ip addr: {err}")))?;
+    let mut cidrs = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let Some(inet) = fields.iter().position(|f| *f == "inet") else {
+            continue;
+        };
+        if let Some(cidr) = fields.get(inet + 1) {
+            cidrs.push((*cidr).to_string());
+        }
+    }
+    let gw = Command::new("ip")
+        .args(["-4", "route", "show", "default"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .skip_while(|t| *t != "via")
+                .nth(1)
+                .map(str::to_string)
+        });
+    for cidr in &cidrs {
+        run_ip(&["addr", "add", cidr, "dev", bridge], true)?;
+    }
+    if !cidrs.is_empty() {
+        run_ip(&["addr", "flush", "dev", nic], true)?;
+    }
+    if let Some(gw) = gw {
+        let _ = run_ip(&["route", "replace", "default", "via", &gw, "dev", bridge], true);
+    }
+    Ok(())
+}
+
 pub fn delete_bridge(bridge: &str) -> Result<()> {
     check_name(bridge)?;
     run_ip(&["link", "delete", "dev", bridge, "type", "bridge"], true)

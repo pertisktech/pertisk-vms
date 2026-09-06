@@ -126,6 +126,15 @@ Name=${nic}
 Bridge=${BRIDGE}
 EOF
   systemctl enable systemd-networkd >/dev/null 2>&1 || true
+  chmod 644 "/etc/systemd/network/15-${BRIDGE}.netdev" \
+    "/etc/systemd/network/15-${BRIDGE}.network" \
+    "/etc/systemd/network/15-${BRIDGE}-bind.network" 2>/dev/null || true
+  # Create the bridge immediately. networkd files are not enough if they were 0600.
+  ip link add name "$BRIDGE" type bridge 2>/dev/null || true
+  [[ -n "$mac" ]] && ip link set "$BRIDGE" address "$mac" 2>/dev/null || true
+  ip link set "$BRIDGE" up 2>/dev/null || true
+  ip link set "$nic" master "$BRIDGE" 2>/dev/null || true
+  ip link set "$nic" up 2>/dev/null || true
   systemctl restart systemd-networkd >/dev/null 2>&1 || true
   exit 0
 fi
