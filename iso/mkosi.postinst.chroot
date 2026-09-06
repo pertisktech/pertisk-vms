@@ -1,11 +1,6 @@
 #!/bin/bash
-# After packages are in the image, stage a FAT-only UEFI boot chain under /efi
-# (copied onto the ESP by mkosi.repart CopyFiles=/efi:/).
+# Packages are installed but initrd does not exist yet (mkosi runs depmod
+# after this). Only create mount points; pertisk-esp-boot runs in finalize.
 set -euo pipefail
 mkdir -p /efi /boot/efi
-if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
-  /usr/sbin/pertisk-esp-boot /efi
-  mkdir -p /boot/efi
-  cp -a /efi/. /boot/efi/ || true
-fi
 exit 0

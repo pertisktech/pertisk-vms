@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run after mkosi bootloader steps so /efi wins on the ESP.
+# Last chance to mutate the rootfs before the ESP is filled from /efi.
+# Create initrd if linux-image did not, then stage FAT-only UEFI files.
 set -euo pipefail
-mkdir -p /efi
-if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
-  /usr/sbin/pertisk-esp-boot /efi
-fi
+mkdir -p /efi /boot/efi
+/usr/sbin/pertisk-esp-boot /efi
+cp -a /efi/. /boot/efi/ || true
 exit 0

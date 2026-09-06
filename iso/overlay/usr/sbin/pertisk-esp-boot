@@ -18,7 +18,6 @@ fi
 mkdir -p "$esp/EFI/BOOT" "$esp/EFI/debian" "$esp/EFI/pertisk" "$esp/grub"
 
 k=""
-i=""
 if [[ -e /boot/vmlinuz ]]; then
   k="$(readlink -f /boot/vmlinuz 2>/dev/null || true)"
   [[ -f "$k" ]] || k=/boot/vmlinuz
@@ -26,15 +25,38 @@ fi
 if [[ -z "$k" || ! -f "$k" ]]; then
   k="$(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
 fi
-if [[ -e /boot/initrd.img ]]; then
-  i="$(readlink -f /boot/initrd.img 2>/dev/null || true)"
-  [[ -f "$i" ]] || i=/boot/initrd.img
+[[ -n "$k" && -f "$k" ]] || { echo "pertisk-esp-boot: no kernel in /boot" >&2; ls -la /boot >&2 || true; exit 1; }
+
+kver="${k##*/}"
+kver="${kver#vmlinuz-}"
+
+i=""
+find_initrd() {
+  i=""
+  if [[ -e /boot/initrd.img ]]; then
+    i="$(readlink -f /boot/initrd.img 2>/dev/null || true)"
+    [[ -f "$i" ]] || i=/boot/initrd.img
+  fi
+  if [[ -z "$i" || ! -f "$i" ]]; then
+    i="$(ls -1 /boot/initrd.img-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
+  fi
+  if [[ -n "$kver" && -f "/boot/initrd.img-${kver}" ]]; then
+    i="/boot/initrd.img-${kver}"
+  fi
+  [[ -n "$i" && -f "$i" ]]
+}
+
+if ! find_initrd; then
+  echo "pertisk-esp-boot: generating initrd for ${kver}"
+  if command -v update-initramfs >/dev/null; then
+    update-initramfs -c -k "$kver" || update-initramfs -u -k "$kver" || true
+  fi
 fi
-if [[ -z "$i" || ! -f "$i" ]]; then
-  i="$(ls -1 /boot/initrd.img-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
+if ! find_initrd; then
+  echo "pertisk-esp-boot: no initrd in /boot after update-initramfs" >&2
+  ls -la /boot >&2 || true
+  exit 1
 fi
-[[ -n "$k" && -f "$k" ]] || { echo "pertisk-esp-boot: no kernel in /boot" >&2; exit 1; }
-[[ -n "$i" && -f "$i" ]] || { echo "pertisk-esp-boot: no initrd in /boot" >&2; exit 1; }
 
 cp -fL "$k" "$esp/vmlinuz"
 cp -fL "$i" "$esp/initrd.img"
