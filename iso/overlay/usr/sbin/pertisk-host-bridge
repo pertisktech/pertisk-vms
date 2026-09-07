@@ -117,6 +117,12 @@ Name=${BRIDGE}
 
 [Network]
 DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+ClientIdentifier=mac
+UseDNS=yes
+UseRoutes=yes
 EOF
   cat >"/etc/systemd/network/15-${BRIDGE}-bind.network" <<EOF
 [Match]
@@ -124,6 +130,8 @@ Name=${nic}
 
 [Network]
 Bridge=${BRIDGE}
+DHCP=no
+IPv6AcceptRA=no
 EOF
   systemctl enable systemd-networkd >/dev/null 2>&1 || true
   chmod 644 "/etc/systemd/network/15-${BRIDGE}.netdev" \

@@ -83,6 +83,60 @@ if [[ -f "$ROOT/iso/overlay/etc/systemd/journald.conf.d/pertisk-no-console.conf"
     "$MNT/etc/systemd/journald.conf.d/pertisk-no-console.conf"
 fi
 
+# Host networking helpers (stable DHCP client id; no DHCP on bridge slaves).
+for helper in pertisk-net pertisk-host-bridge; do
+  if [[ -f "$ROOT/iso/overlay/usr/sbin/$helper" ]]; then
+    install -m 755 "$ROOT/iso/overlay/usr/sbin/$helper" "$MNT/usr/sbin/$helper"
+  fi
+done
+mkdir -p "$MNT/etc/systemd/network"
+if [[ -f "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" ]]; then
+  # Keep disabled copy if bridge already owns DHCP.
+  if [[ -f "$MNT/etc/systemd/network/20-wired-dhcp.network.disabled" ]]; then
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network.disabled"
+  elif [[ -f "$MNT/etc/systemd/network/20-wired-dhcp.network" ]]; then
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network"
+  else
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network"
+  fi
+fi
+# Ensure existing br0 DHCP uses MAC client-id (same lease across reboot).
+if [[ -f "$MNT/etc/systemd/network/15-br0.network" ]] \
+  && ! grep -q 'ClientIdentifier=mac' "$MNT/etc/systemd/network/15-br0.network"; then
+  cat >"$MNT/etc/systemd/network/15-br0.network" <<'EOF'
+[Match]
+Name=br0
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+ClientIdentifier=mac
+UseDNS=yes
+UseRoutes=yes
+EOF
+fi
+if [[ -f "$MNT/etc/systemd/network/15-br0-bind.network" ]] \
+  && ! grep -q 'DHCP=no' "$MNT/etc/systemd/network/15-br0-bind.network"; then
+  # Preserve Match Name=… from the existing bind file.
+  nic="$(awk -F= '/^Name=/{print $2; exit}' "$MNT/etc/systemd/network/15-br0-bind.network" || true)"
+  if [[ -n "$nic" ]]; then
+    cat >"$MNT/etc/systemd/network/15-br0-bind.network" <<EOF
+[Match]
+Name=${nic}
+
+[Network]
+Bridge=br0
+DHCP=no
+IPv6AcceptRA=no
+EOF
+  fi
+fi
+
 sync
 if [[ ! -f "$MNT/etc/fstab" ]]; then
   root_uuid=""
