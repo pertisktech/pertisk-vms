@@ -24,26 +24,32 @@ export default function GuestConsole() {
   const [connecting, setConnecting] = useState(true)
   const [wsError, setWsError] = useState('')
   const [gotOutput, setGotOutput] = useState(false)
-  const [tab, setTab] = useState('serial')
+  // VGA login needs Display; prefer it whenever a graphics socket exists.
+  const [tab, setTab] = useState(() => (vm?.graphics_socket ? 'display' : 'serial'))
   const hasGraphics = Boolean(vm?.graphics_socket)
+  const graphicsPathRef = useRef(vm?.graphics_socket || '')
   const termRef = useRef(null)
   const termHostRef = useRef(null)
   const fitRef = useRef(null)
   const wsRef = useRef(null)
   const screenRef = useRef(null)
   const rfbRef = useRef(null)
+  const tabRef = useRef(tab)
+  const everConnectedRef = useRef(false)
+
+  if (vm?.graphics_socket) {
+    graphicsPathRef.current = vm.graphics_socket
+  }
+  tabRef.current = tab
 
   useEffect(() => {
     setConnected(false)
     setConnecting(true)
     setWsError('')
     setGotOutput(false)
-    if (hasGraphics && vm?.spec?.console_type === 'graphics') {
-      setTab('display')
-    } else {
-      setTab('serial')
-    }
-  }, [vmId, hasGraphics, vm?.spec?.console_type])
+    everConnectedRef.current = false
+    setTab(graphicsPathRef.current ? 'display' : 'serial')
+  }, [vmId])
 
   // Serial: xterm.js over websocket
   useEffect(() => {
@@ -68,6 +74,7 @@ export default function GuestConsole() {
         cursor: '#c8c9de',
       },
       convertEol: true,
+      disableStdin: false,
     })
     fit = new FitAddon()
     term.loadAddon(fit)
@@ -75,6 +82,16 @@ export default function GuestConsole() {
     termRef.current = term
     fitRef.current = fit
     scheduleFit(fit)
+
+    const focusTerm = () => {
+      try {
+        term.focus()
+      } catch {
+        /* ignore */
+      }
+    }
+    focusTerm()
+    host.addEventListener('mousedown', focusTerm)
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     socket = new WebSocket(
@@ -84,10 +101,12 @@ export default function GuestConsole() {
     wsRef.current = socket
     socket.onopen = () => {
       if (!cancelled) {
+        everConnectedRef.current = true
         setConnected(true)
         setConnecting(false)
         setWsError('')
         scheduleFit(fit)
+        focusTerm()
       }
     }
     socket.onclose = (ev) => {
@@ -96,7 +115,7 @@ export default function GuestConsole() {
         setConnecting(false)
         if (!ev.wasClean && ev.code !== 1000) {
           setWsError(
-            `WebSocket closed (${ev.code}). Use http://${location.hostname}:7480/ in Chrome or Safari — Cursor's preview and HTTPS wss:// often fail.`,
+            `WebSocket closed (${ev.code}). Use http://${location.hostname}:7480/ in Chrome or Safari.`,
           )
         }
       }
@@ -104,7 +123,7 @@ export default function GuestConsole() {
     socket.onerror = () => {
       if (!cancelled) {
         setConnecting(false)
-        setWsError('WebSocket failed. Open the UI at http://' + location.hostname + ':7480/ in a normal browser.')
+        setWsError('WebSocket failed. Open the UI at http://' + location.hostname + ':7480/')
       }
     }
     socket.onmessage = (e) => {
@@ -116,7 +135,7 @@ export default function GuestConsole() {
       try {
         term.write(text)
       } catch {
-        /* terminal may already be disposed */
+        /* disposed */
       }
     }
     term.onData((data) => {
@@ -132,6 +151,7 @@ export default function GuestConsole() {
 
     return () => {
       cancelled = true
+      host.removeEventListener('mousedown', focusTerm)
       window.removeEventListener('resize', onResize)
       ro?.disconnect()
       socket.onclose = null
@@ -145,40 +165,64 @@ export default function GuestConsole() {
     }
   }, [vmId, tab])
 
-  // Refit serial when switching back to the tab (layout may have changed)
   useEffect(() => {
     if (tab === 'serial') scheduleFit(fitRef.current)
   }, [tab])
 
-  // Display: noVNC over graphics websocket
+  // Display: noVNC
   useEffect(() => {
-    if (tab !== 'display' || !hasGraphics) return
+    if (tab !== 'display') return
 
     let cancelled = false
     const host = screenRef.current
     if (!host) return
 
+    if (!graphicsPathRef.current) {
+      setConnecting(false)
+      setConnected(false)
+      setWsError('No graphics socket for this guest yet.')
+      return
+    }
+
     host.innerHTML = ''
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const url = `${proto}//${location.host}/v1/vms/${vmId}/graphics/ws?token=${encodeURIComponent(getToken())}`
+
+    const focusRfb = () => {
+      try {
+        rfbRef.current?.focus?.({ preventScroll: true })
+      } catch {
+        /* ignore */
+      }
+    }
+    host.tabIndex = 0
+
     let rfb
     try {
       rfb = new RFB(host, url, { shared: true })
       rfb.scaleViewport = true
-      rfb.clipViewport = true
+      rfb.clipViewport = false
       rfb.resizeSession = false
+      rfb.focusOnClick = true
+      rfb.viewOnly = false
       rfbRef.current = rfb
       rfb.addEventListener('connect', () => {
         if (!cancelled) {
+          everConnectedRef.current = true
           setConnected(true)
           setConnecting(false)
+          setWsError('')
+          requestAnimationFrame(focusRfb)
         }
       })
-      rfb.addEventListener('disconnect', () => {
+      rfb.addEventListener('disconnect', (ev) => {
         if (!cancelled) {
           setConnected(false)
           setConnecting(false)
+          if (ev?.detail?.clean === false) {
+            setWsError('Display disconnected. Click Display to reconnect.')
+          }
         }
       })
     } catch (err) {
@@ -186,6 +230,7 @@ export default function GuestConsole() {
       if (!cancelled) {
         setConnected(false)
         setConnecting(false)
+        setWsError(String(err?.message || err))
       }
     }
 
@@ -203,15 +248,81 @@ export default function GuestConsole() {
       setConnected(false)
       setConnecting(false)
     }
-  }, [vmId, tab, hasGraphics])
+  }, [vmId, tab])
+
+  // Enter on a focused header button (Refresh / Restart) steals login.
+  // While Display is open, keep VNC focused and block that.
+  useEffect(() => {
+    if (tab !== 'display') return
+
+    const onKeyDown = (e) => {
+      const target = e.target
+      if (!(target instanceof Element)) return
+
+      // Allow real UI forms / modals.
+      if (target.closest('.modal-backdrop, .modal-card, .user-menu')) return
+      if (
+        (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') &&
+        !target.closest('.console-vnc, .console-pane-stack')
+      ) {
+        return
+      }
+
+      // Stop Enter/Space from activating toolbar buttons while logging in.
+      if (
+        (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') &&
+        target.closest('button, a.btn, a.pve-header-btn, .pve-toolbar, .pve-header')
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        try {
+          rfbRef.current?.focus?.({ preventScroll: true })
+        } catch {
+          /* ignore */
+        }
+        return
+      }
+
+      // If focus left the canvas (inventory re-render), pull it back for typing.
+      if (!target.closest('.console-vnc')) {
+        try {
+          rfbRef.current?.focus?.({ preventScroll: true })
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [tab])
 
   function switchTab(next) {
     if (next === tab) return
     setConnected(false)
     setConnecting(true)
+    setWsError('')
     setTab(next)
   }
 
+  function focusConsole(e) {
+    if (e.target.closest?.('button, a, input, select')) return
+    if (tabRef.current === 'serial') {
+      try {
+        termRef.current?.focus()
+      } catch {
+        /* ignore */
+      }
+    } else {
+      try {
+        rfbRef.current?.focus?.({ preventScroll: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  const showConnecting = connecting && !everConnectedRef.current
   const statusLabel = connecting ? 'connecting' : connected ? 'connected' : 'disconnected'
   const statusClass = connecting ? 'pending' : connected ? 'ready' : 'unknown'
 
@@ -223,6 +334,7 @@ export default function GuestConsole() {
             type="button"
             className={`console-tab${tab === 'serial' ? ' active' : ''}`}
             onClick={() => switchTab('serial')}
+            onMouseDown={(e) => e.preventDefault()}
           >
             Serial
           </button>
@@ -230,8 +342,9 @@ export default function GuestConsole() {
             type="button"
             className={`console-tab${tab === 'display' ? ' active' : ''}`}
             onClick={() => switchTab('display')}
-            disabled={!hasGraphics}
-            title={hasGraphics ? 'VGA / VNC' : 'Needs QEMU driver (vmm.driver = qemu)'}
+            onMouseDown={(e) => e.preventDefault()}
+            disabled={!hasGraphics && !graphicsPathRef.current}
+            title={hasGraphics || graphicsPathRef.current ? 'VGA / VNC' : 'Needs QEMU driver'}
           >
             Display
           </button>
@@ -241,11 +354,11 @@ export default function GuestConsole() {
           {wsError
             ? wsError
             : tab === 'display'
-              ? 'Graphics (VNC). Click the screen to focus keyboard and mouse.'
+              ? 'Click the screen, type username, Enter, then password. Do not press Enter on header buttons.'
               : connected && !gotOutput && vm?.state === 'running'
-                ? 'Connected; waiting for guest serial (cloud-hypervisor has no VGA).'
+                ? 'Connected; waiting for guest serial.'
                 : vm?.state === 'running'
-                  ? 'Serial console (xterm). Anaconda text UI works here.'
+                  ? 'Serial login: type user, Enter (password stays hidden).'
                   : 'Guest is not running; serial shows the last log.'}
         </span>
         <span className="pve-header-spacer" />
@@ -256,7 +369,7 @@ export default function GuestConsole() {
         )}
       </div>
 
-      <div className="console-pane-stack">
+      <div className="console-pane-stack" onMouseDown={focusConsole}>
         <div
           ref={screenRef}
           className={`console-pane pve-console console-vnc${tab === 'display' ? '' : ' console-pane-hidden'}`}
@@ -267,7 +380,7 @@ export default function GuestConsole() {
           className={`console-pane pve-console console-xterm${tab === 'serial' ? '' : ' console-pane-hidden'}`}
           aria-hidden={tab !== 'serial'}
         />
-        {connecting && (
+        {showConnecting && (
           <div className="console-loading" aria-live="polite">
             <Icon name="refresh" size={18} />
             Connecting to {vm?.spec?.name || vmId}…

@@ -202,6 +202,7 @@ export default function Layout() {
             type="button"
             className="pve-icon-btn"
             onClick={inv.refresh}
+            onMouseDown={(e) => e.preventDefault()}
             title="Refresh"
             aria-label="Refresh"
           >

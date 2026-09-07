@@ -10,7 +10,8 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/pertisk-firstboot
 TimeoutStartSec=infinity
-StandardOutput=journal+console
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

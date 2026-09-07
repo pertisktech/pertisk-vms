@@ -37,7 +37,12 @@ struct App {
     selected: usize,
     status: String,
     error: String,
+    last_refresh: std::time::Instant,
+    /// First `d` arms destroy; second `d` within a few seconds confirms.
+    pending_delete: Option<(VmId, std::time::Instant)>,
 }
+
+const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -53,10 +58,13 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    // Soften kernel console spam without breaking the Linux VT redraw path.
+    let _quiet = ConsoleQuiet::enter();
+
     let info = node_info();
-    let listen_host = info.listen.split(':').next().unwrap_or("127.0.0.1");
+    // Always hit the local daemon; PERTISK_LISTEN may be 0.0.0.0:7480.
     let api_port = info.listen.split(':').nth(1).unwrap_or("7480");
-    let api_base = format!("http://{listen_host}:{api_port}");
+    let api_base = format!("http://127.0.0.1:{api_port}");
 
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
@@ -81,14 +89,73 @@ async fn run() -> Result<()> {
         selected: 0,
         status: String::new(),
         error: String::new(),
+        last_refresh: std::time::Instant::now(),
+        pending_delete: None,
     };
 
-    io::stdout().execute(EnterAlternateScreen)?;
+    // Linux VGA/serial consoles (TERM=linux) often go blank with the alternate
+    // screen buffer. Draw on the primary screen there instead.
+    let use_alt_screen = supports_alternate_screen();
+    if use_alt_screen {
+        io::stdout().execute(EnterAlternateScreen)?;
+    } else {
+        io::stdout().execute(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::All,
+        ))?;
+        io::stdout().execute(crossterm::cursor::MoveTo(0, 0))?;
+    }
     enable_raw_mode()?;
     let result = loop_ui(&mut app).await;
     disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
+    if use_alt_screen {
+        io::stdout().execute(LeaveAlternateScreen)?;
+    } else {
+        io::stdout().execute(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::All,
+        ))?;
+        io::stdout().execute(crossterm::cursor::Show)?;
+    }
     result
+}
+
+fn supports_alternate_screen() -> bool {
+    match std::env::var("TERM") {
+        Ok(term) => {
+            let t = term.to_ascii_lowercase();
+            !(t.is_empty()
+                || t == "linux"
+                || t == "dumb"
+                || t == "vt100"
+                || t == "vt102"
+                || t == "ansi"
+                || t.starts_with("cons"))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Mute console printk while the TUI owns the terminal.
+struct ConsoleQuiet {
+    printk: Option<String>,
+}
+
+impl ConsoleQuiet {
+    fn enter() -> Self {
+        let printk = std::fs::read_to_string("/proc/sys/kernel/printk").ok();
+        // console_loglevel=1 → emergencies only on the console
+        let _ = std::fs::write("/proc/sys/kernel/printk", "1 4 1 7\n");
+        let _ = std::process::Command::new("dmesg").args(["-n", "1"]).status();
+        Self { printk }
+    }
+}
+
+impl Drop for ConsoleQuiet {
+    fn drop(&mut self) {
+        if let Some(ref prev) = self.printk {
+            let _ = std::fs::write("/proc/sys/kernel/printk", prev);
+        }
+        let _ = std::process::Command::new("dmesg").args(["-n", "7"]).status();
+    }
 }
 
 fn node_info() -> NodeInfo {
@@ -196,28 +263,61 @@ async fn power(
 async fn loop_ui(app: &mut App) -> Result<()> {
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
+    terminal.clear()?;
     loop {
+        if app
+            .pending_delete
+            .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(5))
+        {
+            app.pending_delete = None;
+            app.status.clear();
+        }
+        if app.pending_delete.is_none() && app.last_refresh.elapsed() >= REFRESH_EVERY {
+            refresh(app).await;
+        }
         terminal.draw(|f| draw(f, app))?;
-        if event::poll(Duration::from_millis(250))? {
+        if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     break;
                 }
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => refresh(app).await,
+                    KeyCode::Esc => {
+                        app.pending_delete = None;
+                        app.status.clear();
+                    }
+                    KeyCode::Char('r') => {
+                        app.pending_delete = None;
+                        refresh(app).await;
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
+                        app.pending_delete = None;
                         app.selected = app.selected.saturating_sub(1);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
+                        app.pending_delete = None;
                         if !app.vms.is_empty() {
                             app.selected = (app.selected + 1).min(app.vms.len() - 1);
                         }
                     }
-                    KeyCode::Char('s') => vm_action(app, "start").await,
-                    KeyCode::Char('x') => vm_action(app, "stop").await,
-                    KeyCode::Char('h') => vm_action(app, "shutdown").await,
-                    KeyCode::Char('b') => vm_action(app, "restart").await,
+                    KeyCode::Char('s') => {
+                        app.pending_delete = None;
+                        vm_action(app, "start").await;
+                    }
+                    KeyCode::Char('x') => {
+                        app.pending_delete = None;
+                        vm_action(app, "stop").await;
+                    }
+                    KeyCode::Char('h') => {
+                        app.pending_delete = None;
+                        vm_action(app, "shutdown").await;
+                    }
+                    KeyCode::Char('b') => {
+                        app.pending_delete = None;
+                        vm_action(app, "restart").await;
+                    }
+                    KeyCode::Char('d') => destroy_selected(app).await,
                     _ => {}
                 }
             }
@@ -227,6 +327,18 @@ async fn loop_ui(app: &mut App) -> Result<()> {
 }
 
 async fn refresh(app: &mut App) {
+    app.last_refresh = std::time::Instant::now();
+    app.info.ips = local_ips();
+    app.info.password = admin_password();
+    let ui_host = url_host(&app.info.ips);
+    let tls_port = app
+        .info
+        .ui_url
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap_or("7443");
+    app.info.ui_url = format!("https://{ui_host}:{tls_port}/");
     app.error.clear();
     if app.token.is_none() {
         match login(&app.client, &app.api_base, &app.info.password).await {
@@ -246,10 +358,62 @@ async fn refresh(app: &mut App) {
             if app.selected >= app.vms.len() {
                 app.selected = app.vms.len().saturating_sub(1);
             }
-            app.status = "refreshed".into();
+            app.status = "auto".into();
         }
-        Err(err) => app.error = format!("list: {err}"),
+        Err(err) => {
+            app.token = None;
+            app.error = format!("list: {err}");
+        }
     }
+}
+
+async fn destroy_selected(app: &mut App) {
+    app.error.clear();
+    let Some(vm) = app.vms.get(app.selected).cloned() else {
+        app.error = "no guest selected".into();
+        return;
+    };
+    let id = vm.id;
+    let name = vm.spec.name.clone();
+
+    if let Some((pending_id, _)) = app.pending_delete
+        && pending_id == id
+    {
+        app.pending_delete = None;
+        let Some(token) = app.token.clone() else {
+            app.error = "not logged in".into();
+            return;
+        };
+        match delete_vm(&app.client, &app.api_base, &token, id).await {
+            Ok(()) => {
+                app.vms.retain(|v| v.id != id);
+                if app.selected >= app.vms.len() {
+                    app.selected = app.vms.len().saturating_sub(1);
+                }
+                app.status = format!("deleted {id} ({name})");
+                app.last_refresh = std::time::Instant::now();
+            }
+            Err(err) => app.error = format!("delete: {err}"),
+        }
+        return;
+    }
+
+    app.pending_delete = Some((id, std::time::Instant::now()));
+    app.status = format!("DELETE {id} ({name})? press d again, Esc cancel");
+}
+
+async fn delete_vm(client: &Client, base: &str, token: &str, id: VmId) -> Result<()> {
+    let response = client
+        .delete(format!("{base}/v1/vms/{id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("delete request")?;
+    if !response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        anyhow::bail!("{text}");
+    }
+    Ok(())
 }
 
 async fn vm_action(app: &mut App, action: &str) {
@@ -368,22 +532,38 @@ fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
-    let mut spans = vec![
-        Span::raw("j/k select  "),
-        Span::styled("s", Style::default().fg(Color::Green)),
-        Span::raw(" start  "),
-        Span::styled("h", Style::default().fg(Color::Yellow)),
-        Span::raw(" shutdown  "),
-        Span::styled("b", Style::default().fg(Color::Cyan)),
-        Span::raw(" restart  "),
-        Span::styled("x", Style::default().fg(Color::Red)),
-        Span::raw(" stop  "),
-        Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" refresh  q quit"),
-    ];
+    let mut spans = if app.pending_delete.is_some() {
+        vec![
+            Span::styled(
+                "CONFIRM DELETE: press d again  |  Esc cancel",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![
+            Span::raw("j/k select  "),
+            Span::styled("s", Style::default().fg(Color::Green)),
+            Span::raw(" start  "),
+            Span::styled("h", Style::default().fg(Color::Yellow)),
+            Span::raw(" shutdown  "),
+            Span::styled("b", Style::default().fg(Color::Cyan)),
+            Span::raw(" restart  "),
+            Span::styled("x", Style::default().fg(Color::Red)),
+            Span::raw(" stop  "),
+            Span::styled("d", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw(" delete  "),
+            Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" refresh  q quit"),
+        ]
+    };
     if !app.status.is_empty() {
         spans.push(Span::raw("  |  "));
-        spans.push(Span::styled(&app.status, Style::default().fg(Color::Green)));
+        let color = if app.pending_delete.is_some() {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        spans.push(Span::styled(&app.status, Style::default().fg(color)));
     }
     if !app.error.is_empty() {
         spans.push(Span::raw("  |  "));

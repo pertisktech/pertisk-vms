@@ -56,10 +56,31 @@ install -m 755 "$ROOT/target/release/pertiskd" "$MNT/usr/bin/pertiskd"
 install -m 755 "$ROOT/target/release/pertisk" "$MNT/usr/bin/pertisk"
 install -m 755 "$ROOT/target/release/pertisk-tui" "$MNT/usr/bin/pertisk-tui"
 
-# systemd unit tweaks (e.g. TimeoutStopSec) ship in the ISO overlay.
-if [[ -f "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" ]]; then
-  install -m 644 "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" \
-    "$MNT/usr/lib/systemd/system/pertiskd.service"
+# systemd units ship in the ISO overlay (keep console free of journal spam for TUI).
+for unit in pertiskd.service pertisk-firstboot.service pertisk-net.service; do
+  src="$ROOT/iso/overlay/usr/lib/systemd/system/$unit"
+  if [[ -f "$src" ]]; then
+    install -m 644 "$src" "$MNT/usr/lib/systemd/system/$unit"
+  fi
+done
+
+# Console: skip getty password on VGA/serial — drop into pertisk-console (root shell).
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-console" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-console" "$MNT/usr/sbin/pertisk-console"
+fi
+for unit in getty@tty1.service.d serial-getty@ttyS0.service.d serial-getty@ttyS2.service.d serial-getty@ttyAMA0.service.d; do
+  src="$ROOT/iso/overlay/etc/systemd/system/$unit/autologin.conf"
+  if [[ -f "$src" ]]; then
+    mkdir -p "$MNT/etc/systemd/system/$unit"
+    install -m 644 "$src" "$MNT/etc/systemd/system/$unit/autologin.conf"
+  fi
+done
+
+# journald: do not forward logs to the HDMI/serial console (pertisk-tui).
+mkdir -p "$MNT/etc/systemd/journald.conf.d"
+if [[ -f "$ROOT/iso/overlay/etc/systemd/journald.conf.d/pertisk-no-console.conf" ]]; then
+  install -m 644 "$ROOT/iso/overlay/etc/systemd/journald.conf.d/pertisk-no-console.conf" \
+    "$MNT/etc/systemd/journald.conf.d/pertisk-no-console.conf"
 fi
 
 sync

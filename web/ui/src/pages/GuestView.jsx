@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api, asList } from '../api'
 import { Btn } from '../components/Icons'
@@ -9,7 +9,14 @@ import { useConfirm } from '../components/Confirm'
 export function useGuest() {
   const { vmId } = useParams()
   const ctx = useOutletContext()
-  const vm = ctx.inv.vms.find((item) => String(item.id) === vmId) || null
+  const live = ctx.inv.vms.find((item) => String(item.id) === vmId) || null
+  // Keep last-known guest across inventory polls so Console websockets are not torn down.
+  const cached = useRef(live)
+  if (live) cached.current = live
+  if (cached.current && String(cached.current.id) !== String(vmId)) {
+    cached.current = live
+  }
+  const vm = live || cached.current
   return { ...ctx, vmId, vm }
 }
 
