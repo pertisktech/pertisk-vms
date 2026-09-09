@@ -190,6 +190,7 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/host": { "get": { "summary": "Host / node info" } },
             "/v1/metrics": { "get": { "summary": "Cluster live metrics (cpu/mem/disk/net)" } },
             "/v1/metrics/node": { "get": { "summary": "Local node live metrics" } },
+            "/v1/events/ws": { "get": { "summary": "Live inventory and metrics websocket (Bearer or ?token=)" } },
             "/v1/vms/{id}/metrics": { "get": { "summary": "Guest live metrics" } },
             "/v1/vms": {
                 "get": { "summary": "List VMs" },
@@ -246,5 +247,6 @@ mod tests {
         let doc = openapi_json();
         assert_eq!(doc["openapi"], "3.0.3");
         assert!(doc["paths"]["/v1/login"].is_object());
+        assert!(doc["paths"]["/v1/events/ws"].is_object());
     }
 }

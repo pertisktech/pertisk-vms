@@ -357,9 +357,7 @@ fn vm_disk_bytes(vm: &VmRecord, volumes: &[VolumeRecord]) -> (u64, u64) {
         if let Some(id) = disk.volume_id {
             if let Some(vol) = volumes.iter().find(|v| v.id == id) {
                 total = total.saturating_add(vol.size_bytes);
-                let on_disk = std::fs::metadata(&vol.path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let on_disk = std::fs::metadata(&vol.path).map(|m| m.len()).unwrap_or(0);
                 used = used.saturating_add(on_disk);
                 continue;
             }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, asList } from './api'
+import { requestRefresh, retainLive } from './live'
 
 const EMPTY = {
   host: null,
@@ -10,6 +11,19 @@ const EMPTY = {
   networks: [],
   tasks: [],
   audit: [],
+}
+
+function fromInventory(msg) {
+  return {
+    host: msg.host || null,
+    cluster: msg.cluster || EMPTY.cluster,
+    vms: asList(msg.vms),
+    volumes: asList(msg.volumes),
+    isos: asList(msg.isos),
+    networks: asList(msg.networks),
+    tasks: asList(msg.tasks),
+    audit: asList(msg.audit),
+  }
 }
 
 export function useInventory() {
@@ -40,6 +54,7 @@ export function useInventory() {
         audit: asList(audit),
       })
       setError('')
+      requestRefresh()
     } catch (err) {
       setError(err.message || String(err))
     } finally {
@@ -49,8 +64,12 @@ export function useInventory() {
 
   useEffect(() => {
     refresh()
-    const id = setInterval(refresh, 4000)
-    return () => clearInterval(id)
+    return retainLive((msg) => {
+      if (msg.type !== 'inventory') return
+      setData(fromInventory(msg))
+      setError('')
+      setLoading(false)
+    })
   }, [refresh])
 
   const mutate = useCallback(

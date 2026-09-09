@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { api, asList, disksOf, netsOf, nicAddrs, shortId } from '../../api'
+import { asList, disksOf, netsOf, nicAddrs, shortId } from '../../api'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
@@ -23,31 +22,8 @@ function networkLine(vm, networks) {
 }
 
 export default function GuestSummary() {
-  const { vm: invVm, vmId, inv } = useGuest()
-  const [vm, setVm] = useState(invVm)
+  const { vm, vmId, inv } = useGuest()
   const metrics = useMetrics(vmId)
-
-  useEffect(() => {
-    setVm(invVm)
-  }, [invVm])
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const fresh = await api(`/v1/vms/${vmId}`)
-        if (!cancelled && fresh) setVm(fresh)
-      } catch {
-        /* keep inventory copy */
-      }
-    }
-    load()
-    const id = setInterval(load, 5000)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [vmId])
 
   if (!vm) return null
 

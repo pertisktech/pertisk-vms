@@ -6,11 +6,11 @@ use std::time::Instant;
 use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool};
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ConsoleInfo,
-    CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
-    ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmRecord, VmSpec, VmState,
-    VolumeFormat, VolumeId, VolumeRecord, probe_host, ClusterMetrics, NodeMetrics, VmMetrics,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterMetrics,
+    ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig,
+    HostInfo, ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics,
+    ResizeVolumeRequest, SerialChunk, SnapshotRequest, StorageBackend, UpdateVmRequest, VmId,
+    VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -218,11 +218,7 @@ impl Service {
         let live = metrics::sample_host(&self.metrics, &self.config.storage.root);
         let self_id = self.cluster.self_id();
         let status = self.cluster_status()?;
-        let me = status
-            .members
-            .iter()
-            .find(|m| m.id == self_id)
-            .cloned();
+        let me = status.members.iter().find(|m| m.id == self_id).cloned();
         let vms = self.store.list()?;
         let running: Vec<_> = vms
             .iter()
@@ -230,10 +226,13 @@ impl Service {
             .collect();
         Ok(NodeMetrics {
             node_id: self_id,
-            name: me
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| self.config.cluster.node_name.clone().unwrap_or_else(|| "local".into())),
+            name: me.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| {
+                self.config
+                    .cluster
+                    .node_name
+                    .clone()
+                    .unwrap_or_else(|| "local".into())
+            }),
             live,
             allocated_vcpus: running.iter().map(|vm| u32::from(vm.spec.vcpus)).sum(),
             allocated_memory_mib: running.iter().map(|vm| vm.spec.memory_mib).sum(),

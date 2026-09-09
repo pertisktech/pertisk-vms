@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::str::FromStr;
+use std::time::Duration;
+
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
@@ -10,7 +14,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use pertisk_api::{
     ChangePasswordRequest, CreateUserRequest, CreateVmRequest, LoginRequest, Role,
     SetPasswordRequest, openapi_json,
@@ -37,6 +41,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/host", get(host))
         .route("/v1/metrics", get(cluster_metrics))
         .route("/v1/metrics/node", get(node_metrics))
+        .route("/v1/events/ws", get(events_ws))
         .route("/v1/vms", get(list).post(create))
         .route("/v1/vms/{id}", get(show).patch(update_vm).delete(destroy))
         .route("/v1/vms/{id}/metrics", get(vm_metrics))
@@ -277,6 +282,142 @@ async fn vm_metrics(
     Path(id): Path<VmId>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.vm_metrics(id)?))
+}
+
+#[derive(Deserialize)]
+struct EventsClient {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    metrics: serde_json::Value,
+}
+
+fn parse_metrics_scopes(value: &serde_json::Value) -> HashSet<String> {
+    match value {
+        serde_json::Value::String(scope) if !scope.is_empty() => HashSet::from([scope.clone()]),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .filter(|scope| !scope.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => HashSet::new(),
+    }
+}
+
+fn inventory_event(service: &Service) -> serde_json::Value {
+    json!({
+        "type": "inventory",
+        "host": service.host_info(),
+        "cluster": service.cluster_status().ok(),
+        "vms": service.list().unwrap_or_default(),
+        "volumes": service.list_volumes().unwrap_or_default(),
+        "isos": service.list_isos().unwrap_or_default(),
+        "networks": service.list_networks().unwrap_or_default(),
+        "tasks": service.list_tasks().unwrap_or_default(),
+        "audit": service.list_audit().unwrap_or_default(),
+    })
+}
+
+fn metrics_event(service: &Service, scope: &str) -> Option<serde_json::Value> {
+    let data = if scope == "cluster" {
+        serde_json::to_value(service.cluster_metrics().ok()?).ok()?
+    } else if scope == "node" {
+        serde_json::to_value(service.node_metrics().ok()?).ok()?
+    } else {
+        let id = VmId::from_str(scope).ok()?;
+        serde_json::to_value(service.vm_metrics(id).ok()?).ok()?
+    };
+    Some(json!({
+        "type": "metrics",
+        "scope": scope,
+        "data": data,
+    }))
+}
+
+async fn send_event(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    value: serde_json::Value,
+) -> Result<(), ()> {
+    let text = serde_json::to_string(&value).map_err(|_| ())?;
+    sink.send(Message::Text(text.into())).await.map_err(|_| ())
+}
+
+async fn send_inventory(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    service: &Service,
+) -> Result<(), ()> {
+    send_event(sink, inventory_event(service)).await
+}
+
+async fn send_metrics(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    service: &Service,
+    scopes: &HashSet<String>,
+) -> Result<(), ()> {
+    for scope in scopes {
+        if let Some(event) = metrics_event(service, scope) {
+            send_event(sink, event).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn events_ws(State(service): State<Service>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| pump_events(socket, service))
+}
+
+async fn pump_events(socket: WebSocket, service: Service) {
+    let (mut sink, mut stream) = socket.split();
+    let mut metrics_scopes: HashSet<String> = HashSet::new();
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            incoming = stream.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        let Ok(msg) = serde_json::from_str::<EventsClient>(text.as_str()) else {
+                            continue;
+                        };
+                        match msg.kind.as_str() {
+                            "subscribe" | "watch" => {
+                                metrics_scopes = parse_metrics_scopes(&msg.metrics);
+                                if send_metrics(&mut sink, &service, &metrics_scopes).await.is_err() {
+                                    break;
+                                }
+                            }
+                            "refresh" => {
+                                if send_inventory(&mut sink, &service).await.is_err() {
+                                    break;
+                                }
+                                if send_metrics(&mut sink, &service, &metrics_scopes).await.is_err() {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if sink.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+            _ = tick.tick() => {
+                if send_inventory(&mut sink, &service).await.is_err() {
+                    break;
+                }
+                if send_metrics(&mut sink, &service, &metrics_scopes).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 async fn list(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
@@ -1977,5 +2118,64 @@ mod tests {
         }
         node.kill();
         assert!(got.contains("ping"), "ws did not echo input: {got:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn events_websocket_sends_inventory() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::connect_async;
+
+        let node = spawn_node("events").await;
+        let ws_url = format!(
+            "{}/v1/events/ws?token={}",
+            node.url.replacen("http://", "ws://", 1),
+            node.token
+        );
+        let (ws, _) = connect_async(&ws_url).await.expect("events ws connect");
+        let (mut sink, mut stream) = ws.split();
+        let mut inventory = None;
+        for _ in 0..20 {
+            match tokio::time::timeout(std::time::Duration::from_millis(250), stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    let text = msg.to_string();
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value["type"] == "inventory" {
+                        inventory = Some(value);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        sink.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"type":"subscribe","metrics":["cluster"]}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let mut metrics = None;
+        for _ in 0..20 {
+            match tokio::time::timeout(std::time::Duration::from_millis(250), stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    let text = msg.to_string();
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    if value["type"] == "metrics" {
+                        metrics = Some(value);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        node.kill();
+        let inventory = inventory.expect("inventory event");
+        assert!(inventory["host"].is_object(), "{inventory:?}");
+        assert!(inventory["vms"].is_array(), "{inventory:?}");
+        let metrics = metrics.expect("metrics event");
+        assert_eq!(metrics["scope"], "cluster");
+        assert!(metrics["data"]["live"].is_object(), "{metrics:?}");
     }
 }

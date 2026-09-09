@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
+import { retainLive, watchMetrics } from './live'
 
-const POLL_INTERVAL_MS = 3000
 const MAX_POINTS = 60
 
 function formatTimeOnly(date) {
@@ -35,8 +35,20 @@ function toPoint(live) {
   }
 }
 
+function applySample(next, setData, setHistory) {
+  setData(next)
+  const sample = next?.live
+  if (!sample) return
+  const point = toPoint(sample)
+  setHistory((prev) => {
+    const last = prev[prev.length - 1]
+    if (last && last.collected_at_ms === point.collected_at_ms) return prev
+    return [...prev, point].slice(-MAX_POINTS)
+  })
+}
+
 /**
- * Poll live metrics and keep a rolling time series.
+ * Live metrics over the shared events websocket, with a REST snapshot for first paint.
  * @param {'cluster'|'node'|string} scope - 'cluster' | 'node' | vm id
  */
 export function useMetrics(scope) {
@@ -55,17 +67,8 @@ export function useMetrics(scope) {
         if (scope === 'node') path = '/v1/metrics/node'
         else if (scope !== 'cluster') path = `/v1/vms/${scope}/metrics`
         const next = await api(path)
-        setData(next)
+        applySample(next, setData, setHistory)
         setError('')
-        const sample = next?.live
-        if (sample) {
-          const point = toPoint(sample)
-          setHistory((prev) => {
-            const last = prev[prev.length - 1]
-            if (last && last.collected_at_ms === point.collected_at_ms) return prev
-            return [...prev, point].slice(-MAX_POINTS)
-          })
-        }
       } catch (err) {
         setError(err.message || String(err))
       } finally {
@@ -83,10 +86,19 @@ export function useMetrics(scope) {
   }, [refresh])
 
   useEffect(() => {
-    if (!live) return
-    const id = setInterval(() => refresh({ silent: true }), POLL_INTERVAL_MS)
-    return () => clearInterval(id)
-  }, [live, refresh])
+    if (scope == null || scope === '') return undefined
+    return retainLive((msg) => {
+      if (msg.type !== 'metrics' || String(msg.scope) !== String(scope)) return
+      applySample(msg.data, setData, setHistory)
+      setError('')
+      setLoading(false)
+    })
+  }, [scope])
+
+  useEffect(() => {
+    if (!live || scope == null || scope === '') return undefined
+    return watchMetrics(scope)
+  }, [live, scope])
 
   return { data, history, error, refresh, live, setLive, loading }
 }
