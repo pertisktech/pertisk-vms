@@ -1,9 +1,11 @@
 #!/bin/bash
-# HDMI/serial login: show NICs, start DHCP in the background, then a root shell.
-# USB live install does not need an address.
+# HDMI/serial console: show NICs, start DHCP in the background, then a root shell.
+# No password prompt — this replaces agetty login on tty1 / serial.
 echo
-echo "pertisk live     pertisk-install --auto     (no IP needed)"
-echo "root password:   pertisk     UI later: http://<ip>:7480/  admin"
+echo "pertisk-vm console (root shell, no login password)"
+echo "  TUI:            pertisk-tui"
+echo "  root password:  pertisk   (for ssh)"
+echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
 echo
 ip -br link 2>/dev/null || true
 echo

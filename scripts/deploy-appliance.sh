@@ -56,10 +56,85 @@ install -m 755 "$ROOT/target/release/pertiskd" "$MNT/usr/bin/pertiskd"
 install -m 755 "$ROOT/target/release/pertisk" "$MNT/usr/bin/pertisk"
 install -m 755 "$ROOT/target/release/pertisk-tui" "$MNT/usr/bin/pertisk-tui"
 
-# systemd unit tweaks (e.g. TimeoutStopSec) ship in the ISO overlay.
-if [[ -f "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" ]]; then
-  install -m 644 "$ROOT/iso/overlay/usr/lib/systemd/system/pertiskd.service" \
-    "$MNT/usr/lib/systemd/system/pertiskd.service"
+# systemd units ship in the ISO overlay (keep console free of journal spam for TUI).
+for unit in pertiskd.service pertisk-firstboot.service pertisk-net.service; do
+  src="$ROOT/iso/overlay/usr/lib/systemd/system/$unit"
+  if [[ -f "$src" ]]; then
+    install -m 644 "$src" "$MNT/usr/lib/systemd/system/$unit"
+  fi
+done
+
+# Console: skip getty password on VGA/serial — drop into pertisk-console (root shell).
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-console" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-console" "$MNT/usr/sbin/pertisk-console"
+fi
+for unit in getty@tty1.service.d serial-getty@ttyS0.service.d serial-getty@ttyS2.service.d serial-getty@ttyAMA0.service.d; do
+  src="$ROOT/iso/overlay/etc/systemd/system/$unit/autologin.conf"
+  if [[ -f "$src" ]]; then
+    mkdir -p "$MNT/etc/systemd/system/$unit"
+    install -m 644 "$src" "$MNT/etc/systemd/system/$unit/autologin.conf"
+  fi
+done
+
+# journald: do not forward logs to the HDMI/serial console (pertisk-tui).
+mkdir -p "$MNT/etc/systemd/journald.conf.d"
+if [[ -f "$ROOT/iso/overlay/etc/systemd/journald.conf.d/pertisk-no-console.conf" ]]; then
+  install -m 644 "$ROOT/iso/overlay/etc/systemd/journald.conf.d/pertisk-no-console.conf" \
+    "$MNT/etc/systemd/journald.conf.d/pertisk-no-console.conf"
+fi
+
+# Host networking helpers (stable DHCP client id; no DHCP on bridge slaves).
+for helper in pertisk-net pertisk-host-bridge; do
+  if [[ -f "$ROOT/iso/overlay/usr/sbin/$helper" ]]; then
+    install -m 755 "$ROOT/iso/overlay/usr/sbin/$helper" "$MNT/usr/sbin/$helper"
+  fi
+done
+mkdir -p "$MNT/etc/systemd/network"
+if [[ -f "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" ]]; then
+  # Keep disabled copy if bridge already owns DHCP.
+  if [[ -f "$MNT/etc/systemd/network/20-wired-dhcp.network.disabled" ]]; then
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network.disabled"
+  elif [[ -f "$MNT/etc/systemd/network/20-wired-dhcp.network" ]]; then
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network"
+  else
+    install -m 644 "$ROOT/iso/overlay/etc/systemd/network/20-wired-dhcp.network" \
+      "$MNT/etc/systemd/network/20-wired-dhcp.network"
+  fi
+fi
+# Ensure existing br0 DHCP uses MAC client-id (same lease across reboot).
+if [[ -f "$MNT/etc/systemd/network/15-br0.network" ]] \
+  && ! grep -q 'ClientIdentifier=mac' "$MNT/etc/systemd/network/15-br0.network"; then
+  cat >"$MNT/etc/systemd/network/15-br0.network" <<'EOF'
+[Match]
+Name=br0
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+ClientIdentifier=mac
+UseDNS=yes
+UseRoutes=yes
+EOF
+fi
+if [[ -f "$MNT/etc/systemd/network/15-br0-bind.network" ]] \
+  && ! grep -q 'DHCP=no' "$MNT/etc/systemd/network/15-br0-bind.network"; then
+  # Preserve Match Name=… from the existing bind file.
+  nic="$(awk -F= '/^Name=/{print $2; exit}' "$MNT/etc/systemd/network/15-br0-bind.network" || true)"
+  if [[ -n "$nic" ]]; then
+    cat >"$MNT/etc/systemd/network/15-br0-bind.network" <<EOF
+[Match]
+Name=${nic}
+
+[Network]
+Bridge=br0
+DHCP=no
+IPv6AcceptRA=no
+EOF
+  fi
 fi
 
 sync

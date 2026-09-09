@@ -84,10 +84,19 @@ export function Icon({ name, size = 18, className = '' }) {
   return <Cmp size={size} className={`icon ${className}`.trim()} aria-hidden />
 }
 
-export function Btn({ icon, children, variant = 'primary', className = '', ...rest }) {
+export function Btn({ icon, children, variant = 'primary', className = '', onMouseDown, ...rest }) {
   const v = variant === 'primary' ? '' : variant
   return (
-    <button type="button" className={`btn-icon ${v} ${className}`.trim()} {...rest}>
+    <button
+      type="button"
+      className={`btn-icon ${v} ${className}`.trim()}
+      // Keep console/VNC focus: mousedown focus-steal makes Enter hit Restart/Refresh.
+      onMouseDown={(e) => {
+        e.preventDefault()
+        onMouseDown?.(e)
+      }}
+      {...rest}
+    >
       {icon && <Icon name={icon} size={16} />}
       {children && <span>{children}</span>}
     </button>

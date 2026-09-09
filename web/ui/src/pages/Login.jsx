@@ -64,10 +64,13 @@ export default function Login() {
             <label htmlFor="login-password">Password</label>
             <input
               id="login-password"
+              name="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
+              autoFocus
+              spellCheck={false}
             />
           </div>
           <label className="chk login-remember">

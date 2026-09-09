@@ -10,7 +10,8 @@ Conflicts=shutdown.target
 Type=oneshot
 ExecStart=/usr/sbin/pertisk-net
 RemainAfterExit=yes
-StandardOutput=journal+console
+StandardOutput=journal
+StandardError=journal
 TimeoutStartSec=30
 
 [Install]

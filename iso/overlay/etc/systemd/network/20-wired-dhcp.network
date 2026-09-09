@@ -1,5 +1,6 @@
 [Match]
 # Physical NICs only (G11 has two 2.5G ports; either may be cabled).
+# Disabled after pertisk-host-bridge moves DHCP onto br0.
 Name=en* eth* end*
 
 [Network]
@@ -8,6 +9,8 @@ IPv6AcceptRA=yes
 LinkLocalAddressing=yes
 
 [DHCPv4]
+# Stable client id so the router renews the same lease across reboots.
+ClientIdentifier=mac
 UseDNS=yes
 UseRoutes=yes
 

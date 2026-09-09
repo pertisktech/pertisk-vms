@@ -929,7 +929,12 @@ async fn console_ws(
     Path(id): Path<VmId>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, DaemonError> {
-    let backlog = service.console_serial(id, 0, 256 * 1024)?;
+    // Only ship a recent tail — full logs are full of ANSI redraw noise and blank xterm.
+    let info = service.console_info(id)?;
+    let size = info.size;
+    let tail = 48 * 1024u64;
+    let from = size.saturating_sub(tail);
+    let backlog = service.console_serial(id, from, tail)?;
     let (rx, tx) = service.subscribe_console(id).await?;
     Ok(ws.on_upgrade(move |socket| proxy_console(socket, backlog.text, rx, tx)))
 }
@@ -1037,11 +1042,13 @@ async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) 
                 if unix_write.write_all(&data).await.is_err() {
                     break;
                 }
+                let _ = unix_write.flush().await;
             }
             Ok(Message::Text(text)) => {
                 if unix_write.write_all(text.as_bytes()).await.is_err() {
                     break;
                 }
+                let _ = unix_write.flush().await;
             }
             Ok(Message::Close(_)) => break,
             _ => {}

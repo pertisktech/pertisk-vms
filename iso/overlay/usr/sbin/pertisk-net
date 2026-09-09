@@ -1,5 +1,6 @@
 #!/bin/bash
-# DHCP on every cabled ethernet. Fast exit if nothing is plugged in.
+# Ensure cabled ethernet has DHCP, then publish the address for the console.
+# Prefer systemd-networkd; only fall back to dhclient on unmanaged NICs.
 set -euo pipefail
 
 mkdir -p /run /etc/issue.d
@@ -12,6 +13,8 @@ skip() {
   case "$1" in
     lo | br* | docker* | veth* | tap* | wlan* | wl* | wwan*) return 0 ;;
   esac
+  # Bridge slaves must not run DHCP themselves (lease would fight br0).
+  [[ -e "/sys/class/net/$1/master" ]] && return 0
   return 1
 }
 
@@ -38,7 +41,9 @@ have_ip() {
 cabled=0
 for path in /sys/class/net/*; do
   nic="${path##*/}"
-  skip "$nic" && continue
+  # Count carrier on physical ports even when enslaved (bridge path).
+  case "$nic" in lo|docker*|veth*|tap*|wlan*|wl*|wwan*) continue ;; esac
+  [[ -d "$path/device" ]] || [[ -d "$path/bridge" ]] || continue
   carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
   if [[ "$carrier" == 1 ]]; then
     cabled=1
@@ -63,6 +68,11 @@ for _ in 1 2 3 4 5; do
     skip "$nic" && continue
     carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
     [[ "$carrier" == 1 ]] || continue
+    # Only if networkd is not already managing this link.
+    if command -v networkctl >/dev/null \
+      && networkctl status "$nic" 2>/dev/null | grep -qiE 'State:.*(configured|routable)'; then
+      continue
+    fi
     if command -v dhclient >/dev/null; then
       dhclient -1 "$nic" >/dev/null 2>&1 || true
     fi

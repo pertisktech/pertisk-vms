@@ -2108,17 +2108,8 @@ impl Service {
     }
 }
 
-fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
-    vm.state == VmState::Running
-        && vm
-            .spec
-            .nets
-            .iter()
-            .any(|nic| nic.mac.is_some() && (nic.ip.is_none() || nic.ipv6.is_none()))
-}
-
-/// Fill missing NIC IPs from QEMU guest agent and/or the host neighbour table.
-/// Returns true when the in-memory record gained an IP (caller may persist).
+/// Fill / refresh NIC IPs from QEMU guest agent and/or the host neighbour table.
+/// Returns true when the in-memory record changed (caller may persist).
 fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
     let qga = run_dir.join(format!("{}.qga.sock", vm.id));
     let qga_ips = if vm.state == VmState::Running && qga.exists() {
@@ -2132,40 +2123,45 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
             continue;
         };
         let want = pertisk_net::normalize_mac(mac);
-        if nic.ip.is_none() {
-            let observed = want
-                .as_ref()
-                .and_then(|want| {
-                    qga_ips
-                        .ipv4
-                        .iter()
-                        .find(|(m, _)| m == want)
-                        .map(|(_, ip)| ip.clone())
-                })
-                .or_else(|| pertisk_net::ipv4_for_mac(mac));
-            if let Some(ip) = observed {
+        let observed_v4 = want
+            .as_ref()
+            .and_then(|want| {
+                qga_ips
+                    .ipv4
+                    .iter()
+                    .find(|(m, _)| m == want)
+                    .map(|(_, ip)| ip.clone())
+            })
+            .or_else(|| pertisk_net::ipv4_for_mac(mac));
+        if let Some(ip) = observed_v4 {
+            if nic.ip.as_deref() != Some(ip.as_str()) {
                 nic.ip = Some(ip);
                 changed = true;
             }
         }
-        if nic.ipv6.is_none() {
-            let observed = want
-                .as_ref()
-                .and_then(|want| {
-                    qga_ips
-                        .ipv6
-                        .iter()
-                        .find(|(m, _)| m == want)
-                        .map(|(_, ip)| ip.clone())
-                })
-                .or_else(|| pertisk_net::ipv6_for_mac(mac));
-            if let Some(ip) = observed {
+        let observed_v6 = want
+            .as_ref()
+            .and_then(|want| {
+                qga_ips
+                    .ipv6
+                    .iter()
+                    .find(|(m, _)| m == want)
+                    .map(|(_, ip)| ip.clone())
+            })
+            .or_else(|| pertisk_net::ipv6_for_mac(mac));
+        if let Some(ip) = observed_v6 {
+            if nic.ipv6.as_deref() != Some(ip.as_str()) {
                 nic.ipv6 = Some(ip);
                 changed = true;
             }
         }
     }
     changed
+}
+
+fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
+    // Always probe running guests so DHCP renewals after restart update inventory.
+    vm.state == VmState::Running && vm.spec.nets.iter().any(|nic| nic.mac.is_some())
 }
 
 fn free_space_mib(path: &Path) -> Option<u64> {
