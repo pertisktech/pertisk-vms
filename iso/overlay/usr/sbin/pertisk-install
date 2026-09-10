@@ -33,11 +33,12 @@ while [[ $# -gt 0 ]]; do
     --list) LIST=1; shift ;;
     --min-gib) MIN_GIB="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: pertisk-install --disk /dev/nvme0n1 --yes"
-      echo "       pertisk-install --auto"
+      echo "Usage: pertisk-install --auto"
+      echo "       pertisk-install --disk /dev/nvme0n1 --yes"
       echo "       pertisk-install --list"
       echo "Installs this live image onto DISK (or the largest NVMe/SATA disk with --auto). Wipes the whole disk."
       echo "A partition like /dev/nvme0n1p2 is accepted; the whole SSD is used (p1=ESP, p2=root)."
+      echo "After install, if BIOS finds no boot entry:  pertisk-fix-nvme-boot /dev/nvme0n1"
       echo "Needs no network and no KVM. UEFI PCs get GPT + ESP + GRUB. Orange Pi / Raspberry Pi get vendor U-Boot layout."
       exit 0
       ;;
@@ -521,7 +522,8 @@ if [[ "$family" == rockchip ]]; then
   echo "Power off, remove the SD card, then boot from $DISK (SPI + NVMe)."
   echo "If it does not start, put the SD back in."
 else
-  echo "Reboot. Firmware should start $DISK p1 (ESP); Linux root is p2."
-  echo "If it goes to BIOS: unplug USB, pick the NVMe / pertisk / Windows Boot Manager entry."
+  echo "UNPLUG USB, then reboot."
+  echo "BIOS Boot → Windows Boot Manager  (or pertisk)."
+  echo "If BIOS finds nothing:  pertisk-fix-nvme-boot ${DISK}"
 fi
-echo "UI will be http://<host>:7480/  (admin password in /etc/pertisk/admin after first boot)"
+echo "UI: http://<host>:7480/  (admin password in /etc/pertisk/admin)"

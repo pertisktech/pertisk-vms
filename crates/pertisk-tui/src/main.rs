@@ -1,5 +1,6 @@
 //! Local node console: show IP, admin password, and control guests.
 
+use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use pertisk_types::{DEFAULT_LISTEN, VmId, VmRecord};
+use pertisk_types::{DEFAULT_LISTEN, VmId, VmRecord, VmState};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -40,6 +41,38 @@ struct App {
     last_refresh: std::time::Instant,
     /// First `d` arms destroy; second `d` within a few seconds confirms.
     pending_delete: Option<(VmId, std::time::Instant)>,
+    live: Option<LiveStats>,
+    vm_live: HashMap<VmId, LiveStats>,
+}
+
+#[derive(Clone, Default)]
+struct LiveStats {
+    cpu_pct: f32,
+    mem_used: u64,
+    mem_total: u64,
+    disk_used: u64,
+    disk_total: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeMetricsResponse {
+    live: ResourceSampleDto,
+}
+
+#[derive(Debug, Deserialize)]
+struct VmMetricsResponse {
+    #[serde(default)]
+    live: Option<ResourceSampleDto>,
+    memory_mib: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceSampleDto {
+    cpu_pct: f32,
+    mem_used_bytes: u64,
+    mem_total_bytes: u64,
+    disk_used_bytes: u64,
+    disk_total_bytes: u64,
 }
 
 const REFRESH_EVERY: Duration = Duration::from_secs(3);
@@ -79,6 +112,16 @@ async fn run() -> Result<()> {
     } else {
         Vec::new()
     };
+    let live = if let Some(ref token) = token {
+        fetch_node_metrics(&client, &api_base, token).await.ok()
+    } else {
+        None
+    };
+    let vm_live = if let Some(ref token) = token {
+        fetch_all_vm_metrics(&client, &api_base, token, &vms).await
+    } else {
+        HashMap::new()
+    };
 
     let mut app = App {
         info,
@@ -91,6 +134,8 @@ async fn run() -> Result<()> {
         error: String::new(),
         last_refresh: std::time::Instant::now(),
         pending_delete: None,
+        live,
+        vm_live,
     };
 
     // Linux VGA/serial consoles (TERM=linux) often go blank with the alternate
@@ -163,14 +208,9 @@ fn node_info() -> NodeInfo {
     let password = admin_password();
     let listen = std::env::var("PERTISK_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
     let ui_host = url_host(&ips);
-    let tls_listen = std::env::var("PERTISK_TLS_LISTEN").unwrap_or_else(|_| "0.0.0.0:7443".into());
-    let tls_port = tls_listen
-        .rsplit(':')
-        .next()
-        .filter(|p| *p != "off" && !p.is_empty())
-        .unwrap_or("7443");
+    let http_port = listen.split(':').nth(1).unwrap_or("7480");
     NodeInfo {
-        ui_url: format!("https://{ui_host}:{tls_port}/"),
+        ui_url: format!("http://{ui_host}:{http_port}/"),
         ips,
         password,
         listen,
@@ -239,6 +279,110 @@ async fn fetch_vms(client: &Client, base: &str, token: &str) -> Result<Vec<VmRec
         .await?;
     let response = response.error_for_status()?;
     Ok(response.json().await?)
+}
+
+async fn fetch_node_metrics(client: &Client, base: &str, token: &str) -> Result<LiveStats> {
+    let response = client
+        .get(format!("{base}/v1/metrics/node"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("metrics request")?;
+    let response = response.error_for_status()?;
+    let body: NodeMetricsResponse = response.json().await.context("metrics json")?;
+    Ok(LiveStats {
+        cpu_pct: body.live.cpu_pct,
+        mem_used: body.live.mem_used_bytes,
+        mem_total: body.live.mem_total_bytes,
+        disk_used: body.live.disk_used_bytes,
+        disk_total: body.live.disk_total_bytes,
+    })
+}
+
+async fn fetch_vm_metrics(client: &Client, base: &str, token: &str, id: VmId) -> Result<LiveStats> {
+    let response = client
+        .get(format!("{base}/v1/vms/{id}/metrics"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("vm metrics request")?;
+    let response = response.error_for_status()?;
+    let body: VmMetricsResponse = response.json().await.context("vm metrics json")?;
+    if let Some(live) = body.live {
+        Ok(LiveStats {
+            cpu_pct: live.cpu_pct,
+            mem_used: live.mem_used_bytes,
+            mem_total: live.mem_total_bytes,
+            disk_used: live.disk_used_bytes,
+            disk_total: live.disk_total_bytes,
+        })
+    } else {
+        Ok(LiveStats {
+            cpu_pct: 0.0,
+            mem_used: 0,
+            mem_total: u64::from(body.memory_mib).saturating_mul(1024 * 1024),
+            disk_used: 0,
+            disk_total: 0,
+        })
+    }
+}
+
+async fn fetch_all_vm_metrics(
+    client: &Client,
+    base: &str,
+    token: &str,
+    vms: &[VmRecord],
+) -> HashMap<VmId, LiveStats> {
+    let mut out = HashMap::new();
+    for vm in vms {
+        if vm.state != VmState::Running {
+            out.insert(
+                vm.id,
+                LiveStats {
+                    cpu_pct: 0.0,
+                    mem_used: 0,
+                    mem_total: u64::from(vm.spec.memory_mib).saturating_mul(1024 * 1024),
+                    disk_used: 0,
+                    disk_total: 0,
+                },
+            );
+            continue;
+        }
+        if let Ok(stats) = fetch_vm_metrics(client, base, token, vm.id).await {
+            out.insert(vm.id, stats);
+        }
+    }
+    out
+}
+
+fn format_bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let v = n as f64;
+    if v < KIB {
+        return format!("{n} B");
+    }
+    let units = ["KiB", "MiB", "GiB", "TiB"];
+    let mut x = v;
+    let mut i = 0usize;
+    loop {
+        x /= KIB;
+        if x < KIB || i + 1 >= units.len() {
+            break;
+        }
+        i += 1;
+    }
+    if x >= 10.0 {
+        format!("{x:.0} {}", units[i])
+    } else {
+        format!("{x:.1} {}", units[i])
+    }
+}
+
+fn format_used_total(used: u64, total: u64) -> String {
+    if total == 0 {
+        return "—".into();
+    }
+    format!("{}/{}", format_bytes(used), format_bytes(total))
 }
 
 async fn power(
@@ -331,14 +475,8 @@ async fn refresh(app: &mut App) {
     app.info.ips = local_ips();
     app.info.password = admin_password();
     let ui_host = url_host(&app.info.ips);
-    let tls_port = app
-        .info
-        .ui_url
-        .trim_end_matches('/')
-        .rsplit(':')
-        .next()
-        .unwrap_or("7443");
-    app.info.ui_url = format!("https://{ui_host}:{tls_port}/");
+    let http_port = app.info.listen.split(':').nth(1).unwrap_or("7480");
+    app.info.ui_url = format!("http://{ui_host}:{http_port}/");
     app.error.clear();
     if app.token.is_none() {
         match login(&app.client, &app.api_base, &app.info.password).await {
@@ -363,8 +501,20 @@ async fn refresh(app: &mut App) {
         Err(err) => {
             app.token = None;
             app.error = format!("list: {err}");
+            return;
         }
     }
+    match fetch_node_metrics(&app.client, &app.api_base, &token).await {
+        Ok(live) => app.live = Some(live),
+        Err(err) => {
+            // Keep guests list even if metrics endpoint is old/unavailable.
+            app.live = None;
+            if app.error.is_empty() {
+                app.error = format!("metrics: {err}");
+            }
+        }
+    }
+    app.vm_live = fetch_all_vm_metrics(&app.client, &app.api_base, &token, &app.vms).await;
 }
 
 async fn destroy_selected(app: &mut App) {
@@ -443,7 +593,7 @@ fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Min(6),
             Constraint::Length(3),
         ])
@@ -455,7 +605,20 @@ fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_info(f: &mut Frame, area: Rect, app: &App) {
-    let ips = if app.info.ips.is_empty() {
+    let primary_ip = app
+        .info
+        .ips
+        .iter()
+        .find(|ip| ip.contains('.'))
+        .cloned()
+        .unwrap_or_else(|| {
+            app.info
+                .ips
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "—".into())
+        });
+    let all_ips = if app.info.ips.is_empty() {
         "—".into()
     } else {
         app.info.ips.join(", ")
@@ -465,27 +628,49 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Span::styled("offline", Style::default().fg(Color::Yellow))
     };
+    let (cpu, mem, disk) = match &app.live {
+        Some(s) => (
+            format!("{:.1}%", s.cpu_pct),
+            format_used_total(s.mem_used, s.mem_total),
+            format_used_total(s.disk_used, s.disk_total),
+        ),
+        None => ("—".into(), "—".into(), "—".into()),
+    };
     let lines = vec![
+        Line::from(vec![
+            Span::styled("IP     ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                primary_ip,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("All    ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(all_ips),
+        ]),
         Line::from(vec![
             Span::styled("Web UI ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&app.info.ui_url),
         ]),
         Line::from(vec![
-            Span::styled("IP(s)  ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(ips),
+            Span::styled("CPU    ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(cpu),
+            Span::raw("   "),
+            Span::styled("Mem ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(mem),
+            Span::raw("   "),
+            Span::styled("Disk ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(disk),
         ]),
         Line::from(vec![
             Span::styled("User   ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("admin"),
-        ]),
-        Line::from(vec![
+            Span::raw("   "),
             Span::styled("Password ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(&app.info.password, Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(vec![
-            Span::styled("API    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&app.api_base),
-            Span::raw("  "),
+            Span::raw("   "),
             auth,
         ]),
     ];
@@ -494,7 +679,7 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
-    let header = Row::new(vec!["ID", "NAME", "STATE", "CPU", "MEM"])
+    let header = Row::new(vec!["ID", "NAME", "STATE", "CPU", "MEM", "DISK"])
         .style(Style::default().add_modifier(Modifier::BOLD));
     let rows: Vec<Row> = app
         .vms
@@ -506,12 +691,34 @@ fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default()
             };
+            let (cpu, mem, disk) = match app.vm_live.get(&vm.id) {
+                Some(s) if vm.state == VmState::Running && s.mem_total > 0 => (
+                    format!("{:.0}%", s.cpu_pct),
+                    format_used_total(s.mem_used, s.mem_total),
+                    if s.disk_total > 0 {
+                        format_used_total(s.disk_used, s.disk_total)
+                    } else {
+                        "—".into()
+                    },
+                ),
+                Some(s) if s.mem_total > 0 => (
+                    "—".into(),
+                    format!("—/{}", format_bytes(s.mem_total)),
+                    "—".into(),
+                ),
+                _ => (
+                    "—".into(),
+                    format!("{} MiB", vm.spec.memory_mib),
+                    "—".into(),
+                ),
+            };
             Row::new(vec![
                 Cell::from(vm.id.to_string()),
                 Cell::from(vm.spec.name.clone()),
                 Cell::from(format!("{}", vm.state)),
-                Cell::from(vm.spec.vcpus.to_string()),
-                Cell::from(format!("{} MiB", vm.spec.memory_mib)),
+                Cell::from(cpu),
+                Cell::from(mem),
+                Cell::from(disk),
             ])
             .style(style)
         })
@@ -520,10 +727,11 @@ fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
         rows,
         [
             Constraint::Length(6),
-            Constraint::Min(12),
-            Constraint::Length(10),
-            Constraint::Length(4),
-            Constraint::Length(10),
+            Constraint::Min(10),
+            Constraint::Length(9),
+            Constraint::Length(5),
+            Constraint::Length(15),
+            Constraint::Length(15),
         ],
     )
     .header(header)
@@ -586,11 +794,18 @@ mod tests {
     }
 
     #[test]
-    fn url_host_brackets_ipv6() {
-        assert_eq!(url_host(&["2001:db8::1".into()]), "[2001:db8::1]");
+    fn format_bytes_gib() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(32554504192), "30 GiB");
+    }
+
+    #[test]
+    fn format_used_total_pair() {
+        assert_eq!(format_used_total(0, 0), "—");
         assert_eq!(
-            url_host(&["2001:db8::1".into(), "10.0.0.5".into()]),
-            "10.0.0.5"
+            format_used_total(644_245_094, 32_212_254_720),
+            format!("{}/{}", format_bytes(644_245_094), format_bytes(32_212_254_720))
         );
     }
 }

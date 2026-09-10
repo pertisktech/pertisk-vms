@@ -1,4 +1,4 @@
 pertisk-vm node
-USB installer: console asks to install NVMe (Enter=install, Ctrl+C=skip).
-Or run: pertisk-install --auto
-Unplug USB and reboot after install. UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)
+Install to NVMe:  pertisk-install --auto
+Repair NVMe boot: pertisk-fix-nvme-boot /dev/nvme0n1
+Unplug USB after install. UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)

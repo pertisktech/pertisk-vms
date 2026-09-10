@@ -22,6 +22,7 @@ is_installer_media() {
   [[ "$rem" == 1 ]]
 }
 
+# Optional unattended flash only when /etc/pertisk/install sets PERTISK_AUTO_INSTALL=1.
 maybe_auto_disk_install() {
   [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 0
   [[ -x /usr/sbin/pertisk-install ]] || return 0
@@ -34,22 +35,19 @@ maybe_auto_disk_install() {
     set -u
     auto="${PERTISK_AUTO_INSTALL:-0}"
   fi
-  # Default is interactive install on the console (Ctrl+C / Enter).
-  # Only headless images set PERTISK_AUTO_INSTALL=1.
   [[ "$auto" == "1" ]] || return 0
   is_installer_media || return 0
-  echo "pertisk-firstboot: unattended USB/SD install — copying OS to largest NVMe/SATA (wipes target)"
+  echo "pertisk-firstboot: PERTISK_AUTO_INSTALL=1 — copying OS to largest NVMe/SATA (wipes target)"
   if /usr/sbin/pertisk-install --auto; then
     touch "$HOME_DIR/.installed-to-disk"
-    echo "pertisk-firstboot: installed. Unplug the USB stick. Rebooting..."
+    echo "pertisk-firstboot: installed. Unplug USB. Rebooting..."
     sleep 8
     systemctl reboot
     exit 0
   fi
-  echo "pertisk-firstboot: auto-install failed. On this console run: pertisk-install --list && pertisk-install --auto" >&2
+  echo "pertisk-firstboot: auto-install failed. Run: pertisk-install --auto" >&2
 }
 
-# Optional unattended flash (PERTISK_AUTO_INSTALL=1). Interactive USB install is in pertisk-console.
 maybe_auto_disk_install
 
 kvm_ok=1
@@ -227,15 +225,15 @@ EOF
 else
   cat >"$ISSUE" <<EOF
 pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
-No IP yet? Plug a LAN cable. NVMe install: pertisk-install --auto
+No IP yet? Plug a LAN cable. NVMe: pertisk-install --auto
 EOF
 fi
 
 {
   echo "pertisk-vm node"
   if show_install_hint; then
-    echo "No network needed to flash NVMe. Run: pertisk-install --auto"
-    echo "Or: pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes"
+    echo "Install to NVMe:   pertisk-install --auto"
+    echo "Repair NVMe boot:  pertisk-fix-nvme-boot /dev/nvme0n1"
   else
     echo "Running from disk (no pertisk-install needed)."
   fi

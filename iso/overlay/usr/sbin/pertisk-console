@@ -1,92 +1,5 @@
 #!/bin/bash
-# HDMI/serial console: optional NVMe install prompt, then a root shell.
-# Replaces agetty login on tty1 / serial (no password).
-
-is_installer_media() {
-  local live tran rem
-  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
-  [[ -n "$live" ]] || return 1
-  tran="$(lsblk -dno TRAN "/dev/${live}" 2>/dev/null || true)"
-  case "$tran" in
-    usb|mmc) return 0 ;;
-  esac
-  rem="$(cat "/sys/block/${live}/removable" 2>/dev/null || echo 0)"
-  [[ "$rem" == 1 ]]
-}
-
-offer_nvme_install() {
-  [[ -x /usr/sbin/pertisk-install ]] || return 0
-  [[ -f /var/lib/pertisk/.installed-to-disk ]] && return 0
-  is_installer_media || return 0
-
-  # Never auto-wipe. Timeout / Esc / n / Ctrl+C = skip. Only Enter installs.
-  local secs=30 key="" action=skip
-  echo
-  echo "════════════════════════════════════════════════════"
-  echo "  USB/SD installer — NVMe/SATA install"
-  echo "  Enter = install now (WIPES largest internal disk)"
-  echo "  Esc / n / Ctrl+C = skip (keep live USB shell)"
-  echo "  Wait ${secs}s with no key = skip (no auto-install)"
-  echo "════════════════════════════════════════════════════"
-  echo
-  if [[ -x /usr/sbin/pertisk-install ]]; then
-    /usr/sbin/pertisk-install --list 2>/dev/null || true
-    echo
-  fi
-
-  trap 'echo; echo "Install skipped."; action=skip; secs=0; trap - INT' INT
-  while [[ "$secs" -gt 0 ]]; do
-    printf '\r  Waiting %2d s…  Enter=install  Esc/n=skip          ' "$secs"
-    # -n 1 reads one byte; Esc is often a CSI sequence — treat as skip.
-    if read -r -t 1 -n 1 key; then
-      case "$key" in
-        ""|$'\n'|$'\r')
-          action=install
-          secs=0
-          ;;
-        n|N|s|S|q|Q|$'\e')
-          action=skip
-          secs=0
-          ;;
-        *)
-          # Ignore other keys (do not start wipe by accident).
-          ;;
-      esac
-    else
-      secs=$((secs - 1))
-    fi
-  done
-  echo
-  trap - INT
-
-  if [[ "$action" != "install" ]]; then
-    echo "Install skipped. Later:  pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes"
-    return 0
-  fi
-
-  echo "pertisk-console: installing to disk (no network needed)…"
-  if /usr/sbin/pertisk-install --auto; then
-    mkdir -p /var/lib/pertisk
-    touch /var/lib/pertisk/.installed-to-disk
-    echo
-    echo "════════════════════════════════════════════════════"
-    echo "  Install finished."
-    echo "  1) UNPLUG this USB/SD stick now"
-    echo "  2) In BIOS Boot, pick: Windows Boot Manager  or  pertisk"
-    echo "  3) Press Enter here to reboot"
-    echo "════════════════════════════════════════════════════"
-    echo
-    # Do not auto-reboot — USB still plugged often boots the stick again
-    # and AMI then never learns the NVMe ESP.
-    trap 'echo; echo "Staying in live shell."; trap - INT; return 0' INT
-    read -r -p "Unplugged USB? Press Enter to reboot (Ctrl+C to stay)… " || true
-    trap - INT
-    systemctl reboot
-    exit 0
-  fi
-  echo "pertisk-console: install failed. Try: pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes" >&2
-  echo "If install OK but BIOS finds nothing:  pertisk-fix-nvme-boot /dev/nvme0n1" >&2
-}
+# HDMI/serial console: root shell (no password). NVMe install is manual only.
 
 echo
 echo "pertisk-vm console (root shell, no login password)"
@@ -94,10 +7,13 @@ echo "  TUI:            pertisk-tui"
 echo "  root password:  pertisk   (for ssh)"
 echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
 echo
-ip -br link 2>/dev/null || true
+echo "  Install to NVMe (wipes disk):"
+echo "    pertisk-install --auto"
+echo "  If BIOS finds no boot entry after install:"
+echo "    pertisk-fix-nvme-boot /dev/nvme0n1"
 echo
-
-offer_nvme_install
+ip -br a 2>/dev/null || ip -br link 2>/dev/null || true
+echo
 
 if [[ -x /usr/sbin/pertisk-net ]]; then
   /usr/sbin/pertisk-net >/tmp/pertisk-net.log 2>&1 &

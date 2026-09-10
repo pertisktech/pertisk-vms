@@ -110,15 +110,24 @@ if command -v efibootmgr >/dev/null; then
     [[ -n "$num" ]] || continue
     efibootmgr -b "$num" -B >/dev/null 2>&1 || true
   done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|Windows Boot Manager\).*/\1/pi')
-  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\BOOT\BOOTX64.EFI' -L pertisk
-  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\Microsoft\Boot\bootmgfw.efi' -L 'Windows Boot Manager'
+  # AMI: Windows Boot Manager first, then pertisk.
+  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\Microsoft\Boot\bootmgfw.efi' -L 'Windows Boot Manager' || true
+  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\BOOT\BOOTX64.EFI' -L pertisk || true
+  win="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*Windows Boot Manager.*/\1/pi' | tail -n1)"
   num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
-  if [[ -n "$num" ]]; then
-    efibootmgr -n "$num" >/dev/null 2>&1 || true
-    order="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
-    efibootmgr -o "${num}${order:+,$order}" >/dev/null 2>&1 || true
+  order=""
+  [[ -n "${win:-}" ]] && order="$win"
+  [[ -n "${num:-}" ]] && order="${order:+$order,}$num"
+  if [[ -n "$order" ]]; then
+    rest="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
+    efibootmgr -o "${order}${rest:+,$rest}" >/dev/null 2>&1 || efibootmgr -o "$order" >/dev/null 2>&1 || true
+    if [[ -n "${win:-}" ]]; then
+      efibootmgr -n "$win" >/dev/null 2>&1 || true
+    elif [[ -n "${num:-}" ]]; then
+      efibootmgr -n "$num" >/dev/null 2>&1 || true
+    fi
   fi
-  efibootmgr -v
+  efibootmgr -v || true
 fi
 
 echo "pertisk-fix-nvme-boot: done."

@@ -54,7 +54,7 @@ done
 if [[ "$cabled" -eq 0 ]]; then
   cat >"$ISSUE" <<'EOF'
 pertisk-vm  no cable — plug either 2.5G LAN port.
-NVMe install does not need an IP:  pertisk-install --auto
+NVMe: pertisk-install --auto   repair: pertisk-fix-nvme-boot /dev/nvme0n1
 EOF
   echo "pertisk-net: no carrier (plug a LAN cable)"
   ip -br link || true
@@ -87,7 +87,7 @@ if [[ -n "$ips" ]]; then
 else
   cat >"$ISSUE" <<'EOF'
 pertisk-vm  cable up but no DHCP. Check the switch/router.
-NVMe install does not need an IP:  pertisk-install --auto
+NVMe: pertisk-install --auto   repair: pertisk-fix-nvme-boot /dev/nvme0n1
 EOF
   echo "pertisk-net: carrier but no IPv4"
 fi

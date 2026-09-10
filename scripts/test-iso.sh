@@ -79,14 +79,14 @@ grep -q 'is_installer_media' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot installer-media detect"; fail=1; }
 grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
   || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
-grep -q 'offer_nvme_install' "$OVERLAY/usr/sbin/pertisk-console" \
-  || { echo "FAIL console must offer NVMe install (Enter/Ctrl+C)"; fail=1; }
-grep -q 'Ctrl+C' "$OVERLAY/usr/sbin/pertisk-console" \
-  || { echo "FAIL console install must mention Ctrl+C skip"; fail=1; }
-grep -q 'no auto-install' "$OVERLAY/usr/sbin/pertisk-console" \
-  || { echo "FAIL console must not auto-wipe on timeout"; fail=1; }
-grep -q 'action=install' "$OVERLAY/usr/sbin/pertisk-console" \
-  || { echo "FAIL console only installs on Enter"; fail=1; }
+grep -q 'pertisk-install --auto' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must document pertisk-install --auto"; fail=1; }
+grep -q 'pertisk-fix-nvme-boot' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must document pertisk-fix-nvme-boot"; fail=1; }
+if grep -q 'offer_nvme_install' "$OVERLAY/usr/sbin/pertisk-console"; then
+  echo "FAIL console must not auto-prompt NVMe install"
+  fail=1
+fi
 grep -q 'Windows Boot Manager' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install must register AMI Windows Boot Manager path"; fail=1; }
 grep -q 'ESP incomplete' "$OVERLAY/usr/sbin/pertisk-install" \
