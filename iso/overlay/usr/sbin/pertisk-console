@@ -1,6 +1,66 @@
 #!/bin/bash
-# HDMI/serial console: show NICs, start DHCP in the background, then a root shell.
-# No password prompt — this replaces agetty login on tty1 / serial.
+# HDMI/serial console: optional NVMe install prompt, then a root shell.
+# Replaces agetty login on tty1 / serial (no password).
+
+is_installer_media() {
+  local live tran rem
+  live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+  [[ -n "$live" ]] || return 1
+  tran="$(lsblk -dno TRAN "/dev/${live}" 2>/dev/null || true)"
+  case "$tran" in
+    usb|mmc) return 0 ;;
+  esac
+  rem="$(cat "/sys/block/${live}/removable" 2>/dev/null || echo 0)"
+  [[ "$rem" == 1 ]]
+}
+
+offer_nvme_install() {
+  [[ -x /usr/sbin/pertisk-install ]] || return 0
+  [[ -f /var/lib/pertisk/.installed-to-disk ]] && return 0
+  is_installer_media || return 0
+
+  local secs=15 key=""
+  echo
+  echo "════════════════════════════════════════════════════"
+  echo "  USB/SD installer — NVMe/SATA install"
+  echo "  Enter  = install now (wipes largest internal disk)"
+  echo "  Ctrl+C = skip and keep this live shell"
+  echo "  Or wait ${secs}s to install automatically"
+  echo "════════════════════════════════════════════════════"
+  echo
+  if [[ -x /usr/sbin/pertisk-install ]]; then
+    /usr/sbin/pertisk-install --list 2>/dev/null || true
+    echo
+  fi
+
+  trap 'echo; echo "Install skipped. Later:  pertisk-install --auto"; trap - INT; return 0' INT
+  while [[ "$secs" -gt 0 ]]; do
+    printf '\r  Auto-install in %2d s…  (Enter=now  Ctrl+C=skip)   ' "$secs"
+    if read -r -t 1 -n 1 key; then
+      # Any key / Enter starts install immediately.
+      break
+    fi
+    secs=$((secs - 1))
+  done
+  echo
+  trap - INT
+
+  echo "pertisk-console: installing to disk (no network needed)…"
+  if /usr/sbin/pertisk-install --auto; then
+    mkdir -p /var/lib/pertisk
+    touch /var/lib/pertisk/.installed-to-disk
+    echo
+    echo "Install done. Unplug the USB/SD stick."
+    echo "Rebooting in 8 seconds… (Ctrl+C to stay in this shell)"
+    trap 'echo; echo "Reboot cancelled."; trap - INT; return 0' INT
+    sleep 8 || true
+    trap - INT
+    systemctl reboot
+    exit 0
+  fi
+  echo "pertisk-console: install failed. Try: pertisk-install --list && pertisk-install --auto" >&2
+}
+
 echo
 echo "pertisk-vm console (root shell, no login password)"
 echo "  TUI:            pertisk-tui"
@@ -9,6 +69,9 @@ echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
 echo
 ip -br link 2>/dev/null || true
 echo
+
+offer_nvme_install
+
 if [[ -x /usr/sbin/pertisk-net ]]; then
   /usr/sbin/pertisk-net >/tmp/pertisk-net.log 2>&1 &
 fi

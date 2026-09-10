@@ -65,6 +65,12 @@ if grep -q 'pertisk-kvm-check' "$OVERLAY/usr/sbin/pertisk-install"; then
 fi
 grep -q 'is_installer_media' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot installer-media detect"; fail=1; }
+grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
+  || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
+grep -q 'offer_nvme_install' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must offer NVMe install (Enter/Ctrl+C)"; fail=1; }
+grep -q 'Ctrl+C' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console install must mention Ctrl+C skip"; fail=1; }
 grep -q 'chmod 644' "$OVERLAY/usr/sbin/pertisk-host-bridge" \
   || { echo "FAIL host-bridge networkd files must be world-readable"; fail=1; }
 if grep -q 'network-online.target' "$OVERLAY/usr/lib/systemd/system/pertisk-firstboot.service"; then

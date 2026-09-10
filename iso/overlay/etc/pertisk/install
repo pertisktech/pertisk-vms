@@ -1,2 +1,3 @@
-# Set to 0 to keep the USB as a live OS (no automatic NVMe wipe).
-PERTISK_AUTO_INSTALL=1
+# Interactive USB→NVMe install is offered on the console (Enter / Ctrl+C).
+# Set to 1 only for unattended headless flash (no console confirm).
+PERTISK_AUTO_INSTALL=0

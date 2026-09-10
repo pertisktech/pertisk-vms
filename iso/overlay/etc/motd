@@ -1,3 +1,4 @@
 pertisk-vm node
-NVMe install does not need an IP. On this console: pertisk-install --auto
-Then unplug USB and reboot. UI: http://<ip>:7480/  admin /admin (see /etc/pertisk/admin)
+USB installer: console asks to install NVMe (Enter=install, Ctrl+C=skip).
+Or run: pertisk-install --auto
+Unplug USB and reboot after install. UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)
