@@ -41,6 +41,28 @@ function formatPct(value) {
   return `${value.toFixed(value >= 10 ? 0 : 1)}%`
 }
 
+function sampleBytes(sample, bytesKey, aliasKey) {
+  const raw = sample?.[bytesKey] ?? sample?.[aliasKey]
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : 0
+}
+
+function formatMemStat(sample) {
+  const total = sampleBytes(sample, 'mem_total_bytes', 'mem_total')
+  const used = sampleBytes(sample, 'mem_used_bytes', 'mem_used')
+  if (total <= 0) return '—'
+  const free = Math.max(0, total - used)
+  const pct = Math.round((used / total) * 1000) / 10
+  return `${formatPct(pct)} · ${formatBytes(used)} used · ${formatBytes(free)} free · ${formatBytes(total)} total`
+}
+
+function formatDiskStat(sample) {
+  const total = sampleBytes(sample, 'disk_total_bytes', 'disk_total')
+  const used = sampleBytes(sample, 'disk_used_bytes', 'disk_used')
+  if (total <= 0) return '—'
+  return `${formatBytes(used)} / ${formatBytes(total)}`
+}
+
 function formatMibps(value) {
   if (value == null || !Number.isFinite(value)) return '—'
   return `${value.toFixed(2)} MiB/s`
@@ -159,26 +181,8 @@ export default function MetricsCharts({
 
       <div className="dash-stat-row metrics-stat-row">
         <Stat label="CPU" value={formatPct(sample?.cpu ?? sample?.cpu_pct)} />
-        <Stat
-          label="Memory"
-          value={
-            sample?.mem_total || sample?.mem_total_bytes
-              ? `${formatBytes(sample.mem_used ?? sample.mem_used_bytes)} / ${formatBytes(
-                  sample.mem_total ?? sample.mem_total_bytes,
-                )}`
-              : '—'
-          }
-        />
-        <Stat
-          label="Disk"
-          value={
-            sample?.disk_total || sample?.disk_total_bytes
-              ? `${formatBytes(sample.disk_used ?? sample.disk_used_bytes)} / ${formatBytes(
-                  sample.disk_total ?? sample.disk_total_bytes,
-                )}`
-              : '—'
-          }
-        />
+        <Stat label="Memory" value={formatMemStat(sample)} />
+        <Stat label="Disk" value={formatDiskStat(sample)} />
         <Stat
           label="Network"
           value={`↓ ${formatRate(sample?.rx ?? sample?.net_rx_bps)} · ↑ ${formatRate(

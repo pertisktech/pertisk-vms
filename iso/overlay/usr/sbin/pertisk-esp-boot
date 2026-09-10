@@ -100,11 +100,28 @@ case "$(uname -m)" in
     ;;
 esac
 
+# Prefer UUID so USB live + NVMe (both labeled pertisk-root) do not race and
+# leave initramfs with "can't lookup blockdev".
+root_spec="root=LABEL=pertisk-root"
+if [[ -f /etc/fstab ]]; then
+  root_uuid="$(awk '$2 == "/" && $1 ~ /^UUID=/ { sub(/^UUID=/, "", $1); print $1; exit }' /etc/fstab || true)"
+  if [[ -n "${root_uuid:-}" ]]; then
+    root_spec="root=UUID=${root_uuid}"
+  fi
+fi
+if [[ "$root_spec" == root=LABEL=pertisk-root ]]; then
+  root_uuid="$(blkid -s UUID -o value -L pertisk-root 2>/dev/null || true)"
+  label_hits="$(blkid 2>/dev/null | grep -c 'LABEL="pertisk-root"' || true)"
+  if [[ -n "${root_uuid:-}" && "${label_hits}" -eq 1 ]]; then
+    root_spec="root=UUID=${root_uuid}"
+  fi
+fi
+
 embed="$(mktemp)"
 cfg_body="$(cat <<EOF
 echo "pertisk loading kernel"
 search --no-floppy --file --set=root /vmlinuz
-linux /vmlinuz root=LABEL=pertisk-root rootwait rw console=tty0 console=ttyS0 ${extra}
+linux /vmlinuz ${root_spec} rootwait rootdelay=15 rw console=tty0 console=ttyS0 ${extra}
 initrd /initrd.img
 boot
 EOF
@@ -142,5 +159,5 @@ cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/grub/grub.cfg"
 cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/EFI/debian/grub.cfg"
 cp -f "$esp/EFI/BOOT/grub.cfg" "$esp/EFI/pertisk/grub.cfg"
 sync
-echo "pertisk-esp-boot: embedded $efi_out + vmlinuz (root=LABEL=pertisk-root)"
+echo "pertisk-esp-boot: embedded $efi_out + vmlinuz (${root_spec})"
 exit 0

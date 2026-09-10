@@ -1,0 +1,13 @@
+# Always include storage drivers so USB→NVMe install can boot the
+# internal SSD (MODULES=dep alone may only keep USB/virtio from the live root).
+nvme
+nvme_core
+ahci
+sd_mod
+usb_storage
+uas
+virtio_blk
+virtio_pci
+virtio_scsi
+xhci_pci
+ehci_pci

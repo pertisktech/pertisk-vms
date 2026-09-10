@@ -35,10 +35,15 @@ fn cpu_capacity(n: &NodeLoad) -> u32 {
     n.cpus.saturating_mul(CPU_OVERCOMMIT).max(n.cpus)
 }
 
+/// Guest placement budget: leave ~25% of installed RAM for the host / nested HV.
+fn guest_memory_capacity(n: &NodeLoad) -> u32 {
+    n.memory_mib.saturating_mul(3) / 4
+}
+
 fn node_fits(n: &NodeLoad, spec: &VmSpec) -> bool {
     n.online
         && cpu_capacity(n).saturating_sub(n.used_vcpus) >= u32::from(spec.vcpus)
-        && n.memory_mib.saturating_sub(n.used_memory_mib) >= spec.memory_mib
+        && guest_memory_capacity(n).saturating_sub(n.used_memory_mib) >= spec.memory_mib
 }
 
 pub fn schedule(nodes: &[NodeLoad], spec: &VmSpec, prefer: Option<NodeId>) -> Option<NodeId> {
@@ -53,7 +58,8 @@ pub fn schedule(nodes: &[NodeLoad], spec: &VmSpec, prefer: Option<NodeId>) -> Op
         .filter(|n| fits(n))
         .min_by_key(|n| {
             let cpu = n.used_vcpus.saturating_mul(1_000) / n.cpus.max(1);
-            let mem = n.used_memory_mib.saturating_mul(1_000) / n.memory_mib.max(1);
+            let mem_cap = guest_memory_capacity(n).max(1);
+            let mem = n.used_memory_mib.saturating_mul(1_000) / mem_cap;
             (cpu + mem, n.id)
         })
         .map(|n| n.id)
@@ -150,9 +156,9 @@ fn advertised_host_memory_mib() -> Option<u32> {
             continue;
         };
         let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-        let mib = (kb / 1024).max(1024);
-        // Leave headroom for the host and Cloud Hypervisor.
-        return Some((mib.saturating_mul(3) / 4) as u32);
+        // Advertise installed RAM for UI / inventory. Placement still reserves
+        // ~25% via guest_memory_capacity().
+        return Some((kb / 1024).max(1024) as u32);
     }
     None
 }
@@ -700,6 +706,37 @@ mod tests {
             used_memory_mib: 4096,
         };
         assert_eq!(schedule(&[node], &spec_small(), None), None);
+    }
+
+    #[test]
+    fn advertises_full_memtotal_not_three_quarters() {
+        let Some(advertised) = advertised_host_memory_mib() else {
+            return;
+        };
+        let text = std::fs::read_to_string("/proc/meminfo").unwrap();
+        let mut total_kb = 0u64;
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                total_kb = rest.split_whitespace().next().unwrap().parse().unwrap();
+                break;
+            }
+        }
+        let full = (total_kb / 1024).max(1024) as u32;
+        assert_eq!(advertised, full, "cluster must advertise installed RAM, not 3/4 headroom");
+        assert_ne!(advertised, full.saturating_mul(3) / 4);
+    }
+
+    #[test]
+    fn guest_memory_capacity_reserves_quarter() {
+        let n = NodeLoad {
+            id: NodeId::new(),
+            online: true,
+            cpus: 8,
+            memory_mib: 32_768,
+            used_vcpus: 0,
+            used_memory_mib: 0,
+        };
+        assert_eq!(guest_memory_capacity(&n), 24_576);
     }
 
     #[test]

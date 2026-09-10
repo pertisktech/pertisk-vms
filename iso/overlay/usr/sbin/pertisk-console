@@ -19,13 +19,14 @@ offer_nvme_install() {
   [[ -f /var/lib/pertisk/.installed-to-disk ]] && return 0
   is_installer_media || return 0
 
-  local secs=15 key=""
+  # Never auto-wipe. Timeout / Esc / n / Ctrl+C = skip. Only Enter installs.
+  local secs=30 key="" action=skip
   echo
   echo "════════════════════════════════════════════════════"
   echo "  USB/SD installer — NVMe/SATA install"
-  echo "  Enter  = install now (wipes largest internal disk)"
-  echo "  Ctrl+C = skip and keep this live shell"
-  echo "  Or wait ${secs}s to install automatically"
+  echo "  Enter = install now (WIPES largest internal disk)"
+  echo "  Esc / n / Ctrl+C = skip (keep live USB shell)"
+  echo "  Wait ${secs}s with no key = skip (no auto-install)"
   echo "════════════════════════════════════════════════════"
   echo
   if [[ -x /usr/sbin/pertisk-install ]]; then
@@ -33,32 +34,58 @@ offer_nvme_install() {
     echo
   fi
 
-  trap 'echo; echo "Install skipped. Later:  pertisk-install --auto"; trap - INT; return 0' INT
+  trap 'echo; echo "Install skipped."; action=skip; secs=0; trap - INT' INT
   while [[ "$secs" -gt 0 ]]; do
-    printf '\r  Auto-install in %2d s…  (Enter=now  Ctrl+C=skip)   ' "$secs"
+    printf '\r  Waiting %2d s…  Enter=install  Esc/n=skip          ' "$secs"
+    # -n 1 reads one byte; Esc is often a CSI sequence — treat as skip.
     if read -r -t 1 -n 1 key; then
-      # Any key / Enter starts install immediately.
-      break
+      case "$key" in
+        ""|$'\n'|$'\r')
+          action=install
+          secs=0
+          ;;
+        n|N|s|S|q|Q|$'\e')
+          action=skip
+          secs=0
+          ;;
+        *)
+          # Ignore other keys (do not start wipe by accident).
+          ;;
+      esac
+    else
+      secs=$((secs - 1))
     fi
-    secs=$((secs - 1))
   done
   echo
   trap - INT
+
+  if [[ "$action" != "install" ]]; then
+    echo "Install skipped. Later:  pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes"
+    return 0
+  fi
 
   echo "pertisk-console: installing to disk (no network needed)…"
   if /usr/sbin/pertisk-install --auto; then
     mkdir -p /var/lib/pertisk
     touch /var/lib/pertisk/.installed-to-disk
     echo
-    echo "Install done. Unplug the USB/SD stick."
-    echo "Rebooting in 8 seconds… (Ctrl+C to stay in this shell)"
-    trap 'echo; echo "Reboot cancelled."; trap - INT; return 0' INT
-    sleep 8 || true
+    echo "════════════════════════════════════════════════════"
+    echo "  Install finished."
+    echo "  1) UNPLUG this USB/SD stick now"
+    echo "  2) In BIOS Boot, pick: Windows Boot Manager  or  pertisk"
+    echo "  3) Press Enter here to reboot"
+    echo "════════════════════════════════════════════════════"
+    echo
+    # Do not auto-reboot — USB still plugged often boots the stick again
+    # and AMI then never learns the NVMe ESP.
+    trap 'echo; echo "Staying in live shell."; trap - INT; return 0' INT
+    read -r -p "Unplugged USB? Press Enter to reboot (Ctrl+C to stay)… " || true
     trap - INT
     systemctl reboot
     exit 0
   fi
-  echo "pertisk-console: install failed. Try: pertisk-install --list && pertisk-install --auto" >&2
+  echo "pertisk-console: install failed. Try: pertisk-install --list && pertisk-install --disk /dev/nvme0n1 --yes" >&2
+  echo "If install OK but BIOS finds nothing:  pertisk-fix-nvme-boot /dev/nvme0n1" >&2
 }
 
 echo

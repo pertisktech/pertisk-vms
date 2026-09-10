@@ -61,6 +61,13 @@ export default function MetricsPanel({ live, title = 'Live', empty }) {
           used={Number(live.mem_used_bytes) || 0}
           total={Number(live.mem_total_bytes) || 0}
           unit="B"
+          detail={
+            Number(live.mem_total_bytes) > 0
+              ? `${formatBytes(Number(live.mem_used_bytes) || 0)} used · ${formatBytes(
+                  Math.max(0, Number(live.mem_total_bytes) - (Number(live.mem_used_bytes) || 0)),
+                )} free · ${formatBytes(Number(live.mem_total_bytes))} total`
+              : undefined
+          }
         />
         <Meter
           label="Disk"

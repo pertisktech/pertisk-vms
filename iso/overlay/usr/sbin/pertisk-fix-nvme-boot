@@ -50,6 +50,33 @@ cleanup() {
 trap cleanup EXIT
 
 echo "pertisk-fix-nvme-boot: ESP $p1  root $p2"
+
+# Ensure fstab uses UUID=/ so GRUB embeds root=UUID=… (avoids USB+NVMe LABEL clash).
+root_uuid="$(blkid -s UUID -o value "$p2" || true)"
+esp_uuid="$(blkid -s UUID -o value "$p1" || true)"
+if [[ -n "$root_uuid" ]]; then
+  cat >"$mnt/etc/fstab" <<EOF
+UUID=$root_uuid / ext4 defaults 0 1
+${esp_uuid:+UUID=$esp_uuid /boot/efi vfat umask=0077 0 2}
+EOF
+fi
+
+# Force storage modules into the installed system if an older image lacked them.
+mkdir -p "$mnt/etc/initramfs-tools" "$mnt/etc/initramfs-tools/conf.d"
+if [[ -f /etc/initramfs-tools/modules ]]; then
+  cp -f /etc/initramfs-tools/modules "$mnt/etc/initramfs-tools/modules"
+fi
+if [[ -f /etc/initramfs-tools/conf.d/pertisk-storage.conf ]]; then
+  cp -f /etc/initramfs-tools/conf.d/pertisk-storage.conf \
+    "$mnt/etc/initramfs-tools/conf.d/pertisk-storage.conf"
+fi
+if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
+  cp -f /usr/sbin/pertisk-esp-boot "$mnt/usr/sbin/pertisk-esp-boot"
+fi
+
+echo "pertisk-fix-nvme-boot: rebuilding initramfs"
+chroot "$mnt" update-initramfs -u -k all || chroot "$mnt" update-initramfs -c -k all || true
+
 if [[ -x "$mnt/usr/sbin/pertisk-esp-boot" ]]; then
   chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
 elif command -v grub-install >/dev/null; then
@@ -94,6 +121,8 @@ if command -v efibootmgr >/dev/null; then
   efibootmgr -v
 fi
 
-echo "pertisk-fix-nvme-boot: done. Power off, unplug USB, boot NVMe."
-echo "If BIOS still says no device: ESC → Boot → Windows Boot Manager or pertisk."
+echo "pertisk-fix-nvme-boot: done."
+echo "  1) Power off and UNPLUG USB"
+echo "  2) BIOS Boot → Windows Boot Manager  (or pertisk)"
+echo "If BIOS still says no device: disable Secure Boot / CSM legacy, then retry."
 exit 0

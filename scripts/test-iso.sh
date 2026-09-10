@@ -56,6 +56,18 @@ grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL instal
 grep -q 'pertisk-esp-boot' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install esp-boot"; fail=1; }
 grep -q '/boot/efi/vmlinuz' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
   || { echo "FAIL esp-boot finds kernel on ESP"; fail=1; }
+grep -q 'root=UUID\|root=LABEL' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
+  || { echo "FAIL esp-boot must set root=UUID/LABEL"; fail=1; }
+grep -q 'rootdelay=15' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
+  || { echo "FAIL esp-boot needs rootdelay for slow NVMe"; fail=1; }
+grep -q '^nvme$' "$OVERLAY/etc/initramfs-tools/modules" \
+  || { echo "FAIL initramfs must force-load nvme"; fail=1; }
+grep -q 'MODULES=most' "$OVERLAY/etc/initramfs-tools/conf.d/pertisk-storage.conf" \
+  || { echo "FAIL initramfs MODULES=most for storage"; fail=1; }
+grep -q 'update-initramfs' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must rebuild initramfs before NVMe boot"; fail=1; }
+grep -q 'UNPLUG' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must tell user to unplug USB"; fail=1; }
 grep -q 'grub-mkimage' "$OVERLAY/usr/sbin/pertisk-esp-boot" || { echo "FAIL embedded GRUB efi"; fail=1; }
 grep -q 'is_usb_or_removable' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install skips removable disks"; fail=1; }
@@ -71,6 +83,14 @@ grep -q 'offer_nvme_install' "$OVERLAY/usr/sbin/pertisk-console" \
   || { echo "FAIL console must offer NVMe install (Enter/Ctrl+C)"; fail=1; }
 grep -q 'Ctrl+C' "$OVERLAY/usr/sbin/pertisk-console" \
   || { echo "FAIL console install must mention Ctrl+C skip"; fail=1; }
+grep -q 'no auto-install' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must not auto-wipe on timeout"; fail=1; }
+grep -q 'action=install' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console only installs on Enter"; fail=1; }
+grep -q 'Windows Boot Manager' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must register AMI Windows Boot Manager path"; fail=1; }
+grep -q 'ESP incomplete' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must verify ESP before success"; fail=1; }
 grep -q 'chmod 644' "$OVERLAY/usr/sbin/pertisk-host-bridge" \
   || { echo "FAIL host-bridge networkd files must be world-readable"; fail=1; }
 if grep -q 'network-online.target' "$OVERLAY/usr/lib/systemd/system/pertisk-firstboot.service"; then

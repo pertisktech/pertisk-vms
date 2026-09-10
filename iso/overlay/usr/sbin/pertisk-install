@@ -271,36 +271,53 @@ patch_boot_root() {
 }
 
 register_uefi_boot() {
-  local disk="$1" part="${2:-1}" loader num order
+  local disk="$1" part="${2:-1}" loader num order win
   [[ -d /sys/firmware/efi ]] || return 0
   command -v efibootmgr >/dev/null || return 0
-  # Drop stale "pertisk" / leftover GRUB entries from failed installs.
+  # Drop stale "pertisk" / leftover GRUB / WBM entries from failed installs.
   while read -r num; do
     [[ -n "$num" ]] || continue
     efibootmgr -b "$num" -B >/dev/null 2>&1 || true
-  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|GRUB\).*/\1/p')
+  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|GRUB\|Windows Boot Manager\).*/\1/pi')
   loader='\EFI\BOOT\BOOTX64.EFI'
   case "$(uname -m)" in
     aarch64|arm64) loader='\EFI\BOOT\BOOTAA64.EFI' ;;
   esac
+  # AMI Aptio on mini PCs often only auto-discovers "Windows Boot Manager"
+  # on internal NVMe — create that first and put it first in BootOrder.
+  if efibootmgr -c -d "$disk" -p "$part" -l '\EFI\Microsoft\Boot\bootmgfw.efi' \
+    -L 'Windows Boot Manager' >/dev/null 2>&1; then
+    win="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*Windows Boot Manager.*/\1/pi' | tail -n1)"
+  fi
   if ! efibootmgr -c -d "$disk" -p "$part" -l "$loader" -L pertisk; then
-    echo "pertisk-install: efibootmgr could not create a boot entry (AMI may still find EFI/BOOT or EFI/Microsoft)" >&2
-    return 0
+    echo "pertisk-install: efibootmgr could not create pertisk entry (WBM path may still work)" >&2
   fi
-  # AMI Aptio often only auto-discovers "Windows Boot Manager" on internal NVMe.
-  efibootmgr -c -d "$disk" -p "$part" -l '\EFI\Microsoft\Boot\bootmgfw.efi' \
-    -L 'Windows Boot Manager' >/dev/null 2>&1 || true
   num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
-  if [[ -n "$num" ]]; then
-    efibootmgr -n "$num" >/dev/null 2>&1 || true
-    order="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
-    if [[ -n "$order" ]]; then
-      efibootmgr -o "${num},${order}" >/dev/null 2>&1 || true
-    else
-      efibootmgr -o "$num" >/dev/null 2>&1 || true
-    fi
-    echo "pertisk-install: UEFI BootNext=$num → $disk partition $part $loader"
+  order=""
+  if [[ -n "${win:-}" ]]; then
+    order="$win"
   fi
+  if [[ -n "${num:-}" ]]; then
+    order="${order:+$order,}$num"
+  fi
+  if [[ -n "$order" ]]; then
+    # Prefer Windows Boot Manager, then pertisk, then whatever else remains.
+    local rest
+    rest="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
+    if [[ -n "$rest" ]]; then
+      efibootmgr -o "${order},${rest}" >/dev/null 2>&1 || efibootmgr -o "$order" >/dev/null 2>&1 || true
+    else
+      efibootmgr -o "$order" >/dev/null 2>&1 || true
+    fi
+    # Next boot: Windows Boot Manager (AMI-friendly) if we have it.
+    if [[ -n "${win:-}" ]]; then
+      efibootmgr -n "$win" >/dev/null 2>&1 || true
+    elif [[ -n "${num:-}" ]]; then
+      efibootmgr -n "$num" >/dev/null 2>&1 || true
+    fi
+    echo "pertisk-install: UEFI BootOrder prefers Windows Boot Manager / pertisk on $disk p$part"
+  fi
+  efibootmgr -v 2>/dev/null | head -n 20 || true
 }
 
 wipe_target_disk() {
@@ -362,11 +379,35 @@ EOF
       cp -f "/boot/efi/EFI/BOOT/${f}" "$mnt/boot/${f}"
     fi
   done
+  # Rebuild initrd inside the target so NVMe/SATA modules are present (live USB
+  # MODULES=dep may have omitted them — boots then die with "can't lookup blockdev").
+  if [[ -x "$mnt/usr/sbin/update-initramfs" ]] || chroot "$mnt" command -v update-initramfs >/dev/null 2>&1; then
+    echo "pertisk-install: rebuilding initramfs for NVMe/SATA boot"
+    chroot "$mnt" update-initramfs -u -k all || chroot "$mnt" update-initramfs -c -k all || true
+  fi
   chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
+  # Hard-verify removable + AMI paths before we claim success.
+  local bootname=BOOTX64.EFI
+  case "$(uname -m)" in aarch64|arm64) bootname=BOOTAA64.EFI ;; esac
+  for need in \
+    "$mnt/boot/efi/EFI/BOOT/$bootname" \
+    "$mnt/boot/efi/EFI/BOOT/vmlinuz" \
+    "$mnt/boot/efi/EFI/BOOT/initrd.img" \
+    "$mnt/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi"; do
+    if [[ ! -s "$need" ]]; then
+      echo "pertisk-install: missing boot file $need" >&2
+      ls -laR "$mnt/boot/efi/EFI" >&2 || true
+      die "ESP incomplete — not rebooting into a blank BIOS screen"
+    fi
+  done
+  sync
   register_uefi_boot "$DISK" 1
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"
   touch "$mnt/var/lib/pertisk/.installed-to-disk"
   umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
+  echo "pertisk-install: UEFI install done on $DISK"
+  echo "pertisk-install: UNPLUG the USB stick, then boot:"
+  echo "  BIOS → Boot → Windows Boot Manager   (or pertisk)"
 }
 
 install_rockchip() {

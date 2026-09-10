@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api, asList } from '../api'
+import { api, asList, formatBytes } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
@@ -118,7 +118,11 @@ export default function Cluster() {
                   CPU {m.used_vcpus}/{m.cpus}
                 </span>
                 <span>
-                  Mem {m.used_memory_mib}/{m.memory_mib} MiB · {memPct}%
+                  Mem {formatBytes((m.used_memory_mib || 0) * 1024 * 1024)} used ·{' '}
+                  {formatBytes(
+                    Math.max(0, (m.memory_mib || 0) - (m.used_memory_mib || 0)) * 1024 * 1024,
+                  )}{' '}
+                  free · {formatBytes((m.memory_mib || 0) * 1024 * 1024)} total · {memPct}%
                 </span>
               </div>
             </article>
