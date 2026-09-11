@@ -254,6 +254,8 @@ struct ChPayload {
 struct ChDisk {
     path: String,
     readonly: bool,
+    /// O_DIRECT (true) returns zeros on compressed qcow2 cloud images.
+    direct: bool,
 }
 
 #[derive(Serialize)]
@@ -316,6 +318,7 @@ impl ChVmConfig {
             .map(|disk| ChDisk {
                 path: disk.path.display().to_string(),
                 readonly: disk.readonly || disk.cdrom,
+                direct: false,
             })
             .collect();
         let disks = if disks.is_empty() { None } else { Some(disks) };
@@ -446,6 +449,7 @@ mod tests {
         assert_eq!(disks[0]["path"], "/var/os.iso");
         assert_eq!(disks[0]["readonly"], true);
         assert_eq!(disks[1]["path"], "/var/disk.raw");
+        assert_eq!(disks[1]["direct"], false);
         assert_eq!(disks[2]["path"], "/var/seed-cidata.iso");
     }
 }

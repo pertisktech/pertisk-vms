@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, guestMemoryBudgetMib, nextVmId } from '../api'
+import { api, cloudInitHasLogin, detectCloudOs, guestMemoryBudgetMib, isCloudInitIso, nextVmId } from '../api'
 import Modal from './Modal'
 
 const STEPS = [
@@ -18,6 +18,12 @@ function defaultMemory() {
   return 1024
 }
 
+function osFromForm(form, vms, volumes) {
+  const tpl = (vms || []).find((vm) => String(vm.id) === String(form.templateId))
+  const vol = (volumes || []).find((v) => v.id === form.volumeId)
+  return detectCloudOs(form.name, tpl?.spec?.name, vol?.name, form.diskName, form.iso)
+}
+
 const EMPTY = {
   id: '',
   name: '',
@@ -31,10 +37,11 @@ const EMPTY = {
   diskSize: '32G',
   volumeId: '',
   templateId: '',
-  linked: true,
+  linked: false,
   iso: '',
   cloudInit: false,
   ciUser: 'ubuntu',
+  ciUserAuto: true,
   ciPassword: '',
   ciSshKey: '',
   networkId: '',
@@ -68,7 +75,13 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
   }, [isos, networks])
 
   function set(patch) {
-    setForm((f) => ({ ...f, ...patch }))
+    setForm((f) => {
+      const next = { ...f, ...patch }
+      if (next.ciUserAuto && patch.ciUser === undefined) {
+        next.ciUser = osFromForm(next, vms, volumes).user
+      }
+      return next
+    })
   }
 
   async function run(label, fn) {
@@ -88,11 +101,22 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     if (step === 1 && form.diskMode === 'new') return (form.diskName.trim() || form.name.trim()).length > 0
     if (step === 1 && form.diskMode === 'existing') return Boolean(form.volumeId)
     if (step === 1 && form.diskMode === 'template') return Boolean(form.templateId)
+    if (step === 2 && form.cloudInit) return cloudInitHasLogin(form.ciPassword, form.ciSshKey)
     return true
   }
 
+  function goNext() {
+    if (!canNext()) return
+    setStep((s) => Math.min(s + 1, STEPS.length - 1))
+  }
+
   async function finish(e) {
-    e.preventDefault()
+    e?.preventDefault?.()
+    if (created) return
+    if (step < STEPS.length - 1) {
+      goNext()
+      return
+    }
     setBusy(true)
     setError('')
     setCreated(false)
@@ -115,7 +139,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               cloud_init: form.cloudInit
                 ? {
                     hostname: form.name.trim(),
-                    user: form.ciUser.trim() || 'ubuntu',
+                    user: form.ciUser.trim() || osFromForm(form, vms, volumes).user,
                     password: form.ciPassword || undefined,
                     ssh_authorized_keys: form.ciSshKey
                       .split('\n')
@@ -187,7 +211,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             body: {
               name: `${form.name.trim()}-cidata.iso`,
               hostname: form.name.trim(),
-              user: form.ciUser.trim() || 'ubuntu',
+              user: form.ciUser.trim() || osFromForm(form, vms, volumes).user,
               password: form.ciPassword || undefined,
               ssh_authorized_keys: form.ciSshKey
                 .split('\n')
@@ -247,6 +271,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     [form.iso || null, form.cloudInit ? 'cloud-init seed' : null].filter(Boolean).join(' + ') || 'None'
   const selectedNetwork = networks.find((n) => n.id === form.networkId)
   const netLabel = selectedNetwork?.name || 'None'
+  const detectedOs = osFromForm(form, vms, volumes)
 
   return (
     <Modal
@@ -270,11 +295,11 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               </button>
             )}
             {!created && step < STEPS.length - 1 ? (
-              <button type="button" onClick={() => setStep((s) => s + 1)} disabled={!canNext()}>
+              <button key="wizard-next" type="button" onClick={goNext} disabled={!canNext()}>
                 Next
               </button>
             ) : !created ? (
-              <button type="submit" form="guest-wizard" disabled={busy || !canNext()}>
+              <button key="wizard-create" type="button" onClick={finish} disabled={busy || !canNext()}>
                 {busy ? 'Creating…' : form.start ? 'Create and start' : 'Create'}
               </button>
             ) : null}
@@ -471,6 +496,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                       set({
                         templateId: e.target.value,
                         cloudInit: true,
+                        ciUserAuto: true,
                         vcpus: tpl?.spec?.vcpus || form.vcpus,
                         memory_mib: budget && budget >= 64 ? Math.min(wanted, budget) : wanted,
                       })
@@ -498,7 +524,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                   <span className="chk-box" />
                   <span className="chk-label">
                     Linked clone
-                    <small>Thin disk from the template; falls back to a full copy without qemu-img</small>
+                    <small>Thin overlay on the template. Leave off for AlmaLinux/RHEL cloud images.</small>
                   </span>
                 </label>
               </div>
@@ -514,13 +540,13 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <label htmlFor="guest-iso">ISO</label>
                 <select id="guest-iso" value={form.iso} onChange={(e) => set({ iso: e.target.value })}>
                   <option value="">None</option>
-                  {isos.map((iso) => (
+                  {isos.filter((iso) => !isCloudInitIso(iso.name)).map((iso) => (
                     <option key={iso.name} value={iso.name}>
                       {iso.name}
                     </option>
                   ))}
                 </select>
-                {isos.length === 0 && (
+                {isos.filter((iso) => !isCloudInitIso(iso.name)).length === 0 && (
                   <p className="muted">Import an ISO under Storage first (Upload file or host path).</p>
                 )}
                 {form.iso && host?.driver === 'cloud-hypervisor' && !host?.firmware && (
@@ -557,8 +583,12 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                     <input
                       id="ci-user"
                       value={form.ciUser}
-                      onChange={(e) => set({ ciUser: e.target.value })}
+                      onChange={(e) => set({ ciUser: e.target.value, ciUserAuto: false })}
                     />
+                    <p className="field-hint">
+                      Auto from {detectedOs.os}: <code>{detectedOs.user}</code>. SSH as{' '}
+                      <code>{(form.ciUser.trim() || detectedOs.user)}@…</code>
+                    </p>
                   </div>
                   <div className="field">
                     <label htmlFor="ci-pass">Password</label>
@@ -567,6 +597,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                       type="password"
                       value={form.ciPassword}
                       onChange={(e) => set({ ciPassword: e.target.value })}
+                      autoComplete="new-password"
                     />
                   </div>
                 </div>
@@ -579,7 +610,16 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                     onChange={(e) => set({ ciSshKey: e.target.value })}
                     placeholder="ssh-ed25519 AAAA… (one per line)"
                   />
+                  <p className="field-hint">
+                    Paste a public key, or rely on <code>/etc/pertisk/ssh/authorized_keys</code> on the node.
+                    Password is optional and is not expired.
+                  </p>
                 </div>
+                {form.cloudInit && !cloudInitHasLogin(form.ciPassword, form.ciSshKey) && (
+                  <p className="error" style={{ marginTop: '0.5rem' }}>
+                    Set a password or paste an SSH public key.
+                  </p>
+                )}
               </>
             )}
           </>

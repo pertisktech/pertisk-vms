@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api, formatBytes, parseSize, replicasOf, snapshotsOf } from '../api'
+import { api, formatBytes, isCloudInitIso, parseSize, replicasOf, snapshotsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
@@ -11,6 +11,8 @@ export default function Storage() {
   const { volumes, isos, cluster, error, setError, mutate } = useInventory()
   const confirm = useConfirm()
   const members = cluster?.members || []
+  const osIsos = isos.filter((iso) => !isCloudInitIso(iso.name))
+  const seedIsos = isos.filter((iso) => isCloudInitIso(iso.name))
 
   function nodeName(id) {
     return members.find((m) => m.id === id)?.name || (id ? String(id).slice(0, 8) : '—')
@@ -248,8 +250,8 @@ export default function Storage() {
 
       <section className="card table-card">
         <div className="table-meta">ISOs</div>
-        {isos.length === 0 ? (
-          <p className="muted">No ISOs imported.</p>
+        {osIsos.length === 0 ? (
+          <p className="muted">No installer ISOs imported.</p>
         ) : (
           <div className="table-shell">
             <table>
@@ -261,7 +263,7 @@ export default function Storage() {
                 </tr>
               </thead>
               <tbody>
-                {isos.map((iso) => (
+                {osIsos.map((iso) => (
                   <tr key={iso.name}>
                     <td>{iso.name}</td>
                     <td>{formatBytes(iso.size_bytes)}</td>
@@ -290,6 +292,53 @@ export default function Storage() {
           </div>
         )}
       </section>
+
+      {seedIsos.length > 0 && (
+        <section className="card table-card">
+          <div className="table-meta">Cloud-init seeds</div>
+          <p className="muted" style={{ margin: '0 1rem 0.75rem' }}>
+            Tiny cidata ISOs created when you clone a cloud template. Not an OS image — import GenericCloud qcow2
+            under Templates.
+          </p>
+          <div className="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Size</th>
+                  {canWrite && <th />}
+                </tr>
+              </thead>
+              <tbody>
+                {seedIsos.map((iso) => (
+                  <tr key={iso.name}>
+                    <td>{iso.name}</td>
+                    <td>{formatBytes(iso.size_bytes)}</td>
+                    {canWrite && (
+                      <td className="col-actions">
+                        <Btn
+                          icon="trash"
+                          variant="danger"
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: 'Remove seed',
+                              message: `Remove ${iso.name}?`,
+                              confirmLabel: 'Remove',
+                            })
+                            if (ok) mutate(() => api(`/v1/isos/${iso.name}`, { method: 'DELETE' }))
+                          }}
+                        >
+                          Remove
+                        </Btn>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {action && (
         <Modal

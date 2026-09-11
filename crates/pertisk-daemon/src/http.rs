@@ -828,27 +828,34 @@ async fn import_template(
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
     }
-    let vol_name = format!("{name}-disk");
-    let result = tracked(&service, &user, "template.import", name.clone(), async {
-        let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
-        match service
-            .create_template(CreateTemplateRequest {
-                id: None,
-                name: name.clone(),
-                volume_id: volume.id,
-                vcpus: q.vcpus,
-                memory_mib: q.memory_mib,
-                console_type: None,
-            })
-            .await
-        {
-            Ok(record) => Ok(record),
-            Err(err) => {
-                let _ = service.delete_volume(volume.id).await;
-                Err(err)
+    let vol_name = service.unique_volume_name(&format!("{name}-disk"))?;
+    let tpl_name = service.unique_vm_name(&name)?;
+    let result = tracked(
+        &service,
+        &user,
+        "template.import",
+        tpl_name.clone(),
+        async {
+            let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
+            match service
+                .create_template(CreateTemplateRequest {
+                    id: None,
+                    name: tpl_name.clone(),
+                    volume_id: volume.id,
+                    vcpus: q.vcpus,
+                    memory_mib: q.memory_mib,
+                    console_type: None,
+                })
+                .await
+            {
+                Ok(record) => Ok(record),
+                Err(err) => {
+                    let _ = service.delete_volume(volume.id).await;
+                    Err(err)
+                }
             }
-        }
-    })
+        },
+    )
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     Ok((StatusCode::CREATED, Json(result?)))
@@ -1812,6 +1819,52 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{converted}");
         assert_eq!(converted["template"], true);
+    }
+
+    #[tokio::test]
+    async fn template_import_unique_name_on_conflict() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let payload = vec![0u8; 1024 * 1024];
+        async fn import_named(
+            app: &Router,
+            token: &str,
+            name: &str,
+            payload: Vec<u8>,
+        ) -> (StatusCode, serde_json::Value) {
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/v1/templates/import?name={name}&format=raw&vcpus=1&memory_mib=512"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(Body::from(payload))
+                .unwrap();
+            let response = app.clone().oneshot(req).await.unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let json = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&bytes) }));
+            (status, json)
+        }
+        let (status, first) = import_named(&app, token, "AlmaLinux-10", payload.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "{first}");
+        assert_eq!(first["spec"]["name"], "AlmaLinux-10");
+        let (status, second) = import_named(&app, token, "AlmaLinux-10", payload).await;
+        assert_eq!(status, StatusCode::CREATED, "{second}");
+        assert_eq!(second["spec"]["name"], "AlmaLinux-10-2");
+        assert_ne!(first["id"], second["id"]);
     }
 
     #[tokio::test]

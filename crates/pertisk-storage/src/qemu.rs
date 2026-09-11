@@ -52,6 +52,9 @@ impl QemuImg {
         backing_format: VolumeFormat,
         dest: &Path,
     ) -> Result<()> {
+        let backing = backing
+            .canonicalize()
+            .unwrap_or_else(|_| backing.to_path_buf());
         self.run(&[
             "create",
             "-f",
@@ -60,6 +63,36 @@ impl QemuImg {
             backing_format.as_str(),
             "-b",
             &backing.display().to_string(),
+            &dest.display().to_string(),
+        ])
+    }
+
+    /// Flatten / decompress into a standalone image the VMM can read (AlmaLinux
+    /// GenericCloud qcow2 is typically cluster-compressed; a byte copy of that
+    /// file leaves later XFS metadata as zeros in cloud-hypervisor).
+    pub fn convert(
+        &self,
+        source: &Path,
+        dest: &Path,
+        src_format: VolumeFormat,
+        dest_format: VolumeFormat,
+    ) -> Result<()> {
+        self.run(&[
+            "convert",
+            "-t",
+            "writeback",
+            "-T",
+            "writeback",
+            "-W",
+            "-m",
+            "8",
+            "-S",
+            "64k",
+            "-f",
+            src_format.as_str(),
+            "-O",
+            dest_format.as_str(),
+            &source.display().to_string(),
             &dest.display().to_string(),
         ])
     }
@@ -74,6 +107,12 @@ impl QemuImg {
 
     /// Virtual size from `qemu-img info` (qcow2 sparse file length is smaller).
     pub fn virtual_size(&self, path: &Path) -> Option<u64> {
+        self.inspect(path)?
+            .get("virtual-size")
+            .and_then(|x| x.as_u64())
+    }
+
+    pub fn inspect(&self, path: &Path) -> Option<serde_json::Value> {
         let bin = self.binary.as_deref()?;
         let output = Command::new(bin)
             .args(["info", "--output=json", &path.display().to_string()])
@@ -82,8 +121,7 @@ impl QemuImg {
         if !output.status.success() {
             return None;
         }
-        let v: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-        v.get("virtual-size").and_then(|x| x.as_u64())
+        serde_json::from_slice(&output.stdout).ok()
     }
 
     fn run(&self, args: &[&str]) -> Result<()> {

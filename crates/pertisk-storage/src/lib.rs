@@ -1,5 +1,6 @@
 //! Local directory volumes, file snapshots, ISO library, optional qemu-img, optional Ceph RBD.
 
+mod inject;
 mod iso9660;
 mod iso_boot;
 mod qemu;
@@ -9,17 +10,20 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pertisk_types::{
     CloneVolumeRequest, CloudInitIsoRequest, CreateVolumeRequest, IsoRecord, ResizeVolumeRequest,
     SnapshotRequest, StorageBackend, VolumeFormat, VolumeId, VolumeRecord, VolumeSnapshot,
+    default_cloud_user,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::iso9660::cidata_iso;
+use crate::iso9660::cidata_iso_with_json;
 use crate::qemu::QemuImg;
+pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
 pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
 pub use rbd::Rbd;
 
@@ -236,7 +240,7 @@ impl VolumePool {
                 source.display()
             )));
         }
-        let format = sniff_disk_image(source)?.unwrap_or(format);
+        let src_format = sniff_disk_image(source)?.unwrap_or(format);
         {
             let inner = self.inner.lock().expect("storage lock");
             if inner.volumes.values().any(|vol| vol.name == name) {
@@ -244,11 +248,16 @@ impl VolumePool {
             }
         }
         let id = VolumeId::new();
-        let dest = self.local_path(id, format);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(source, &dest)?;
+        // Cloud images (AlmaLinux GenericCloud, etc.) are compressed qcow2.
+        // Cloud Hypervisor reports file size, not virtual size, for those
+        // images — XFS then reads zeros past ~the qcow2 file length.
+        let dest_format = if self.should_convert(source, src_format) {
+            VolumeFormat::Raw
+        } else {
+            src_format
+        };
+        let dest = self.local_path(id, dest_format);
+        self.materialize_image(source, &dest, src_format, dest_format)?;
         let file_size = dest.metadata()?.len();
         if file_size == 0 {
             let _ = std::fs::remove_file(&dest);
@@ -262,7 +271,7 @@ impl VolumePool {
         let record = VolumeRecord {
             id,
             name,
-            format,
+            format: dest_format,
             size_bytes,
             path: dest,
             backing_id: None,
@@ -273,6 +282,50 @@ impl VolumePool {
         };
         self.upsert_volume(record.clone())?;
         Ok(record)
+    }
+
+    /// Copy a disk into the pool. Prefer qemu-img convert to sparse raw so
+    /// compressed qcow2 cloud images are a flat virtual disk the VMM can read.
+    fn materialize_image(
+        &self,
+        source: &Path,
+        dest: &Path,
+        src_format: VolumeFormat,
+        dest_format: VolumeFormat,
+    ) -> Result<()> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if self.should_convert(source, src_format) {
+            if let Err(err) = self.qemu.convert(source, dest, src_format, dest_format) {
+                let _ = std::fs::remove_file(dest);
+                return Err(err);
+            }
+            return Ok(());
+        }
+        copy_volume_file(source, dest)
+    }
+
+    fn should_convert(&self, source: &Path, _format: VolumeFormat) -> bool {
+        if !self.qemu.available() {
+            return false;
+        }
+        let Some(info) = self.qemu.inspect(source) else {
+            return false;
+        };
+        let size = info
+            .get("virtual-size")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        // Tiny/invalid headers must not go through convert (unit tests use a 1KiB
+        // QFI magic stub). Real cloud images are multi-gigabyte.
+        if size < 8 * 1024 * 1024 {
+            return false;
+        }
+        matches!(
+            info.get("format").and_then(|x| x.as_str()),
+            Some("qcow2")
+        )
     }
 
     pub fn create_volume(&self, req: CreateVolumeRequest) -> Result<VolumeRecord> {
@@ -382,7 +435,7 @@ impl VolumePool {
             self.qemu.linked_clone(&source.path, source.format, &path)?;
             Some(source.id)
         } else {
-            std::fs::copy(&source.path, &path)?;
+            self.materialize_image(&source.path, &path, source.format, format)?;
             None
         };
         let record = VolumeRecord {
@@ -508,27 +561,35 @@ impl VolumePool {
             name = format!("{stem}-cidata.iso");
         }
         let name = iso_name(Path::new(&name), Some(name.clone()))?;
-        {
-            let inner = self.inner.lock().expect("storage lock");
-            if inner.isos.contains_key(&name) {
-                return Err(StorageError::IsoExists(name));
-            }
-        }
         let user_data = cloudinit_user_data(&req);
-        let hostname = req
-            .hostname
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("pertisk");
-        let meta_data = format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\n");
-        let bytes = cidata_iso(user_data.as_bytes(), meta_data.as_bytes());
+        let meta_data = cloudinit_meta_data(&req);
+        let meta_json = cloudinit_meta_json(&req);
+        std::fs::create_dir_all(self.root.join("iso"))?;
         let dest = self.root.join("iso").join(&name);
-        std::fs::write(&dest, &bytes)?;
+        let files = [
+            ("user-data", user_data.as_bytes()),
+            ("meta-data", meta_data.as_bytes()),
+            ("openstack/latest/user_data", user_data.as_bytes()),
+            ("openstack/latest/meta_data.json", meta_json.as_bytes()),
+            ("openstack/2012-08-10/user_data", user_data.as_bytes()),
+            ("openstack/2012-08-10/meta_data.json", meta_json.as_bytes()),
+        ];
+        let size_bytes = match write_vfat_configdrive(&dest, &files) {
+            Ok(n) => n,
+            Err(_) => {
+                let bytes = cidata_iso_with_json(
+                    user_data.as_bytes(),
+                    meta_data.as_bytes(),
+                    meta_json.as_bytes(),
+                );
+                std::fs::write(&dest, &bytes)?;
+                bytes.len() as u64
+            }
+        };
         let record = IsoRecord {
             name: name.clone(),
             path: dest,
-            size_bytes: bytes.len() as u64,
+            size_bytes,
         };
         {
             let mut inner = self.inner.lock().expect("storage lock");
@@ -595,11 +656,188 @@ fn create_raw(path: &Path, size: u64) -> Result<()> {
     Ok(())
 }
 
+fn copy_volume_file(source: &Path, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let src = source.display().to_string();
+    let dst = dest.display().to_string();
+    let status = Command::new("cp")
+        .args(["--reflink=auto", "--sparse=always", "--", &src, &dst])
+        .status();
+    if matches!(status, Ok(s) if s.success()) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(dest);
+    std::fs::copy(source, dest)?;
+    Ok(())
+}
+
+/// OpenStack ConfigDrive as VFAT labeled `config-2` (what AlmaLinux/RHEL 10 mounts).
+fn write_vfat_configdrive(dest: &Path, files: &[(&str, &[u8])]) -> Result<u64> {
+    let mkfs = pertisk_types::find_in_path("mkfs.vfat")
+        .or_else(|| pertisk_types::find_in_path("mkfs.fat"))
+        .ok_or_else(|| StorageError::Message("mkfs.vfat not found".into()))?;
+    let payload: u64 = files.iter().map(|(_, d)| d.len() as u64).sum();
+    let size = (payload + 2 * 1024 * 1024).max(4 * 1024 * 1024);
+    {
+        let file = File::create(dest)?;
+        file.set_len(size)?;
+    }
+    let output = Command::new(&mkfs)
+        .args(["-n", "config-2", "-F", "16"])
+        .arg(dest)
+        .output()?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(dest);
+        return Err(StorageError::Message(format!(
+            "mkfs.vfat failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mnt = dest.with_extension("vfat-mnt");
+    std::fs::create_dir_all(&mnt)?;
+    let mounted = Command::new("mount")
+        .args(["-o", "loop"])
+        .arg(dest)
+        .arg(&mnt)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !mounted {
+        let _ = std::fs::remove_dir_all(&mnt);
+        let _ = std::fs::remove_file(dest);
+        return Err(StorageError::Message("mount loop for config-2 vfat failed".into()));
+    }
+    let written = (|| -> Result<()> {
+        for (path, data) in files {
+            let full = mnt.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(full, data)?;
+        }
+        Ok(())
+    })();
+    let _ = Command::new("umount").arg(&mnt).status();
+    let _ = std::fs::remove_dir_all(&mnt);
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(dest);
+        return Err(err);
+    }
+    Ok(dest.metadata()?.len())
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn sanitize_hostname(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.trim().chars() {
+        if c.is_ascii_alphanumeric() || c == '-' {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').chars().take(63).collect::<String>();
+    if out.is_empty() {
+        "pertisk".into()
+    } else {
+        out
+    }
+}
+
+fn cloud_hostname(req: &CloudInitIsoRequest) -> String {
+    sanitize_hostname(
+        req.hostname
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("pertisk"),
+    )
+}
+
+fn cloudinit_keys(req: &CloudInitIsoRequest) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in req
+        .ssh_authorized_keys
+        .iter()
+        .chain(operator_ssh_keys().iter())
+    {
+        let key = key.trim();
+        if inject::looks_like_ssh_key(key) && !out.iter().any(|k: &String| k == key) {
+            out.push(key.to_string());
+        }
+    }
+    out
+}
+
+fn cloudinit_password(req: &CloudInitIsoRequest) -> Option<&str> {
+    req.password
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn cloudinit_meta_data(req: &CloudInitIsoRequest) -> String {
+    let hostname = cloud_hostname(req);
+    let mut yaml = format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n");
+    let keys = cloudinit_keys(req);
+    if !keys.is_empty() {
+        yaml.push_str("public-keys:\n");
+        for (i, key) in keys.iter().enumerate() {
+            yaml.push_str("  ");
+            yaml.push_str(&i.to_string());
+            yaml.push_str(": ");
+            yaml.push_str(key);
+            yaml.push('\n');
+        }
+    }
+    yaml
+}
+
+fn cloudinit_meta_json(req: &CloudInitIsoRequest) -> String {
+    let hostname = cloud_hostname(req);
+    let mut value = serde_json::json!({
+        "uuid": format!("iid-{hostname}"),
+        "hostname": hostname,
+        "name": hostname,
+        "availability_zone": "nova",
+        "meta": { "hostname": hostname },
+    });
+    if let Some(password) = cloudinit_password(req) {
+        value["admin_pass"] = serde_json::Value::String(password.to_string());
+    }
+    let keys = cloudinit_keys(req);
+    if !keys.is_empty() {
+        let mut public_keys = serde_json::Map::new();
+        for (i, key) in keys.iter().enumerate() {
+            public_keys.insert(i.to_string(), serde_json::Value::String((*key).to_string()));
+        }
+        value["public_keys"] = serde_json::Value::Object(public_keys);
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| format!(r#"{{"uuid":"iid-{hostname}","hostname":"{hostname}"}}"#))
+        + "\n"
+}
+
+fn yaml_double_quote(s: &str) -> String {
+    let mut out = String::from('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
@@ -611,46 +849,54 @@ fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
     {
         return raw.to_string();
     }
+    let hostname = cloud_hostname(req);
     let user = req
         .user
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("ubuntu");
-    let hostname = req
-        .hostname
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("pertisk");
+        .map(str::to_string)
+        .unwrap_or_else(|| default_cloud_user([hostname.as_str(), req.name.as_str()]).to_string());
+    let password = cloudinit_password(req);
+    let keys = cloudinit_keys(req);
     let mut yaml = format!(
-        "#cloud-config\nhostname: {hostname}\nmanage_etc_hosts: true\nusers:\n  - name: {user}\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    groups: sudo\n    shell: /bin/bash\n    lock_passwd: false\n"
+        "#cloud-config\nhostname: {hostname}\nfqdn: {hostname}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nmanage_etc_hosts: true\ngrowpart:\n  mode: auto\n  devices: [\"/\"]\nresize_rootfs: true\nusers:\n  - default\n  - name: {user}\n    sudo: \"ALL=(ALL) NOPASSWD:ALL\"\n    groups: [adm, wheel, sudo]\n    shell: /bin/bash\n    lock_passwd: {}\n",
+        if password.is_some() { "false" } else { "true" }
     );
-    let keys: Vec<&str> = req
-        .ssh_authorized_keys
-        .iter()
-        .map(|k| k.trim())
-        .filter(|k| !k.is_empty())
-        .collect();
+    if let Some(password) = password {
+        yaml.push_str("    plain_text_passwd: ");
+        yaml.push_str(&yaml_double_quote(password));
+        yaml.push('\n');
+    }
     if !keys.is_empty() {
         yaml.push_str("    ssh_authorized_keys:\n");
-        for key in keys {
+        for key in &keys {
             yaml.push_str("      - ");
             yaml.push_str(key);
             yaml.push('\n');
         }
+        // Top-level keys also land on the image default user (almalinux, rocky, …).
+        yaml.push_str("ssh_authorized_keys:\n");
+        for key in &keys {
+            yaml.push_str("  - ");
+            yaml.push_str(key);
+            yaml.push('\n');
+        }
     }
-    if let Some(password) = req
-        .password
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        yaml.push_str("chpasswd:\n  expire: false\n  list: |\n    ");
-        yaml.push_str(user);
+    if let Some(password) = password {
+        yaml.push_str("ssh_pwauth: true\nchpasswd:\n  expire: false\n  list: |\n    ");
+        yaml.push_str(&user);
         yaml.push(':');
         yaml.push_str(password);
-        yaml.push_str("\nssh_pwauth: true\n");
+        yaml.push_str("\n  users:\n    - name: ");
+        yaml.push_str(&user);
+        yaml.push_str("\n      password: ");
+        yaml.push_str(&yaml_double_quote(password));
+        yaml.push_str("\n      type: text\n");
+        // AlmaLinux / RHEL 9+ drop-ins set PasswordAuthentication no.
+        yaml.push_str(
+            "runcmd:\n  - |\n    for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do\n      [ -f \"$f\" ] || continue\n      sed -i -e 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' -e 's/^#\\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' \"$f\"\n    done\n    printf '%s\\n' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' > /etc/ssh/sshd_config.d/50-cloud-init.conf\n    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true\n",
+        );
     }
     yaml
 }
@@ -786,6 +1032,26 @@ mod tests {
     }
 
     #[test]
+    fn import_qcow2_flattens_to_sparse_raw() {
+        let Some(qemu) = pertisk_types::find_in_path("qemu-img") else {
+            return;
+        };
+        let (pool, dir) = pool();
+        let src = dir.path().join("cloud.qcow2");
+        let st = std::process::Command::new(qemu)
+            .args(["create", "-f", "qcow2", &src.display().to_string(), "16M"])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let vol = pool
+            .import_volume(&src, "alma-cloud".into(), VolumeFormat::Qcow2)
+            .unwrap();
+        assert_eq!(vol.format, VolumeFormat::Raw);
+        assert_eq!(vol.size_bytes, 16 * 1024 * 1024);
+        assert_eq!(vol.path.extension().unwrap(), "raw");
+    }
+
+    #[test]
     fn import_volume_sniffs_qcow2_and_rejects_xz() {
         let (pool, dir) = pool();
         let qcow = dir.path().join("cloud.img");
@@ -824,11 +1090,46 @@ mod tests {
             .unwrap();
         assert_eq!(iso.name, "web-1-cidata.iso");
         let bytes = std::fs::read(&iso.path).unwrap();
-        assert!(bytes.len() >= 25 * 2048);
-        let vol = std::str::from_utf8(&bytes[32768 + 40..32768 + 46]).unwrap();
-        assert_eq!(vol, "CIDATA");
+        assert!(bytes.len() >= 64 * 1024);
         let text = String::from_utf8_lossy(&bytes);
+        if bytes.len() > 32774 && &bytes[32768..32774] == b"\x01CD001" {
+            let vol = std::str::from_utf8(&bytes[32768 + 40..32768 + 48]).unwrap();
+            assert_eq!(vol, "CONFIG-2");
+            assert!(text.contains("OPENSTACK") || text.contains("openstack"));
+        }
         assert!(text.contains("hostname: web-1"));
         assert!(text.contains("ubuntu:ubuntu"));
+        assert!(text.contains("ssh_pwauth: true"));
+        assert!(text.contains("groups: [adm, wheel, sudo]"));
+        assert!(text.contains("PasswordAuthentication yes"));
+        assert!(text.contains("plain_text_passwd:"));
+        let again = pool
+            .create_cloudinit_iso(CloudInitIsoRequest {
+                name: "web-1".into(),
+                hostname: Some("web-1".into()),
+                user: Some("alma".into()),
+                password: Some("alma".into()),
+                ssh_authorized_keys: vec![],
+                userdata: None,
+            })
+            .unwrap();
+        assert_eq!(again.name, "web-1-cidata.iso");
+        let bytes = std::fs::read(&again.path).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("alma:alma"));
+        let auto = pool
+            .create_cloudinit_iso(CloudInitIsoRequest {
+                name: "AlmaLinux-10-GenericCloud".into(),
+                hostname: Some("alma-1".into()),
+                user: None,
+                password: Some("secret".into()),
+                ssh_authorized_keys: vec![],
+                userdata: None,
+            })
+            .unwrap();
+        let bytes = std::fs::read(&auto.path).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("name: almalinux"), "{text}");
+        assert!(text.contains("almalinux:secret"), "{text}");
     }
 }

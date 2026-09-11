@@ -84,7 +84,7 @@ impl QemuDriver {
 
         let mut cmd = qemu_command(&self.binary);
         cmd.arg("-name")
-            .arg(format!("pertisk-{id}"))
+            .arg(qemu_guest_name(id, spec))
             .arg("-machine")
             .arg(qemu_machine())
             .arg("-m")
@@ -158,7 +158,7 @@ impl QemuDriver {
         let disk_bootable = ordered
             .iter()
             .any(|disk| !disk.cdrom && pertisk_types::disk_likely_bootable(&disk.path));
-        if ordered.iter().any(|disk| disk.cdrom) && !host_is_aarch64() {
+        if has_installer_cd && !host_is_aarch64() {
             cmd.arg("-device").arg("ich9-ahci,id=ahci");
         }
         let mut bootindex = 1u8;
@@ -167,7 +167,15 @@ impl QemuDriver {
             let format = drive_format(disk);
             let drive_id = format!("disk{index}");
             let boot = drive_bootindex(disk, disk_bootable, &mut bootindex);
-            if disk.cdrom {
+            if is_cidata(disk) {
+                cmd.arg("-drive").arg(format!(
+                    "file={},if=none,id={drive_id},readonly=on,format=raw",
+                    disk.path.display()
+                ));
+                cmd.arg("-device").arg(format!(
+                    "virtio-blk-pci,drive={drive_id},serial=cidata"
+                ));
+            } else if disk.cdrom {
                 cmd.arg("-drive").arg(format!(
                     "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",
                     disk.path.display()
@@ -182,7 +190,7 @@ impl QemuDriver {
                 }
             } else {
                 cmd.arg("-drive").arg(format!(
-                    "file={},if=none,id={drive_id},format={format},cache=none,discard=unmap",
+                    "file={},if=none,id={drive_id},format={format},cache=writeback,aio=threads,detect-zeroes=off",
                     disk.path.display()
                 ));
                 cmd.arg("-device")
@@ -369,6 +377,30 @@ fn guest_qmp_running(status: &str) -> bool {
         status.to_ascii_lowercase().as_str(),
         "running" | "paused" | "prelaunch"
     )
+}
+
+fn qemu_guest_name(id: VmId, spec: &VmSpec) -> String {
+    let mut name: String = spec
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while name.contains("--") {
+        name = name.replace("--", "-");
+    }
+    let name = name.trim_matches('-').to_string();
+    let name = if name.is_empty() {
+        format!("vm-{id}")
+    } else {
+        name
+    };
+    format!("{name},process=pertisk-{id}")
 }
 
 fn drive_format(disk: &pertisk_types::DiskSpec) -> &'static str {
@@ -705,6 +737,46 @@ mod tests {
         let mut idx = 1u8;
         assert_eq!(drive_bootindex(&iso, true, &mut idx), "");
         assert_eq!(drive_bootindex(&disk, true, &mut idx), ",bootindex=1");
+    }
+
+    #[test]
+    fn qemu_name_uses_guest_name() {
+        let spec = VmSpec {
+            name: "AlmaLinux 10-1".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![],
+            nets: vec![],
+            serial_log: None,
+            console_type: pertisk_types::ConsoleType::Serial,
+            ha: true,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
+        };
+        assert_eq!(
+            qemu_guest_name(pertisk_types::VmId::Numeric(101), &spec),
+            "AlmaLinux-10-1,process=pertisk-101"
+        );
+    }
+
+    #[test]
+    fn cidata_seed_is_not_bootable() {
+        let seed = DiskSpec {
+            path: PathBuf::from("/var/web-cidata.iso"),
+            readonly: true,
+            cdrom: true,
+            volume_id: None,
+            iso_name: Some("web-cidata.iso".into()),
+        };
+        let mut idx = 1u8;
+        assert_eq!(drive_bootindex(&seed, true, &mut idx), "");
+        assert_eq!(boot_rank(&seed), 2);
+        assert!(is_cidata(&seed));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use pertisk_types::{
     CreateTemplateRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest,
     SerialChunk, SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmMetrics, VmRecord,
-    VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, probe_host,
+    VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -214,6 +214,7 @@ impl Service {
         let mut info = probe_host(&self.config, self.data_dir.clone());
         info.node_id = Some(self.cluster.self_id());
         info.quorum = self.cluster.has_quorum();
+        info.ssh_authorized_keys = pertisk_storage::operator_ssh_keys();
         info
     }
 
@@ -530,6 +531,8 @@ impl Service {
         name: &str,
         req: &CloneVmRequest,
     ) -> Result<(), DaemonError> {
+        let mut grow = req.disk_size_bytes;
+        let mut os_disk: Option<std::path::PathBuf> = None;
         for disk in &source.spec.disks {
             if disk.cdrom {
                 continue;
@@ -539,17 +542,18 @@ impl Service {
             };
             let source_vol = self.volumes.get_volume(volume_id)?;
             let vol_name = self.unique_volume_name(&format!("{name}-{}", source_vol.name))?;
+            let linked = req.linked && self.driver() != DriverKind::CloudHypervisor;
             let cloned = match self
                 .clone_volume(
                     volume_id,
                     CloneVolumeRequest {
                         name: vol_name.clone(),
-                        linked: req.linked,
+                        linked,
                     },
                 )
                 .await
             {
-                Err(DaemonError::Storage(StorageError::LinkedRequiresQemu)) if req.linked => {
+                Err(DaemonError::Storage(StorageError::LinkedRequiresQemu)) if linked => {
                     self.clone_volume(
                         volume_id,
                         CloneVolumeRequest {
@@ -561,6 +565,22 @@ impl Service {
                 }
                 other => other?,
             };
+            let cloned = if let Some(size) = grow.take() {
+                if size > cloned.size_bytes {
+                    self.resize_volume(
+                        cloned.id,
+                        ResizeVolumeRequest { size_bytes: size },
+                    )
+                    .await?
+                } else {
+                    cloned
+                }
+            } else {
+                cloned
+            };
+            if os_disk.is_none() {
+                os_disk = Some(cloned.path.clone());
+            }
             self.attach_disk(
                 new_id,
                 AttachDiskRequest {
@@ -576,10 +596,51 @@ impl Service {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(name)
                 .to_string();
+            let user = ci
+                .user
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    let mut hints = vec![source.spec.name.clone(), name.to_string()];
+                    for disk in &source.spec.disks {
+                        if let Some(id) = disk.volume_id {
+                            if let Ok(vol) = self.volumes.get_volume(id) {
+                                hints.push(vol.name);
+                            }
+                        }
+                    }
+                    default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
+                });
+            if let Some(path) = os_disk {
+                let hostname_i = hostname.clone();
+                let user_i = user.clone();
+                let password_i = ci.password.clone();
+                let keys_i = ci.ssh_authorized_keys.clone();
+                tokio::task::spawn_blocking(move || {
+                    pertisk_storage::inject_guest_identity(
+                        &path,
+                        &pertisk_storage::GuestIdentity {
+                            hostname: &hostname_i,
+                            user: &user_i,
+                            password: password_i
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty()),
+                            ssh_authorized_keys: &keys_i,
+                        },
+                    )
+                })
+                .await
+                .map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                })??;
+            }
             let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
                 name: format!("{name}-{new_id}-cidata.iso"),
                 hostname: Some(hostname),
-                user: ci.user.clone(),
+                user: Some(user),
                 password: ci.password.clone(),
                 ssh_authorized_keys: ci.ssh_authorized_keys.clone(),
                 userdata: ci.userdata.clone(),
@@ -833,6 +894,14 @@ impl Service {
             .iter()
             .filter_map(|disk| disk.volume_id)
             .collect();
+        let cidata: Vec<String> = record
+            .spec
+            .disks
+            .iter()
+            .filter(|disk| disk.cdrom)
+            .filter_map(|disk| disk.iso_name.clone())
+            .filter(|name| name.to_ascii_lowercase().contains("cidata"))
+            .collect();
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
@@ -849,6 +918,11 @@ impl Service {
             let _ = self.networks.release_nic(nic);
         }
         self.store.remove(id)?;
+        for iso in cidata {
+            if self.iso_users(&iso)?.is_empty() {
+                let _ = self.delete_iso(&iso);
+            }
+        }
         for volume_id in disks {
             if !self.volume_users(volume_id)?.is_empty() || self.volume_is_backing(volume_id)? {
                 continue;
@@ -1054,7 +1128,11 @@ impl Service {
         req: CloneVolumeRequest,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_volume_idle(id, "clone")?;
-        let mut record = self.volumes.clone_volume(id, req)?;
+        let volumes = Arc::clone(&self.volumes);
+        let req = req.clone();
+        let mut record = tokio::task::spawn_blocking(move || volumes.clone_volume(id, req))
+            .await
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
         let online = self.cluster.online_ids();
         record.replicas = cluster::place_replicas(
             &online,
@@ -1226,7 +1304,7 @@ impl Service {
         Ok(VmId::Numeric(n))
     }
 
-    fn unique_volume_name(&self, base: &str) -> Result<String, DaemonError> {
+    pub(crate) fn unique_volume_name(&self, base: &str) -> Result<String, DaemonError> {
         let vols = self.volumes.list_volumes()?;
         if !vols.iter().any(|vol| vol.name == base) {
             return Ok(base.to_string());
@@ -1238,6 +1316,34 @@ impl Service {
             }
         }
         Ok(format!("{base}-{}", VolumeId::new()))
+    }
+
+    pub(crate) fn unique_vm_name(&self, base: &str) -> Result<String, DaemonError> {
+        if !self.store.name_taken(base, None)? {
+            return Ok(base.to_string());
+        }
+        for i in 2..10_000 {
+            let name = format!("{base}-{i}");
+            if !self.store.name_taken(&name, None)? {
+                return Ok(name);
+            }
+        }
+        Ok(format!("{base}-{}", VmId::new()))
+    }
+
+    fn iso_users(&self, name: &str) -> Result<Vec<VmId>, DaemonError> {
+        Ok(self
+            .store
+            .list()?
+            .into_iter()
+            .filter(|vm| {
+                vm.spec
+                    .disks
+                    .iter()
+                    .any(|disk| disk.iso_name.as_deref() == Some(name))
+            })
+            .map(|vm| vm.id)
+            .collect())
     }
 
     fn require_volume_idle(&self, id: VolumeId, _op: &str) -> Result<(), DaemonError> {
@@ -1266,21 +1372,6 @@ impl Service {
             .list_volumes()?
             .iter()
             .any(|vol| vol.backing_id == Some(id)))
-    }
-
-    fn iso_users(&self, name: &str) -> Result<Vec<VmId>, DaemonError> {
-        Ok(self
-            .store
-            .list()?
-            .into_iter()
-            .filter(|vm| {
-                vm.spec
-                    .disks
-                    .iter()
-                    .any(|disk| disk.iso_name.as_deref() == Some(name))
-            })
-            .map(|vm| vm.id)
-            .collect())
     }
 
     pub fn list_networks(&self) -> Result<Vec<NetworkRecord>, DaemonError> {
@@ -2252,10 +2343,16 @@ impl Service {
         if !self.volumes.has_local(record.id, record.format) {
             return;
         }
+        let online = self.cluster.online_ids();
+        let has_remote = record.replicas.iter().any(|replica| {
+            *replica != self.cluster.self_id() && online.contains(replica)
+        });
+        if !has_remote {
+            return;
+        }
         let Ok(bytes) = self.volumes.read_blob(record.id) else {
             return;
         };
-        let online = self.cluster.online_ids();
         for replica in &record.replicas {
             if *replica == self.cluster.self_id() {
                 continue;
@@ -2643,6 +2740,7 @@ mod tests {
                     network_id: None,
                     ip: None,
                     cloud_init: None,
+                    disk_size_bytes: None,
                     start: false,
                 },
             )

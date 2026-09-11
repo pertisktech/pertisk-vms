@@ -21,6 +21,18 @@ export function clearToken() {
   sessionStorage.removeItem(TOKEN_KEY)
 }
 
+const authListeners = new Set()
+
+/** Called when the API returns 401. Does not clear the token or navigate. */
+export function onAuthRequired(fn) {
+  authListeners.add(fn)
+  return () => authListeners.delete(fn)
+}
+
+function notifyAuthRequired() {
+  for (const fn of [...authListeners]) fn()
+}
+
 export async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) }
   const token = getToken()
@@ -55,6 +67,7 @@ export async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error((body && body.error) || res.statusText || 'request failed')
     err.status = res.status
+    if (res.status === 401 && path !== '/v1/login') notifyAuthRequired()
     throw err
   }
   return body
@@ -74,6 +87,10 @@ export function nextVmId(vms) {
     if (!used.has(String(id))) return String(id)
   }
   return ''
+}
+
+export function isCloudInitIso(name) {
+  return String(name || '').toLowerCase().includes('cidata')
 }
 
 export function disksOf(vm) {
@@ -135,6 +152,36 @@ export function shortId(id) {
 export function hostMemoryReserveMib(hostMib) {
   const host = Number(hostMib) || 0
   return Math.min(1536, Math.max(64, Math.floor(host / 20)))
+}
+
+/** Distro default SSH login inferred from a cloud image / template / volume name. */
+const CLOUD_OS = [
+  { re: /almalinux|alma[\s._-]?linux|\balma\b/, os: 'AlmaLinux', user: 'almalinux' },
+  { re: /rocky/, os: 'Rocky Linux', user: 'rocky' },
+  { re: /centos|cent[\s._-]?os/, os: 'CentOS', user: 'centos' },
+  { re: /rhel|red[\s._-]?hat/, os: 'RHEL', user: 'cloud-user' },
+  { re: /fedora/, os: 'Fedora', user: 'fedora' },
+  { re: /debian/, os: 'Debian', user: 'debian' },
+  { re: /ubuntu/, os: 'Ubuntu', user: 'ubuntu' },
+  { re: /alpine/, os: 'Alpine', user: 'alpine' },
+  { re: /oracle/, os: 'Oracle Linux', user: 'opc' },
+  { re: /opensuse|sles|\bsuse\b/, os: 'openSUSE', user: 'opensuse' },
+]
+
+export function detectCloudOs(...hints) {
+  const blob = hints.filter(Boolean).join(' ').toLowerCase()
+  for (const item of CLOUD_OS) {
+    if (item.re.test(blob)) return { os: item.os, user: item.user }
+  }
+  return { os: 'Ubuntu', user: 'ubuntu' }
+}
+
+export function defaultCloudUser(...hints) {
+  return detectCloudOs(...hints).user
+}
+
+export function cloudInitHasLogin(password, sshKey) {
+  return Boolean(String(password || '').trim() || String(sshKey || '').trim())
 }
 
 /** RAM a guest can be started with on this node. */

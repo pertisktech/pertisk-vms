@@ -10,10 +10,13 @@ export default function GuestOptions() {
   const confirm = useConfirm()
   const [dialog, setDialog] = useState(null)
   const [form, setForm] = useState({})
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const template = isTemplate(vm)
   const running = vm?.state === 'running'
 
   function openDialog(kind) {
+    setError('')
     if (kind === 'name') setForm({ name: vm.spec?.name || '' })
     if (kind === 'ha') setForm({ ha: vm.spec?.ha !== false })
     if (kind === 'autostart')
@@ -28,7 +31,6 @@ export default function GuestOptions() {
   async function submit(e) {
     e.preventDefault()
     const kind = dialog
-    setDialog(null)
     const body =
       kind === 'name'
         ? { name: form.name.trim() }
@@ -39,7 +41,20 @@ export default function GuestOptions() {
               autostart_delay: Number(form.autostart_delay) || 0,
               autostart_order: Number(form.autostart_order) || 0,
             }
-    await inv.mutate(() => api(`/v1/vms/${vm.id}`, { method: 'PATCH', body }))
+    if (kind === 'name' && !body.name) {
+      setError('Name is required.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await inv.mutate(() => api(`/v1/vms/${vm.id}`, { method: 'PATCH', body }))
+      setDialog(null)
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const rows = [
@@ -149,15 +164,16 @@ export default function GuestOptions() {
           onClose={() => setDialog(null)}
           footer={
             <>
-              <button type="button" className="secondary" onClick={() => setDialog(null)}>
+              <button type="button" className="secondary" onClick={() => setDialog(null)} disabled={busy}>
                 Cancel
               </button>
-              <button type="submit" form="opt-form">
-                Save
+              <button type="submit" form="opt-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
               </button>
             </>
           }
         >
+          {error && <div className="error">{error}</div>}
           <form id="opt-form" onSubmit={submit}>
             {dialog === 'name' && (
               <div className="field">
@@ -169,6 +185,10 @@ export default function GuestOptions() {
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
+                <p className="field-hint">
+                  This is the name in Pertisk. The Linux hostname is applied by cloud-init on first boot
+                  (clone again after changing it).
+                </p>
               </div>
             )}
             {dialog === 'ha' && (

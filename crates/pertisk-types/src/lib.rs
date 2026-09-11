@@ -645,6 +645,43 @@ pub struct CloudInitIsoRequest {
     pub userdata: Option<String>,
 }
 
+/// Default SSH / cloud-init login inferred from a cloud image or template name.
+pub fn default_cloud_user<'a>(hints: impl IntoIterator<Item = &'a str>) -> &'static str {
+    let blob = hints
+        .into_iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if blob.contains("almalinux") || blob.contains("alma") {
+        return "almalinux";
+    }
+    if blob.contains("rocky") {
+        return "rocky";
+    }
+    if blob.contains("centos") {
+        return "centos";
+    }
+    if blob.contains("rhel") || blob.contains("redhat") || blob.contains("red-hat") {
+        return "cloud-user";
+    }
+    if blob.contains("fedora") {
+        return "fedora";
+    }
+    if blob.contains("debian") {
+        return "debian";
+    }
+    if blob.contains("alpine") {
+        return "alpine";
+    }
+    if blob.contains("oracle") {
+        return "opc";
+    }
+    if blob.contains("opensuse") || blob.contains("sles") {
+        return "opensuse";
+    }
+    "ubuntu"
+}
+
 /// Cloud-init identity for a guest cloned from a template (ISO name is generated).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CloudInitConfig {
@@ -683,6 +720,9 @@ pub struct CloneVmRequest {
     pub ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init: Option<CloudInitConfig>,
+    /// Grow the first cloned disk to at least this size (bytes). Ignored if smaller than the template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_size_bytes: Option<u64>,
     #[serde(default)]
     pub start: bool,
 }
@@ -1189,6 +1229,9 @@ pub struct HostInfo {
     pub rbd: bool,
     #[serde(default)]
     pub version: String,
+    /// Operator public keys injected into cloud clones (`/etc/pertisk/ssh/authorized_keys`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_authorized_keys: Vec<String>,
 }
 
 pub fn default_home() -> PathBuf {
@@ -1277,6 +1320,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         replica_count: config.storage.replica_count.max(1),
         rbd: find_in_path("rbd").is_some(),
         version: VERSION.to_string(),
+        ssh_authorized_keys: Vec::new(),
     }
 }
 
@@ -1366,6 +1410,17 @@ mod tests {
         assert_eq!(parse_size("10G").unwrap(), 10 * 1024 * 1024 * 1024);
         assert_eq!(parse_size("512M").unwrap(), 512 * 1024 * 1024);
         assert_eq!(format_size(1024 * 1024 * 1024), "1GiB");
+    }
+
+    #[test]
+    fn default_cloud_user_from_os_name() {
+        assert_eq!(
+            default_cloud_user(["AlmaLinux-10-GenericCloud"]),
+            "almalinux"
+        );
+        assert_eq!(default_cloud_user(["rocky-9-cloud"]), "rocky");
+        assert_eq!(default_cloud_user(["ubuntu-24.04"]), "ubuntu");
+        assert_eq!(default_cloud_user(["web-1"]), "ubuntu");
     }
 
     #[test]

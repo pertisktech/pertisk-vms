@@ -164,6 +164,15 @@ Console TUI:      pertisk-tui
 UI:               https://<this-host>:7443/  user admin  password in /etc/pertisk/admin
 EOF
 
+# Operator SSH keys injected into cloud clones (authorized_keys of this build host).
+mkdir -p "$MNT/etc/pertisk/ssh"
+if [[ -f /root/.ssh/authorized_keys ]]; then
+  grep -E '^(ssh-|ecdsa-|sk-ssh-|sk-ecdsa-)' /root/.ssh/authorized_keys \
+    >"$MNT/etc/pertisk/ssh/authorized_keys" || true
+  chmod 600 "$MNT/etc/pertisk/ssh/authorized_keys"
+  echo "installed operator SSH keys into /etc/pertisk/ssh/authorized_keys"
+fi
+
 umount "$MNT"
 rmdir "$MNT" 2>/dev/null || true
 

@@ -229,6 +229,9 @@ enum VmCommand {
         cpus: Option<u8>,
         #[arg(long)]
         memory: Option<u32>,
+        /// Grow the cloned OS disk, e.g. 40G.
+        #[arg(long)]
+        disk_size: Option<String>,
         #[arg(long)]
         net: Option<String>,
         #[arg(long)]
@@ -239,7 +242,7 @@ enum VmCommand {
         password: Option<String>,
         #[arg(long)]
         hostname: Option<String>,
-        #[arg(long = "ssh-key")]
+        #[arg(long = "ssh-key", value_name = "KEY|FILE")]
         ssh_key: Vec<String>,
         #[arg(long)]
         cloud_init: bool,
@@ -431,7 +434,7 @@ enum IsoCommand {
         user: Option<String>,
         #[arg(long)]
         password: Option<String>,
-        #[arg(long = "ssh-key")]
+        #[arg(long = "ssh-key", value_name = "KEY|FILE")]
         ssh_key: Vec<String>,
         #[arg(long)]
         userdata: Option<String>,
@@ -1018,6 +1021,7 @@ async fn run() -> Result<()> {
                 linked,
                 cpus,
                 memory,
+                disk_size,
                 net,
                 ip,
                 user,
@@ -1042,7 +1046,7 @@ async fn run() -> Result<()> {
                         hostname: hostname.or(Some(name.clone())),
                         user,
                         password,
-                        ssh_authorized_keys: ssh_key,
+                        ssh_authorized_keys: resolve_ssh_keys(ssh_key)?,
                         userdata: None,
                     })
                 } else {
@@ -1063,6 +1067,10 @@ async fn run() -> Result<()> {
                         network_id,
                         ip,
                         cloud_init,
+                        disk_size_bytes: disk_size
+                            .as_deref()
+                            .map(parse_size)
+                            .transpose()?,
                         start,
                     },
                 )
@@ -1275,7 +1283,7 @@ async fn run() -> Result<()> {
                         hostname,
                         user,
                         password,
-                        ssh_authorized_keys: ssh_key,
+                        ssh_authorized_keys: resolve_ssh_keys(ssh_key)?,
                         userdata,
                     },
                 )
@@ -1401,6 +1409,55 @@ fn urlencoding_name(name: &str) -> String {
         }
     }
     out
+}
+
+fn looks_like_ssh_key(line: &str) -> bool {
+    let line = line.trim();
+    !line.is_empty()
+        && !line.starts_with('#')
+        && (line.starts_with("ssh-")
+            || line.starts_with("ecdsa-")
+            || line.starts_with("sk-ssh-")
+            || line.starts_with("sk-ecdsa-"))
+}
+
+/// Accept a public-key line or a path to a `.pub` / authorized_keys file.
+fn resolve_ssh_keys(items: Vec<String>) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for item in items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let expanded = if trimmed.starts_with("~/") {
+            match std::env::var("HOME") {
+                Ok(home) => format!("{home}/{}", trimmed.trim_start_matches("~/")),
+                Err(_) => trimmed.to_string(),
+            }
+        } else {
+            trimmed.to_string()
+        };
+        let path = PathBuf::from(&expanded);
+        if path.is_file() {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("read ssh key {}", path.display()))?;
+            for line in text.lines() {
+                let line = line.trim();
+                if looks_like_ssh_key(line) && !out.iter().any(|k: &String| k == line) {
+                    out.push(line.to_string());
+                }
+            }
+            continue;
+        }
+        if looks_like_ssh_key(trimmed) {
+            if !out.iter().any(|k: &String| k == trimmed) {
+                out.push(trimmed.to_string());
+            }
+            continue;
+        }
+        bail!("ssh key is neither a public-key string nor a readable file: {trimmed}");
+    }
+    Ok(out)
 }
 
 fn print_vol(record: &VolumeRecord) {

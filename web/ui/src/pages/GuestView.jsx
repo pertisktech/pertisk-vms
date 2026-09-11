@@ -194,8 +194,10 @@ export default function GuestView() {
         <CloneWizard
           source={vm}
           vms={inv.vms}
+          volumes={inv.volumes}
           networks={inv.networks}
           cluster={inv.cluster}
+          host={inv.host}
           onClose={() => setCloneOpen(false)}
           onCreated={inv.refresh}
         />

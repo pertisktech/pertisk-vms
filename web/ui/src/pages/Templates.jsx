@@ -15,7 +15,7 @@ function imageFormat(name) {
 
 export default function Templates() {
   const { canWrite } = useOutletContext()
-  const { vms, volumes, networks, cluster, error, setError, mutate, refresh } = useInventory()
+  const { vms, volumes, networks, cluster, host, error, setError, mutate, refresh } = useInventory()
   const confirm = useConfirm()
   const templates = vms.filter(isTemplate)
   const freeVolumes = volumes.filter((vol) => {
@@ -30,11 +30,28 @@ export default function Templates() {
   const [file, setFile] = useState(null)
   const [form, setForm] = useState({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2' })
   const [volForm, setVolForm] = useState({ name: '', volume_id: '', vcpus: 1, memory_mib: 1024 })
+  const [importError, setImportError] = useState('')
+
+  const takenNames = new Set((vms || []).map((vm) => vm.spec?.name).filter(Boolean))
+  const importName = form.name.trim()
+  const importNameTaken = importName && takenNames.has(importName)
+  let importAs = importName
+  if (importNameTaken) {
+    importAs = `${importName}-2`
+    for (let i = 2; i < 10_000; i += 1) {
+      const next = `${importName}-${i}`
+      if (!takenNames.has(next)) {
+        importAs = next
+        break
+      }
+    }
+  }
 
   async function importImage(e) {
     e.preventDefault()
     if (!file) return
     setBusy(true)
+    setImportError('')
     try {
       const name = form.name.trim() || file.name.replace(/\.[^.]+$/, '')
       const format = form.format || imageFormat(file.name)
@@ -51,8 +68,8 @@ export default function Templates() {
       setFile(null)
       setForm({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2' })
       setImportOpen(false)
-    } catch {
-      /* inventory error */
+    } catch (err) {
+      setImportError(err.message || String(err))
     } finally {
       setBusy(false)
     }
@@ -184,8 +201,11 @@ export default function Templates() {
       {importOpen && (
         <Modal
           title="Import cloud image"
-          hint="Upload a qcow2 or raw cloud image (Ubuntu cloudimg, Debian genericcloud, Alpine cloud)."
-          onClose={() => setImportOpen(false)}
+          hint="Upload a cloud disk (Ubuntu cloudimg, AlmaLinux GenericCloud qcow2). Not an installer ISO, and not a cidata seed."
+          onClose={() => {
+            setImportOpen(false)
+            setImportError('')
+          }}
           footer={
             <>
               <button type="button" className="secondary" onClick={() => setImportOpen(false)} disabled={busy}>
@@ -198,6 +218,7 @@ export default function Templates() {
           }
         >
           <form id="tpl-import" onSubmit={importImage}>
+            {importError && <div className="error">{importError}</div>}
             <div className="field">
               <label htmlFor="tpl-file">Image file</label>
               <input
@@ -216,6 +237,11 @@ export default function Templates() {
                   }
                 }}
               />
+              {file?.name?.toLowerCase().endsWith('.iso') && (
+                <p className="error">
+                  This looks like an installer ISO. Cloud templates need a GenericCloud qcow2 disk image.
+                </p>
+              )}
             </div>
             <div className="form-grid">
               <div className="field">
@@ -227,6 +253,12 @@ export default function Templates() {
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="ubuntu-24.04"
                 />
+                {importNameTaken && (
+                  <p className="field-hint">
+                    <code>{importName}</code> already exists (guest or template). Import will be saved as{' '}
+                    <code>{importAs}</code>.
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label htmlFor="tpl-fmt">Format</label>
@@ -341,8 +373,10 @@ export default function Templates() {
         <CloneWizard
           source={cloneOf}
           vms={vms}
+          volumes={volumes}
           networks={networks}
           cluster={cluster}
+          host={host}
           onClose={() => setCloneOf(null)}
           onCreated={refresh}
         />

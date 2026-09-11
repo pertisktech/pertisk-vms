@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { api, disksOf, formatBytes, netsOf, nicAddrs } from '../../api'
+import { api, disksOf, formatBytes, isCloudInitIso, netsOf, nicAddrs, parseSize } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/Confirm'
@@ -60,13 +60,21 @@ export default function GuestHardware() {
     }
   }, [addOpen])
 
-  function openDialog(kind) {
+  function openDialog(kind, row) {
     setAddOpen(false)
     if (kind === 'disk') setForm({ volume_id: freeVolumes[0]?.id || '' })
     if (kind === 'cdrom') setForm({ iso: inv.isos[0]?.name || '' })
     if (kind === 'nic') setForm({ network_id: inv.networks[0]?.id || '', ip: '' })
     if (kind === 'memory') setForm({ memory_mib: vm.spec?.memory_mib || 512 })
     if (kind === 'cpu') setForm({ vcpus: vm.spec?.vcpus || 1 })
+    if (kind === 'resize') {
+      const minGib = Math.max(1, Math.ceil((Number(row?.size_bytes) || 0) / 1024 ** 3) || 1)
+      setForm({
+        volume_id: row?.volume_id || '',
+        sizeGib: minGib,
+        minGib,
+      })
+    }
     setDialog(kind)
   }
 
@@ -88,6 +96,12 @@ export default function GuestHardware() {
         return api(`/v1/vms/${vm.id}/nics`, {
           method: 'POST',
           body: { network_id: form.network_id, ip: form.ip?.trim() || undefined },
+        })
+      }
+      if (kind === 'resize') {
+        return api(`/v1/volumes/${form.volume_id}/resize`, {
+          method: 'POST',
+          body: { size_bytes: parseSize(`${Math.max(form.minGib || 1, Number(form.sizeGib) || form.minGib)}G`) },
         })
       }
       const body =
@@ -133,6 +147,9 @@ export default function GuestHardware() {
         icon: 'disk',
         label: `Hard Disk (virtio${i})`,
         value: `${vol?.name || d.path || 'disk'}${vol?.size_bytes ? `, ${formatBytes(vol.size_bytes)}` : ''}`,
+        edit: vol?.id ? 'resize' : undefined,
+        volume_id: vol?.id,
+        size_bytes: vol?.size_bytes,
         removeUrl: d.volume_id ? `/v1/vms/${vm.id}/disks/${d.volume_id}` : null,
         lockedWhileRunning: true,
       })
@@ -223,7 +240,7 @@ export default function GuestHardware() {
                   <td className="pve-hw-value">{row.value}</td>
                   <td className="pve-hw-act">
                     {canWrite && row.edit && (
-                      <Btn variant="secondary" disabled={locked} onClick={() => openDialog(row.edit)}>
+                      <Btn variant="secondary" disabled={locked} onClick={() => openDialog(row.edit, row)}>
                         Edit
                       </Btn>
                     )}
@@ -249,6 +266,7 @@ export default function GuestHardware() {
               nic: 'Add network device',
               memory: 'Edit memory',
               cpu: 'Edit processors',
+              resize: 'Resize disk',
             }[dialog]
           }
           onClose={() => setDialog(null)}
@@ -284,7 +302,7 @@ export default function GuestHardware() {
               <div className="field">
                 <label htmlFor="hw-iso">ISO image</label>
                 <select id="hw-iso" value={form.iso} onChange={(e) => setForm({ iso: e.target.value })}>
-                  {inv.isos.map((item) => (
+                  {inv.isos.filter((item) => !isCloudInitIso(item.name)).map((item) => (
                     <option key={item.name} value={item.name}>
                       {item.name}
                     </option>
@@ -343,6 +361,22 @@ export default function GuestHardware() {
                   value={form.vcpus}
                   onChange={(e) => setForm({ vcpus: e.target.value })}
                 />
+              </div>
+            )}
+            {dialog === 'resize' && (
+              <div className="field">
+                <label htmlFor="hw-disk">Size (GiB)</label>
+                <input
+                  id="hw-disk"
+                  type="number"
+                  min={form.minGib || 1}
+                  required
+                  value={form.sizeGib}
+                  onChange={(e) => setForm({ ...form, sizeGib: e.target.value })}
+                />
+                <p className="field-hint">
+                  Grow only. Stop the guest first. Cloud images expand the filesystem on next boot.
+                </p>
               </div>
             )}
           </form>

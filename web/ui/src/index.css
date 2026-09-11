@@ -757,12 +757,17 @@ a.btn-icon:hover { color: var(--accent-on); }
 }
 .modal-card {
   width: min(420px, 100%);
+  max-height: min(92vh, 900px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 1.5rem;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
 }
+.modal-body { overflow-y: auto; flex: 1; min-height: 0; }
 .modal-card.modal-wide { width: min(520px, 100%); }
 .modal-card h2 { margin: 0.35rem 0 0.5rem; font-size: 1.15rem; }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; }
@@ -946,7 +951,9 @@ a.guest-card:hover { color: inherit; }
   background: transparent;
   color: var(--text-muted);
   font-size: 0.78rem;
+  cursor: pointer;
 }
+.wizard-step:disabled { cursor: default; opacity: 0.65; }
 .wizard-step.current {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   background: var(--accent-soft-strong);

@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, clearToken, getToken } from './api'
+import { api, clearToken, getToken, onAuthRequired, setToken } from './api'
 import { Icon } from './components/Icons'
 import { applyTheme } from './theme'
 import { useConfirm } from './components/Confirm'
@@ -8,6 +8,7 @@ import { useInventory } from './useInventory'
 import ResourceTree from './components/ResourceTree'
 import GuestWizard from './components/GuestWizard'
 import ChangePassword from './components/ChangePassword'
+import Modal from './components/Modal'
 import { parseResourceRoute, resourceLink } from './resourceRoutes'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
@@ -36,6 +37,11 @@ export default function Layout() {
   const [resizing, setResizing] = useState(false)
   const [wizard, setWizard] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
+  const [reauth, setReauth] = useState(false)
+  const [reauthUser, setReauthUser] = useState('admin')
+  const [reauthPass, setReauthPass] = useState('')
+  const [reauthError, setReauthError] = useState('')
+  const [reauthBusy, setReauthBusy] = useState(false)
   const userMenuRef = useRef(null)
   const treeRef = useRef(null)
 
@@ -51,10 +57,11 @@ export default function Layout() {
     api('/v1/session')
       .then(setUser)
       .catch(() => {
-        clearToken()
-        nav('/login')
+        /* Keep the UI. Expired tokens open the re-auth dialog via onAuthRequired. */
       })
   }, [nav])
+
+  useEffect(() => onAuthRequired(() => setReauth(true)), [])
 
   useEffect(() => {
     setMobileOpen(false)
@@ -116,6 +123,28 @@ export default function Layout() {
     if (!ok) return
     clearToken()
     nav('/login')
+  }
+
+  async function reauthSubmit(e) {
+    e.preventDefault()
+    setReauthBusy(true)
+    setReauthError('')
+    try {
+      const res = await api('/v1/login', {
+        method: 'POST',
+        body: { username: reauthUser.trim(), password: reauthPass },
+      })
+      setToken(res.token, Boolean(localStorage.getItem('pertisk_token')))
+      const session = await api('/v1/session')
+      setUser(session)
+      setReauthPass('')
+      setReauth(false)
+      await inv.refresh()
+    } catch (err) {
+      setReauthError(err.message || String(err))
+    } finally {
+      setReauthBusy(false)
+    }
   }
 
   const initial = user?.username ? user.username.charAt(0).toUpperCase() : 'U'
@@ -256,6 +285,48 @@ export default function Layout() {
       </div>
 
       {passwordOpen && <ChangePassword onClose={() => setPasswordOpen(false)} />}
+
+      {reauth && (
+        <Modal
+          title="Session expired"
+          hint="Sign in again to keep working. You will stay on this page."
+          onClose={() => setReauth(false)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setReauth(false)} disabled={reauthBusy}>
+                Later
+              </button>
+              <button type="submit" form="reauth" disabled={reauthBusy || !reauthPass}>
+                {reauthBusy ? 'Signing in…' : 'Sign in'}
+              </button>
+            </>
+          }
+        >
+          {reauthError && <div className="error">{reauthError}</div>}
+          <form id="reauth" onSubmit={reauthSubmit}>
+            <div className="field">
+              <label htmlFor="reauth-user">Username</label>
+              <input
+                id="reauth-user"
+                value={reauthUser}
+                onChange={(e) => setReauthUser(e.target.value)}
+                autoComplete="username"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="reauth-pass">Password</label>
+              <input
+                id="reauth-pass"
+                type="password"
+                value={reauthPass}
+                onChange={(e) => setReauthPass(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {wizard && (
         <GuestWizard

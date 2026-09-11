@@ -1,95 +1,34 @@
 //! Minimal ISO 9660 + Joliet image for cloud-init NoCloud (`cidata` volume id).
 
-#[cfg(test)]
 use std::collections::BTreeMap;
 
 const SECTOR: usize = 2048;
 
 pub fn cidata_iso(user_data: &[u8], meta_data: &[u8]) -> Vec<u8> {
-    write_joliet_iso(
-        "cidata",
-        &[("user-data", user_data), ("meta-data", meta_data)],
+    cidata_iso_with_json(user_data, meta_data, b"{\"uuid\":\"iid-pertisk\"}\n")
+}
+
+/// NoCloud root files plus OpenStack ConfigDrive (`config-2`) for AlmaLinux/RHEL 10.
+pub fn cidata_iso_with_json(user_data: &[u8], meta_data: &[u8], meta_json: &[u8]) -> Vec<u8> {
+    labeled_tree_iso(
+        "config-2",
+        &[
+            ("user-data", user_data),
+            ("meta-data", meta_data),
+            ("openstack/latest/user_data", user_data),
+            ("openstack/latest/meta_data.json", meta_json),
+            ("openstack/2012-08-10/user_data", user_data),
+            ("openstack/2012-08-10/meta_data.json", meta_json),
+        ],
     )
 }
 
-fn write_joliet_iso(volume_id: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
-    let lba_pvd = 16u32;
-    let lba_svd = 17;
-    let lba_term = 18;
-    let lba_pt_le = 19;
-    let lba_pt_be = 20;
-    let lba_jpt_le = 21;
-    let lba_jpt_be = 22;
-    let lba_root_iso = 23;
-    let lba_root_joliet = 24;
-    let mut next = 25u32;
-    let mut extents = Vec::new();
-    for (_, data) in files {
-        let sectors = data.len().div_ceil(SECTOR) as u32;
-        extents.push((next, sectors.max(1)));
-        next += sectors.max(1);
-    }
-    let volume_sectors = next;
-
-    let mut image = vec![0u8; volume_sectors as usize * SECTOR];
-
-    write_pvd(
-        &mut image[lba_pvd as usize * SECTOR..][..SECTOR],
-        volume_id,
-        volume_sectors,
-        lba_root_iso,
-        lba_pt_le,
-        lba_pt_be,
-    );
-    write_svd(
-        &mut image[lba_svd as usize * SECTOR..][..SECTOR],
-        volume_id,
-        volume_sectors,
-        lba_root_joliet,
-        lba_jpt_le,
-        lba_jpt_be,
-    );
-    image[lba_term as usize * SECTOR] = 255;
-    image[lba_term as usize * SECTOR + 1..lba_term as usize * SECTOR + 6].copy_from_slice(b"CD001");
-    image[lba_term as usize * SECTOR + 6] = 1;
-
-    write_path_table(
-        &mut image[lba_pt_le as usize * SECTOR..][..SECTOR],
-        lba_root_iso,
-        false,
-    );
-    write_path_table(
-        &mut image[lba_pt_be as usize * SECTOR..][..SECTOR],
-        lba_root_iso,
-        true,
-    );
-    write_path_table(
-        &mut image[lba_jpt_le as usize * SECTOR..][..SECTOR],
-        lba_root_joliet,
-        false,
-    );
-    write_path_table(
-        &mut image[lba_jpt_be as usize * SECTOR..][..SECTOR],
-        lba_root_joliet,
-        true,
-    );
-
-    let iso_root = iso_root_bytes(lba_root_iso, files, &extents);
-    let joliet_root = joliet_root_bytes(lba_root_joliet, files, &extents);
-    image[lba_root_iso as usize * SECTOR..][..iso_root.len()].copy_from_slice(&iso_root);
-    image[lba_root_joliet as usize * SECTOR..][..joliet_root.len()].copy_from_slice(&joliet_root);
-
-    for (i, (_, data)) in files.iter().enumerate() {
-        let (lba, _) = extents[i];
-        let dest = lba as usize * SECTOR;
-        image[dest..dest + data.len()].copy_from_slice(data);
-    }
-    image
+/// Nested Joliet tree used by installer-kernel extraction tests (`casper/vmlinuz`, `efi/ubuntu/…`).
+pub(crate) fn tree_iso(files: &[(&str, &[u8])]) -> Vec<u8> {
+    labeled_tree_iso("TESTISO", files)
 }
 
-/// Nested Joliet tree used by installer-kernel extraction tests (`casper/vmlinuz`, `efi/ubuntu/…`).
-#[cfg(test)]
-pub(crate) fn tree_iso(files: &[(&str, &[u8])]) -> Vec<u8> {
+fn labeled_tree_iso(volume_id: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut dirs: Vec<String> = vec![String::new()];
     for (path, _) in files {
         let parts: Vec<&str> = path.split('/').collect();
@@ -131,46 +70,41 @@ pub(crate) fn tree_iso(files: &[(&str, &[u8])]) -> Vec<u8> {
     let volume_sectors = next;
     let mut image = vec![0u8; volume_sectors as usize * SECTOR];
     let (root_iso, root_joliet) = dir_lba[""];
+    let pt_iso_le = path_table(&dirs, &dir_lba, false, false);
+    let pt_iso_be = path_table(&dirs, &dir_lba, false, true);
+    let pt_jol_le = path_table(&dirs, &dir_lba, true, false);
+    let pt_jol_be = path_table(&dirs, &dir_lba, true, true);
+    let pt_size = pt_iso_le.len() as u32;
 
     write_pvd(
         &mut image[lba_pvd as usize * SECTOR..][..SECTOR],
-        "TESTISO",
+        volume_id,
         volume_sectors,
         root_iso,
         lba_pt_le,
         lba_pt_be,
+        pt_size,
     );
     write_svd(
         &mut image[lba_svd as usize * SECTOR..][..SECTOR],
-        "TESTISO",
+        volume_id,
         volume_sectors,
         root_joliet,
         lba_jpt_le,
         lba_jpt_be,
+        pt_size.max(pt_jol_le.len() as u32),
     );
     image[lba_term as usize * SECTOR] = 255;
     image[lba_term as usize * SECTOR + 1..lba_term as usize * SECTOR + 6].copy_from_slice(b"CD001");
     image[lba_term as usize * SECTOR + 6] = 1;
-    write_path_table(
-        &mut image[lba_pt_le as usize * SECTOR..][..SECTOR],
-        root_iso,
-        false,
-    );
-    write_path_table(
-        &mut image[lba_pt_be as usize * SECTOR..][..SECTOR],
-        root_iso,
-        true,
-    );
-    write_path_table(
-        &mut image[lba_jpt_le as usize * SECTOR..][..SECTOR],
-        root_joliet,
-        false,
-    );
-    write_path_table(
-        &mut image[lba_jpt_be as usize * SECTOR..][..SECTOR],
-        root_joliet,
-        true,
-    );
+    let mut copy_pt = |lba: u32, data: &[u8]| {
+        let dest = lba as usize * SECTOR;
+        image[dest..dest + data.len()].copy_from_slice(data);
+    };
+    copy_pt(lba_pt_le, &pt_iso_le);
+    copy_pt(lba_pt_be, &pt_iso_be);
+    copy_pt(lba_jpt_le, &pt_jol_le);
+    copy_pt(lba_jpt_be, &pt_jol_be);
 
     for dir in &dirs {
         let (iso_lba, joliet_lba) = dir_lba[dir];
@@ -187,17 +121,14 @@ pub(crate) fn tree_iso(files: &[(&str, &[u8])]) -> Vec<u8> {
     image
 }
 
-#[cfg(test)]
 fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map(|(p, _)| p).unwrap_or("")
 }
 
-#[cfg(test)]
 fn basename_of(path: &str) -> &str {
     path.rsplit_once('/').map(|(_, b)| b).unwrap_or(path)
 }
 
-#[cfg(test)]
 fn dir_bytes(
     dir: &str,
     dirs: &[String],
@@ -252,6 +183,7 @@ fn write_pvd(
     root_lba: u32,
     pt_le: u32,
     pt_be: u32,
+    pt_size: u32,
 ) {
     sector[0] = 1;
     sector[1..6].copy_from_slice(b"CD001");
@@ -259,7 +191,6 @@ fn write_pvd(
     pad_str(&mut sector[40..72], &volume_id.to_ascii_uppercase());
     sector[80..88].copy_from_slice(&both32(volume_sectors));
     sector[120..124].copy_from_slice(&both16(SECTOR as u16));
-    let pt_size = 10u32;
     sector[124..132].copy_from_slice(&both32(pt_size));
     sector[132..136].copy_from_slice(&pt_le.to_le_bytes());
     sector[140..144].copy_from_slice(&pt_be.to_be_bytes());
@@ -281,6 +212,7 @@ fn write_svd(
     root_lba: u32,
     pt_le: u32,
     pt_be: u32,
+    pt_size: u32,
 ) {
     sector[0] = 2;
     sector[1..6].copy_from_slice(b"CD001");
@@ -292,7 +224,6 @@ fn write_svd(
     sector[89] = 0x2f;
     sector[90] = 0x45;
     sector[120..124].copy_from_slice(&both16(SECTOR as u16));
-    let pt_size = 10u32;
     sector[124..132].copy_from_slice(&both32(pt_size));
     sector[132..136].copy_from_slice(&pt_le.to_le_bytes());
     sector[140..144].copy_from_slice(&pt_be.to_be_bytes());
@@ -307,17 +238,52 @@ fn write_svd(
     sector[881] = 1;
 }
 
-fn write_path_table(sector: &mut [u8], dir_lba: u32, be: bool) {
-    sector[0] = 1;
-    sector[1] = 0;
-    if be {
-        sector[2..6].copy_from_slice(&dir_lba.to_be_bytes());
-        sector[6..8].copy_from_slice(&1u16.to_be_bytes());
-    } else {
-        sector[2..6].copy_from_slice(&dir_lba.to_le_bytes());
-        sector[6..8].copy_from_slice(&1u16.to_le_bytes());
+fn path_table(
+    dirs: &[String],
+    dir_lba: &BTreeMap<String, (u32, u32)>,
+    joliet: bool,
+    be: bool,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for dir in dirs {
+        let (iso, jol) = dir_lba[dir];
+        let lba = if joliet { jol } else { iso };
+        let ident: Vec<u8> = if dir.is_empty() {
+            vec![0]
+        } else {
+            let name = basename_of(dir);
+            if joliet {
+                ucs2(name)
+            } else {
+                name.chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .take(31)
+                    .map(|c| c.to_ascii_uppercase())
+                    .collect::<String>()
+                    .into_bytes()
+            }
+        };
+        let parent: u16 = if dir.is_empty() {
+            1
+        } else {
+            let p = parent_of(dir);
+            (dirs.iter().position(|d| d == p).unwrap_or(0) + 1) as u16
+        };
+        buf.push(ident.len() as u8);
+        buf.push(0);
+        if be {
+            buf.extend_from_slice(&lba.to_be_bytes());
+            buf.extend_from_slice(&parent.to_be_bytes());
+        } else {
+            buf.extend_from_slice(&lba.to_le_bytes());
+            buf.extend_from_slice(&parent.to_le_bytes());
+        }
+        buf.extend_from_slice(&ident);
+        if buf.len() % 2 == 1 {
+            buf.push(0);
+        }
     }
-    sector[8] = 0;
+    buf
 }
 
 fn iso_root_bytes(root_lba: u32, files: &[(&str, &[u8])], extents: &[(u32, u32)]) -> Vec<u8> {
@@ -424,8 +390,16 @@ mod tests {
     fn cidata_volume_and_joliet_names() {
         let iso = cidata_iso(b"#cloud-config\n", b"instance-id: i-1\n");
         assert_eq!(&iso[32768..32774], b"\x01CD001");
-        let vol = std::str::from_utf8(&iso[32768 + 40..32768 + 46]).unwrap();
-        assert_eq!(vol, "CIDATA");
+        let vol = std::str::from_utf8(&iso[32768 + 40..32768 + 48]).unwrap();
+        assert_eq!(vol, "CONFIG-2");
+        let openstack: Vec<u8> = "openstack"
+            .encode_utf16()
+            .flat_map(|u| u.to_be_bytes())
+            .collect();
+        assert!(
+            iso.windows(openstack.len()).any(|w| w == openstack),
+            "missing Joliet openstack dir"
+        );
         assert_eq!(&iso[34816..34822], b"\x02CD001");
         let joliet_user: Vec<u8> = "user-data"
             .encode_utf16()
