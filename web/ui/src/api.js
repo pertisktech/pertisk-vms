@@ -21,38 +21,58 @@ export function clearToken() {
   sessionStorage.removeItem(TOKEN_KEY)
 }
 
+export function tokenIsRemembered() {
+  return Boolean(localStorage.getItem(TOKEN_KEY))
+}
+
 const authListeners = new Set()
+let authRequired = false
 
 /** Called when the API returns 401. Does not clear the token or navigate. */
 export function onAuthRequired(fn) {
   authListeners.add(fn)
+  if (authRequired) fn()
   return () => authListeners.delete(fn)
 }
 
+export function isAuthRequired() {
+  return authRequired
+}
+
+export function clearAuthRequired() {
+  authRequired = false
+}
+
+export function isUnauthorized(err) {
+  return Number(err?.status) === 401
+}
+
 function notifyAuthRequired() {
+  authRequired = true
   for (const fn of [...authListeners]) fn()
 }
 
 export async function api(path, opts = {}) {
-  const headers = { ...(opts.headers || {}) }
+  const { notifyAuth = true, headers: extraHeaders, body: rawBody, ...fetchOpts } = opts
+  const headers = { ...(extraHeaders || {}) }
   const token = getToken()
-  if (token) headers.authorization = `Bearer ${token}`
+  if (token && path !== '/v1/login') headers.authorization = `Bearer ${token}`
   const isRaw =
-    typeof FormData !== 'undefined' && opts.body instanceof FormData
+    typeof FormData !== 'undefined' && rawBody instanceof FormData
       ? true
-      : typeof Blob !== 'undefined' && opts.body instanceof Blob
-  if (opts.body !== undefined && !isRaw) {
+      : typeof Blob !== 'undefined' && rawBody instanceof Blob
+  if (rawBody !== undefined && !isRaw) {
     headers['content-type'] = 'application/json'
   }
   const res = await fetch(path, {
-    ...opts,
+    ...fetchOpts,
     headers,
     body:
-      opts.body === undefined
+      rawBody === undefined
         ? undefined
-        : typeof opts.body === 'string' || isRaw
-          ? opts.body
-          : JSON.stringify(opts.body),
+        : typeof rawBody === 'string' || isRaw
+          ? rawBody
+          : JSON.stringify(rawBody),
   })
   if (res.status === 204) return null
   const text = await res.text()
@@ -67,7 +87,7 @@ export async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error((body && body.error) || res.statusText || 'request failed')
     err.status = res.status
-    if (res.status === 401 && path !== '/v1/login') notifyAuthRequired()
+    if (res.status === 401 && path !== '/v1/login' && notifyAuth) notifyAuthRequired()
     throw err
   }
   return body

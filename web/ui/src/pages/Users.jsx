@@ -21,7 +21,7 @@ export default function Users() {
       setUsers(asList(await api('/v1/users')))
       setError('')
     } catch (err) {
-      setError(err.message || String(err))
+      if (err.status !== 401) setError(err.message || String(err))
     }
   }
 

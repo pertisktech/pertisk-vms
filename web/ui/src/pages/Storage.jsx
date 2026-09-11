@@ -4,11 +4,10 @@ import { api, formatBytes, isCloudInitIso, parseSize, replicasOf, snapshotsOf } 
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
-import { useInventory } from '../useInventory'
 
 export default function Storage() {
-  const { canWrite } = useOutletContext()
-  const { volumes, isos, cluster, error, setError, mutate } = useInventory()
+  const { canWrite, inv } = useOutletContext()
+  const { volumes, isos, cluster, error, setError, mutate } = inv
   const confirm = useConfirm()
   const members = cluster?.members || []
   const osIsos = isos.filter((iso) => !isCloudInitIso(iso.name))

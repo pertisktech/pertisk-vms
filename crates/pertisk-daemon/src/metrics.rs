@@ -347,6 +347,21 @@ fn read_proc_rss(pid: u32) -> Option<u64> {
     None
 }
 
+fn file_allocated_bytes(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let alloc = meta.blocks().saturating_mul(512);
+        if alloc > 0 {
+            return alloc;
+        }
+    }
+    meta.len()
+}
+
 fn vm_disk_bytes(vm: &VmRecord, volumes: &[VolumeRecord]) -> (u64, u64) {
     let mut used = 0u64;
     let mut total = 0u64;
@@ -357,16 +372,19 @@ fn vm_disk_bytes(vm: &VmRecord, volumes: &[VolumeRecord]) -> (u64, u64) {
         if let Some(id) = disk.volume_id {
             if let Some(vol) = volumes.iter().find(|v| v.id == id) {
                 total = total.saturating_add(vol.size_bytes);
-                let on_disk = std::fs::metadata(&vol.path).map(|m| m.len()).unwrap_or(0);
-                used = used.saturating_add(on_disk);
+                used = used.saturating_add(file_allocated_bytes(&vol.path));
                 continue;
             }
         }
-        let on_disk = std::fs::metadata(&disk.path).map(|m| m.len()).unwrap_or(0);
-        used = used.saturating_add(on_disk);
-        total = total.saturating_add(on_disk);
+        let path = &disk.path;
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
+        total = total.saturating_add(meta.len());
+        used = used.saturating_add(file_allocated_bytes(path));
     }
-    (used, total.max(used).max(1))
+    let total = total.max(1);
+    (used.min(total), total)
 }
 
 #[cfg(test)]
@@ -389,5 +407,64 @@ mod tests {
         assert_eq!(cpu, 0.0);
         assert_eq!(rx, 0);
         assert_eq!(tx, 0);
+    }
+
+    #[test]
+    fn guest_disk_total_is_volume_size_not_file_len() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disk.img");
+        std::fs::write(&path, vec![0u8; 4096]).unwrap();
+        let vol_id: pertisk_types::VolumeId =
+            "11111111-1111-1111-1111-111111111111".parse().unwrap();
+        let vol = VolumeRecord {
+            id: vol_id,
+            name: "disk".into(),
+            format: pertisk_types::VolumeFormat::Raw,
+            size_bytes: 50 * 1024 * 1024 * 1024,
+            path: path.clone(),
+            backing_id: None,
+            snapshots: vec![],
+            replicas: vec![],
+            replica_count: 1,
+            backend: Default::default(),
+        };
+        let vm = VmRecord {
+            id: "100".parse().unwrap(),
+            spec: pertisk_types::VmSpec {
+                name: "g".into(),
+                vcpus: 1,
+                memory_mib: 512,
+                kernel: None,
+                cmdline: None,
+                initramfs: None,
+                firmware: None,
+                disks: vec![pertisk_types::DiskSpec {
+                    path: path.clone(),
+                    readonly: false,
+                    cdrom: false,
+                    volume_id: Some(vol_id),
+                    iso_name: None,
+                }],
+                nets: vec![],
+                serial_log: None,
+                console_type: Default::default(),
+                ha: true,
+                autostart: false,
+                autostart_delay: 0,
+                autostart_order: 0,
+            },
+            state: VmState::Running,
+            pid: None,
+            api_socket: None,
+            serial_log: None,
+            console_socket: None,
+            graphics_socket: None,
+            last_error: None,
+            node_id: None,
+            template: false,
+        };
+        let (used, total) = vm_disk_bytes(&vm, &[vol]);
+        assert_eq!(total, 50 * 1024 * 1024 * 1024);
+        assert!(used < total, "used {used} should be < virtual {total}");
     }
 }

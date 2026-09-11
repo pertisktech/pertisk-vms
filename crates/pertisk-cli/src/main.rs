@@ -1477,6 +1477,7 @@ async fn run() -> Result<()> {
                         password,
                         ssh_authorized_keys: resolve_ssh_keys(ssh_key)?,
                         userdata,
+                        network: None,
                     },
                 )
                 .await?;

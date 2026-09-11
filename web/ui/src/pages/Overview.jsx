@@ -1,7 +1,6 @@
-import { Link } from 'react-router-dom'
+import { Link, useOutletContext } from 'react-router-dom'
 import { asList, disksOf, isTemplate } from '../api'
 import MetricsCharts from '../components/MetricsCharts'
-import { useInventory } from '../useInventory'
 import { useMetrics } from '../useMetrics'
 
 function stateClass(state) {
@@ -12,7 +11,8 @@ function stateClass(state) {
 }
 
 export default function Overview() {
-  const { host, cluster, vms, volumes, error, loading } = useInventory()
+  const { inv } = useOutletContext()
+  const { host, cluster, vms, volumes, error, loading } = inv
   const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const online = members.filter((m) => m.online).length
@@ -21,7 +21,7 @@ export default function Overview() {
 
   return (
     <div className="pve-stack">
-      {error && <div className="banner danger">{error}</div>}
+      {error && error !== 'unauthorized' && <div className="banner danger">{error}</div>}
 
       <div className="dash-stat-row">
         <div className="stat">

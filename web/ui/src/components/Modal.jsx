@@ -17,7 +17,7 @@ function focusables(root) {
   )].filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
 }
 
-export default function Modal({ title, hint, wide, wizard, lock, onClose, children, footer }) {
+export default function Modal({ title, hint, wide, wizard, lock, closable = true, onClose, children, footer }) {
   const cardRef = useRef(null)
   const onCloseRef = useRef(onClose)
   const backdropDown = useRef(false)
@@ -35,7 +35,7 @@ export default function Modal({ title, hint, wide, wizard, lock, onClose, childr
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        onCloseRef.current?.()
+        if (closable) onCloseRef.current?.()
         return
       }
       if ((e.key === 'Backspace' || e.key === 'Delete') && !isEditable(e.target)) {
@@ -62,7 +62,7 @@ export default function Modal({ title, hint, wide, wizard, lock, onClose, childr
       document.removeEventListener('keydown', onKeyDown, true)
       if (prev instanceof HTMLElement) prev.focus?.()
     }
-  }, [])
+  }, [closable])
 
   function onBackdropPointerDown(e) {
     backdropDown.current = !locked && e.target === e.currentTarget
@@ -92,9 +92,11 @@ export default function Modal({ title, hint, wide, wizard, lock, onClose, childr
       >
         <div className="modal-head">
           <h2 id="modal-title">{title}</h2>
-          <button type="button" className="secondary modal-close" onClick={() => onCloseRef.current?.()} aria-label="Close">
-            ×
-          </button>
+          {closable ? (
+            <button type="button" className="secondary modal-close" onClick={() => onCloseRef.current?.()} aria-label="Close">
+              ×
+            </button>
+          ) : null}
         </div>
         {hint && <p className="modal-hint">{hint}</p>}
         <div className="modal-body">{children}</div>

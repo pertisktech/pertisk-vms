@@ -10,17 +10,18 @@ pub fn cidata_iso(user_data: &[u8], meta_data: &[u8]) -> Vec<u8> {
 
 /// NoCloud root files plus OpenStack ConfigDrive (`config-2`) for AlmaLinux/RHEL 10.
 pub fn cidata_iso_with_json(user_data: &[u8], meta_data: &[u8], meta_json: &[u8]) -> Vec<u8> {
-    labeled_tree_iso(
-        "config-2",
-        &[
-            ("user-data", user_data),
-            ("meta-data", meta_data),
-            ("openstack/latest/user_data", user_data),
-            ("openstack/latest/meta_data.json", meta_json),
-            ("openstack/2012-08-10/user_data", user_data),
-            ("openstack/2012-08-10/meta_data.json", meta_json),
-        ],
-    )
+    cidata_files(&[
+        ("user-data", user_data),
+        ("meta-data", meta_data),
+        ("openstack/latest/user_data", user_data),
+        ("openstack/latest/meta_data.json", meta_json),
+        ("openstack/2012-08-10/user_data", user_data),
+        ("openstack/2012-08-10/meta_data.json", meta_json),
+    ])
+}
+
+pub fn cidata_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+    labeled_tree_iso("config-2", files)
 }
 
 /// Nested Joliet tree used by installer-kernel extraction tests (`casper/vmlinuz`, `efi/ubuntu/…`).

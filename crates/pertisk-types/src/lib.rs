@@ -643,6 +643,23 @@ pub struct CloudInitIsoRequest {
     /// Raw `#cloud-config` body. When set, hostname/user/password/keys are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub userdata: Option<String>,
+    /// Guest NIC for cloud-init `network-config` (IPv4 DHCP/static + IPv6 SLAAC/DHCPv6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<CloudInitNetwork>,
+}
+
+/// Network stanza written into a NoCloud / ConfigDrive seed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CloudInitNetwork {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// Static IPv4 (`10.1.1.89` or `10.1.1.89/24`). Unset means DHCPv4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<u8>,
 }
 
 /// Default SSH / cloud-init login inferred from a cloud image or template name.

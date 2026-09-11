@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, asList } from './api'
+import { api, asList, isAuthRequired, isUnauthorized } from './api'
 import { requestRefresh, retainLive } from './live'
 
 const EMPTY = {
@@ -32,6 +32,10 @@ export function useInventory() {
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
+    if (isAuthRequired()) {
+      setLoading(false)
+      return
+    }
     try {
       const [host, cluster, vms, volumes, isos, networks, tasks, audit] = await Promise.all([
         api('/v1/host'),
@@ -56,6 +60,7 @@ export function useInventory() {
       setError('')
       requestRefresh()
     } catch (err) {
+      if (isUnauthorized(err)) return
       setError(err.message || String(err))
     } finally {
       setLoading(false)
@@ -79,7 +84,7 @@ export function useInventory() {
         await fn()
         await refresh()
       } catch (err) {
-        setError(err.message || String(err))
+        if (!isUnauthorized(err)) setError(err.message || String(err))
         throw err
       }
     },

@@ -21,7 +21,7 @@ use pertisk_types::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::iso9660::cidata_iso_with_json;
+use crate::iso9660::cidata_files;
 use crate::qemu::QemuImg;
 pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
 pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
@@ -561,24 +561,31 @@ impl VolumePool {
         let user_data = cloudinit_user_data(&req);
         let meta_data = cloudinit_meta_data(&req);
         let meta_json = cloudinit_meta_json(&req);
+        let network_config = cloudinit_network_config(&req);
+        let network_data = cloudinit_network_data(&req);
         std::fs::create_dir_all(self.root.join("iso"))?;
         let dest = self.root.join("iso").join(&name);
         let files = [
             ("user-data", user_data.as_bytes()),
             ("meta-data", meta_data.as_bytes()),
+            ("network-config", network_config.as_bytes()),
             ("openstack/latest/user_data", user_data.as_bytes()),
             ("openstack/latest/meta_data.json", meta_json.as_bytes()),
+            (
+                "openstack/latest/network_data.json",
+                network_data.as_bytes(),
+            ),
             ("openstack/2012-08-10/user_data", user_data.as_bytes()),
             ("openstack/2012-08-10/meta_data.json", meta_json.as_bytes()),
+            (
+                "openstack/2012-08-10/network_data.json",
+                network_data.as_bytes(),
+            ),
         ];
         let size_bytes = match write_vfat_configdrive(&dest, &files) {
             Ok(n) => n,
             Err(_) => {
-                let bytes = cidata_iso_with_json(
-                    user_data.as_bytes(),
-                    meta_data.as_bytes(),
-                    meta_json.as_bytes(),
-                );
+                let bytes = cidata_files(&files);
                 std::fs::write(&dest, &bytes)?;
                 bytes.len() as u64
             }
@@ -824,6 +831,140 @@ fn cloudinit_meta_json(req: &CloudInitIsoRequest) -> String {
     serde_json::to_string(&value)
         .unwrap_or_else(|_| format!(r#"{{"uuid":"iid-{hostname}","hostname":"{hostname}"}}"#))
         + "\n"
+}
+
+fn cloudinit_network_config(req: &CloudInitIsoRequest) -> String {
+    let net = req.network.as_ref();
+    let mac = net
+        .and_then(|n| n.mac.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let ipv4 = net
+        .and_then(|n| n.ipv4.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut yaml = String::from("version: 2\nethernets:\n  id0:\n");
+    if let Some(mac) = &mac {
+        yaml.push_str("    match:\n      macaddress: \"");
+        yaml.push_str(mac);
+        yaml.push_str("\"\n");
+    }
+    // SLAAC only. dhcp6+SLAAC assigns two addresses and DAD can drop SSH.
+    yaml.push_str("    dhcp6: false\n    accept-ra: true\n");
+    if let Some(ip) = ipv4 {
+        let prefix = net
+            .and_then(|n| n.prefix)
+            .filter(|p| *p > 0 && *p <= 32)
+            .unwrap_or(24);
+        let addr = if ip.contains('/') {
+            ip.to_string()
+        } else {
+            format!("{ip}/{prefix}")
+        };
+        yaml.push_str("    dhcp4: false\n    addresses:\n      - ");
+        yaml.push_str(&addr);
+        yaml.push('\n');
+        if let Some(gw) = net
+            .and_then(|n| n.gateway.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            yaml.push_str("    routes:\n      - to: default\n        via: ");
+            yaml.push_str(gw);
+            yaml.push('\n');
+        }
+        yaml.push_str("    nameservers:\n      addresses: [1.1.1.1, 8.8.8.8]\n");
+    } else {
+        yaml.push_str("    dhcp4: true\n");
+    }
+    yaml
+}
+
+fn cloudinit_network_data(req: &CloudInitIsoRequest) -> String {
+    let net = req.network.as_ref();
+    let mac = net
+        .and_then(|n| n.mac.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let ipv4 = net
+        .and_then(|n| n.ipv4.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut link = serde_json::json!({
+        "id": "iface0",
+        "type": "phy",
+        "mtu": 1500
+    });
+    if let Some(mac) = &mac {
+        link["ethernet_mac_address"] = serde_json::Value::String(mac.clone());
+    }
+    let mut networks = Vec::new();
+    if let Some(ip) = ipv4 {
+        let ip = ip.split('/').next().unwrap_or(ip);
+        let prefix = net
+            .and_then(|n| n.prefix)
+            .filter(|p| *p > 0 && *p <= 32)
+            .unwrap_or(24);
+        let mut v4 = serde_json::json!({
+            "id": "ipv4-0",
+            "type": "ipv4",
+            "link": "iface0",
+            "ip_address": ip,
+            "netmask": ipv4_netmask(prefix),
+            "network_id": "net0"
+        });
+        if let Some(gw) = net
+            .and_then(|n| n.gateway.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            v4["routes"] = serde_json::json!([{
+                "network": "0.0.0.0",
+                "netmask": "0.0.0.0",
+                "gateway": gw
+            }]);
+        }
+        networks.push(v4);
+    } else {
+        networks.push(serde_json::json!({
+            "id": "ipv4-0",
+            "type": "ipv4_dhcp",
+            "link": "iface0",
+            "network_id": "net0"
+        }));
+    }
+    networks.push(serde_json::json!({
+        "id": "ipv6-slaac",
+        "type": "ipv6_slaac",
+        "link": "iface0",
+        "network_id": "net0"
+    }));
+    serde_json::to_string(&serde_json::json!({
+        "links": [link],
+        "networks": networks,
+        "services": [{ "type": "dns", "address": "1.1.1.1" }, { "type": "dns", "address": "8.8.8.8" }]
+    }))
+    .unwrap_or_else(|_| {
+        r#"{"links":[{"id":"iface0","type":"phy","mtu":1500}],"networks":[{"id":"ipv4-0","type":"ipv4_dhcp","link":"iface0","network_id":"net0"},{"id":"ipv6-slaac","type":"ipv6_slaac","link":"iface0","network_id":"net0"}],"services":[]}"#.into()
+    })
+}
+
+fn ipv4_netmask(prefix: u8) -> String {
+    let prefix = prefix.min(32);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        !0u32 << (32 - prefix)
+    };
+    format!(
+        "{}.{}.{}.{}",
+        mask >> 24,
+        (mask >> 16) & 255,
+        (mask >> 8) & 255,
+        mask & 255
+    )
 }
 
 fn yaml_double_quote(s: &str) -> String {
@@ -1087,6 +1228,7 @@ mod tests {
                 password: Some("ubuntu".into()),
                 ssh_authorized_keys: vec![],
                 userdata: None,
+                network: None,
             })
             .unwrap();
         assert_eq!(iso.name, "web-1-cidata.iso");
@@ -1104,6 +1246,11 @@ mod tests {
         assert!(text.contains("groups: [adm, wheel, sudo]"));
         assert!(text.contains("PasswordAuthentication yes"));
         assert!(text.contains("plain_text_passwd:"));
+        assert!(text.contains("dhcp6: false"), "{text}");
+        assert!(text.contains("accept-ra: true"), "{text}");
+        assert!(text.contains("ipv6_slaac"), "{text}");
+        assert!(!text.contains("ipv6_dhcp"), "{text}");
+        assert!(!text.contains("dhcp6: true"), "{text}");
         let again = pool
             .create_cloudinit_iso(CloudInitIsoRequest {
                 name: "web-1".into(),
@@ -1112,6 +1259,7 @@ mod tests {
                 password: Some("alma".into()),
                 ssh_authorized_keys: vec![],
                 userdata: None,
+                network: None,
             })
             .unwrap();
         assert_eq!(again.name, "web-1-cidata.iso");
@@ -1126,6 +1274,7 @@ mod tests {
                 password: Some("secret".into()),
                 ssh_authorized_keys: vec![],
                 userdata: None,
+                network: None,
             })
             .unwrap();
         let bytes = std::fs::read(&auto.path).unwrap();

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, getToken, setToken } from '../api'
+import { api, clearAuthRequired, clearToken, getToken, setToken } from '../api'
 import { Icon } from '../components/Icons'
 import { useState } from 'react'
 
@@ -14,10 +14,29 @@ export default function Login() {
   const [version, setVersion] = useState('')
 
   useEffect(() => {
-    if (getToken()) nav('/')
+    let cancelled = false
     api('/v1/health')
-      .then((h) => setVersion(h.version || ''))
+      .then((h) => {
+        if (!cancelled) setVersion(h.version || '')
+      })
       .catch(() => {})
+    const token = getToken()
+    if (!token) return () => {
+      cancelled = true
+    }
+    api('/v1/session', { notifyAuth: false })
+      .then(() => {
+        if (!cancelled) nav('/')
+      })
+      .catch((err) => {
+        if (err.status === 401) {
+          clearToken()
+          clearAuthRequired()
+        }
+      })
+    return () => {
+      cancelled = true
+    }
   }, [nav])
 
   async function onSubmit(e) {
@@ -30,6 +49,7 @@ export default function Login() {
         body: { username, password },
       })
       setToken(res.token, remember)
+      clearAuthRequired()
       nav('/')
     } catch (err) {
       setError(err.message)

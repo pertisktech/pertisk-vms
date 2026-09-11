@@ -1,9 +1,10 @@
 import { Icon } from '../components/Icons'
 import { formatUnix } from '../api'
-import { useInventory } from '../useInventory'
+import { useOutletContext } from 'react-router-dom'
 
 export default function Activity() {
-  const { tasks, audit, error, setError } = useInventory()
+  const { inv } = useOutletContext()
+  const { tasks, audit, error, setError } = inv
 
   return (
     <div className="dash-page">

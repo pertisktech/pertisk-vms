@@ -70,6 +70,7 @@ export function useMetrics(scope) {
         applySample(next, setData, setHistory)
         setError('')
       } catch (err) {
+        if (err.status === 401) return
         setError(err.message || String(err))
       } finally {
         if (!silent) setLoading(false)

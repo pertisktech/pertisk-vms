@@ -7,12 +7,13 @@ use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool};
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
-    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, ClusterMetrics,
-    ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
-    DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
-    NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmId, VmMetrics, VmRecord,
-    VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, probe_host,
+    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
+    ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
+    CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult,
+    ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest,
+    SerialChunk, SetRepositoryRequest, SnapshotRequest, StorageBackend, UpdateVmRequest,
+    UpdatesStatus, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
+    VolumeRecord, default_cloud_user, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -623,6 +624,18 @@ impl Service {
                 },
             )?;
         }
+        let network_id = req
+            .network_id
+            .or_else(|| source.spec.nets.first().and_then(|nic| nic.network_id));
+        if let Some(network_id) = network_id {
+            self.attach_nic(
+                new_id,
+                AttachNicRequest {
+                    network_id,
+                    ip: req.ip.clone(),
+                },
+            )?;
+        }
         if let Some(ci) = &req.cloud_init {
             let hostname = ci
                 .hostname
@@ -677,22 +690,28 @@ impl Service {
                 password: ci.password.clone(),
                 ssh_authorized_keys: ci.ssh_authorized_keys.clone(),
                 userdata: ci.userdata.clone(),
+                network: self.cloudinit_network_for(new_id),
             })?;
             self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
         }
-        let network_id = req
-            .network_id
-            .or_else(|| source.spec.nets.first().and_then(|nic| nic.network_id));
-        if let Some(network_id) = network_id {
-            self.attach_nic(
-                new_id,
-                AttachNicRequest {
-                    network_id,
-                    ip: req.ip.clone(),
-                },
-            )?;
-        }
         Ok(())
+    }
+
+    fn cloudinit_network_for(&self, vm_id: VmId) -> Option<CloudInitNetwork> {
+        let vm = self.store.get(vm_id).ok()?;
+        let nic = vm.spec.nets.first()?;
+        let net = nic.network_id.and_then(|id| self.networks.get(id).ok());
+        let prefix = net.as_ref().and_then(|n| {
+            n.cidr
+                .split_once('/')
+                .and_then(|(_, p)| p.parse::<u8>().ok())
+        });
+        Some(CloudInitNetwork {
+            mac: nic.mac.clone(),
+            ipv4: nic.ip.clone(),
+            gateway: net.and_then(|n| n.gateway),
+            prefix,
+        })
     }
 
     pub async fn start(&self, id: VmId) -> Result<VmRecord, DaemonError> {

@@ -4,7 +4,6 @@ import { api, netsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
-import { useInventory } from '../useInventory'
 
 const EMPTY = {
   name: '',
@@ -17,8 +16,8 @@ const EMPTY = {
 }
 
 export default function Networks() {
-  const { canWrite } = useOutletContext()
-  const { networks, vms, error, setError, mutate } = useInventory()
+  const { canWrite, inv } = useOutletContext()
+  const { networks, vms, error, setError, mutate } = inv
   const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(EMPTY)

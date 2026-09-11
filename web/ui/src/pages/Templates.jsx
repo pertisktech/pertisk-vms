@@ -5,7 +5,6 @@ import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import CloneWizard from '../components/CloneWizard'
 import { useConfirm } from '../components/Confirm'
-import { useInventory } from '../useInventory'
 
 function imageFormat(name) {
   const lower = (name || '').toLowerCase()
@@ -14,8 +13,8 @@ function imageFormat(name) {
 }
 
 export default function Templates() {
-  const { canWrite } = useOutletContext()
-  const { vms, volumes, networks, cluster, host, error, setError, mutate, refresh } = useInventory()
+  const { canWrite, inv } = useOutletContext()
+  const { vms, volumes, networks, cluster, host, error, setError, mutate, refresh } = inv
   const confirm = useConfirm()
   const templates = vms.filter(isTemplate)
   const freeVolumes = volumes.filter((vol) => {

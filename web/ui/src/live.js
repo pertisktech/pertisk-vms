@@ -102,6 +102,25 @@ export function watchMetrics(scope) {
   }
 }
 
+export function reconnectLive() {
+  clearTimeout(reconnectTimer)
+  reconnectDelay = 500
+  const previous = socket
+  socket = null
+  if (previous) {
+    previous.onclose = null
+    previous.onerror = null
+    previous.onmessage = null
+    previous.onopen = null
+    try {
+      previous.close()
+    } catch {
+      /* already closed */
+    }
+  }
+  if (wanted) open()
+}
+
 export function requestRefresh() {
   send({ type: 'refresh' })
 }

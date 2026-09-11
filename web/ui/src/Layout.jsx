@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, clearToken, getToken, onAuthRequired, setToken } from './api'
+import { api, clearToken, getToken, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired } from './api'
 import { Icon } from './components/Icons'
 import { applyTheme } from './theme'
 import { useConfirm } from './components/Confirm'
@@ -9,6 +9,7 @@ import ResourceTree from './components/ResourceTree'
 import GuestWizard from './components/GuestWizard'
 import ChangePassword from './components/ChangePassword'
 import Modal from './components/Modal'
+import { reconnectLive } from './live'
 import { parseResourceRoute, resourceLink } from './resourceRoutes'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
@@ -121,7 +122,15 @@ export default function Layout() {
       tone: 'primary',
     })
     if (!ok) return
+    clearAuthRequired()
     clearToken()
+    nav('/login')
+  }
+
+  function signOutExpired() {
+    clearAuthRequired()
+    clearToken()
+    setReauth(false)
     nav('/login')
   }
 
@@ -134,11 +143,13 @@ export default function Layout() {
         method: 'POST',
         body: { username: reauthUser.trim(), password: reauthPass },
       })
-      setToken(res.token, Boolean(localStorage.getItem('pertisk_token')))
+      setToken(res.token, tokenIsRemembered())
+      clearAuthRequired()
       const session = await api('/v1/session')
       setUser(session)
       setReauthPass('')
       setReauth(false)
+      reconnectLive()
       await inv.refresh()
     } catch (err) {
       setReauthError(err.message || String(err))
@@ -290,11 +301,11 @@ export default function Layout() {
         <Modal
           title="Session expired"
           hint="Sign in again to keep working. You will stay on this page."
-          onClose={() => setReauth(false)}
+          closable={false}
           footer={
             <>
-              <button type="button" className="secondary" onClick={() => setReauth(false)} disabled={reauthBusy}>
-                Later
+              <button type="button" className="secondary" onClick={signOutExpired} disabled={reauthBusy}>
+                Sign out
               </button>
               <button type="submit" form="reauth" disabled={reauthBusy || !reauthPass}>
                 {reauthBusy ? 'Signing in…' : 'Sign in'}

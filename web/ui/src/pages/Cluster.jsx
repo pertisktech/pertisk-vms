@@ -4,11 +4,10 @@ import { api, asList, formatBytes } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
-import { useInventory } from '../useInventory'
 
 export default function Cluster() {
-  const { canWrite } = useOutletContext()
-  const { cluster, error, setError, mutate } = useInventory()
+  const { canWrite, inv } = useOutletContext()
+  const { cluster, error, setError, mutate } = inv
   const confirm = useConfirm()
   const members = asList(cluster?.members)
   const [open, setOpen] = useState(false)
