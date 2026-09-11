@@ -85,6 +85,15 @@ pertisk vm cdrom attach --iso web-1-cidata.iso <id>
 
 Attach that seed last; firmware boots an installer ISO or the OS disk, not the cidata volume.
 
+**Cloud templates:** import a cloud disk image once, then clone guests with unique cloud-init identity.
+
+```bash
+pertisk template import ubuntu-24.04-server-cloudimg-amd64.img --name ubuntu-24.04 --cpus 1 --memory 1024
+pertisk vm clone 100 --name web-1 --cloud-init --user ubuntu --password ubuntu --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" --start
+```
+
+UI: Datacenter → Templates → Import image, then Clone. Or convert a stopped guest from Options → Convert to template. Templates cannot be started.
+
 **Node install (phase 7):** Debian/Armbian + pertiskd, flashed like Proxmox. No tarball, no `br0` by hand.
 
 Pick the image for the **machine**, not the CPU architecture:

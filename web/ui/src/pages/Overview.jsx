@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { asList, disksOf } from '../api'
+import { asList, disksOf, isTemplate } from '../api'
 import MetricsCharts from '../components/MetricsCharts'
 import { useInventory } from '../useInventory'
 import { useMetrics } from '../useMetrics'
@@ -16,7 +16,8 @@ export default function Overview() {
   const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const online = members.filter((m) => m.online).length
-  const running = vms.filter((vm) => vm.state === 'running').length
+  const guests = vms.filter((vm) => !isTemplate(vm))
+  const running = guests.filter((vm) => vm.state === 'running').length
 
   return (
     <div className="pve-stack">
@@ -28,7 +29,7 @@ export default function Overview() {
           <div className="value">
             {running}
             <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {vms.length}
+              / {guests.length}
             </span>
           </div>
         </div>
@@ -74,16 +75,16 @@ export default function Overview() {
             </p>
           </div>
         </div>
-        {loading && !vms.length ? (
+        {loading && !guests.length ? (
           <p className="muted">Loading…</p>
-        ) : vms.length === 0 ? (
+        ) : guests.length === 0 ? (
           <div className="dash-empty card">
             <strong>No guests yet</strong>
-            <p className="muted">Use Create guest in the header to start a machine.</p>
+            <p className="muted">Use Create guest in the header to start a machine, or clone a cloud template.</p>
           </div>
         ) : (
           <div className="guest-grid">
-            {vms.slice(0, 8).map((vm) => (
+            {guests.slice(0, 8).map((vm) => (
               <Link key={vm.id} to={`/vm/${vm.id}/summary`} className="guest-card">
                 <div className="guest-card-top">
                   <span className={`guest-orb ${vm.state}`} />

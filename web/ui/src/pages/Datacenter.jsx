@@ -6,6 +6,7 @@ export default function Datacenter() {
   const tabs = [
     { to: 'summary', label: 'Summary', icon: 'summary' },
     { to: 'storage', label: 'Storage', icon: 'disk' },
+    { to: 'templates', label: 'Templates', icon: 'template' },
     { to: 'networks', label: 'Networks', icon: 'network' },
     { to: 'cluster', label: 'Cluster', icon: 'cluster' },
     { to: 'tasks', label: 'Task History', icon: 'activity' },

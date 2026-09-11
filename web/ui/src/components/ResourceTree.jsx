@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { asList } from '../api'
+import { asList, isTemplate } from '../api'
 import { Icon } from './Icons'
 import { parseResourceRoute, resourceLink } from '../resourceRoutes'
 
@@ -23,6 +23,7 @@ function nodeList(cluster, host) {
 }
 
 function guestStatus(vm) {
+  if (isTemplate(vm)) return undefined
   if (vm.state === 'running') return 'running'
   if (vm.state === 'failed') return 'failed'
   return 'stopped'
@@ -123,10 +124,11 @@ export default function ResourceTree({ cluster, host, vms }) {
                       key={vm.id}
                       depth={2}
                       leaf
-                      icon="guests"
+                      icon={isTemplate(vm) ? 'template' : 'guests'}
                       label={vm.spec?.name || vm.id}
                       to={resourceLink('vm', vm.id, currentRoute)}
                       status={guestStatus(vm)}
+                      badge={isTemplate(vm) ? 'tpl' : undefined}
                     />
                   ))}
               </div>

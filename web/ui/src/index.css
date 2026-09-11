@@ -542,7 +542,7 @@ th {
   background: var(--color-status-ready-bg);
   color: var(--color-status-ready);
 }
-.badge.pending, .badge.queued, .badge.created, .badge.stopped {
+.badge.pending, .badge.queued, .badge.created, .badge.stopped, .badge.template {
   background: color-mix(in srgb, var(--warning) 12%, transparent);
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 35%, transparent);

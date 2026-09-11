@@ -6,11 +6,12 @@ use std::time::Instant;
 use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool};
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, ClusterMetrics,
-    ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig,
-    HostInfo, ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics,
-    ResizeVolumeRequest, SerialChunk, SnapshotRequest, StorageBackend, UpdateVmRequest, VmId,
-    VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, probe_host,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
+    CloudInitIsoRequest, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
+    CreateTemplateRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
+    ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest,
+    SerialChunk, SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmMetrics, VmRecord,
+    VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, probe_host,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -31,6 +32,8 @@ pub enum DaemonError {
     IdTaken(VmId),
     #[error("vm {0} must be stopped to {1}")]
     MustBeStopped(VmId, &'static str),
+    #[error("vm {0} is a template; cannot {1}")]
+    IsTemplate(VmId, &'static str),
     #[error("volume {0} is attached to a vm")]
     VolumeBusy(VolumeId),
     #[error("iso {0} is attached to a vm")]
@@ -261,7 +264,7 @@ impl Service {
             live: node.live.clone(),
             nodes: vec![node],
             running_vms,
-            total_vms: vms.len() as u32,
+            total_vms: vms.iter().filter(|vm| !vm.template).count() as u32,
         })
     }
 
@@ -337,6 +340,7 @@ impl Service {
             graphics_socket: None,
             last_error: None,
             node_id: Some(dest),
+            template: false,
         };
         self.store.upsert(record.clone())?;
         self.created_this_boot
@@ -386,9 +390,216 @@ impl Service {
         Ok(vm)
     }
 
+    pub fn list_templates(&self) -> Result<Vec<VmRecord>, DaemonError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|vm| vm.template)
+            .collect())
+    }
+
+    pub async fn convert_to_template(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        if vm.template {
+            return Ok(vm);
+        }
+        self.require_stopped(&vm, "convert to template")?;
+        vm.template = true;
+        vm.spec.autostart = false;
+        vm.spec.ha = false;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
+    }
+
+    pub async fn create_template(
+        &self,
+        req: CreateTemplateRequest,
+    ) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(pertisk_types::TypesError::InvalidSpec("name is required".into()).into());
+        }
+        let spec = VmSpec {
+            name,
+            vcpus: req.vcpus.unwrap_or(1),
+            memory_mib: req.memory_mib.unwrap_or(1024),
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![],
+            nets: vec![],
+            serial_log: None,
+            console_type: req.console_type.unwrap_or(ConsoleType::Serial),
+            ha: false,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
+        };
+        spec.validate()?;
+        let id = match req.id {
+            Some(id) if self.store.contains(id) => return Err(DaemonError::IdTaken(id)),
+            Some(id) => id,
+            None => self.next_numeric_vm_id()?,
+        };
+        let record = self.create(id, spec).await?;
+        if let Err(err) = self.attach_disk(
+            id,
+            AttachDiskRequest {
+                volume_id: req.volume_id,
+            },
+        ) {
+            let _ = self.destroy(id).await;
+            return Err(err);
+        }
+        self.convert_to_template(record.id).await
+    }
+
+    pub async fn clone_vm(&self, id: VmId, req: CloneVmRequest) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let source = self.store.get(id)?;
+        self.require_stopped(&source, "clone")?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(pertisk_types::TypesError::InvalidSpec("name is required".into()).into());
+        }
+        if self.store.name_taken(&name, None)? {
+            return Err(DaemonError::NameTaken(name));
+        }
+        let new_id = match req.id {
+            Some(new_id) if self.store.contains(new_id) => {
+                return Err(DaemonError::IdTaken(new_id));
+            }
+            Some(new_id) => new_id,
+            None => self.next_numeric_vm_id()?,
+        };
+        let mut spec = source.spec.clone();
+        spec.name = name.clone();
+        spec.disks = Vec::new();
+        spec.nets = Vec::new();
+        spec.serial_log = None;
+        spec.autostart = req.autostart.unwrap_or(false);
+        spec.ha = req.ha.unwrap_or(true);
+        spec.autostart_delay = 0;
+        spec.autostart_order = 0;
+        if let Some(vcpus) = req.vcpus {
+            spec.vcpus = vcpus;
+        }
+        if let Some(memory_mib) = req.memory_mib {
+            spec.memory_mib = memory_mib;
+        }
+        spec.validate()?;
+
+        let created = match self.create(new_id, spec).await {
+            Ok(record) => record,
+            Err(err) => return Err(err),
+        };
+        if let Err(err) = self
+            .finish_clone(&source, created.id, &name, &req)
+            .await
+        {
+            let _ = self.destroy(created.id).await;
+            return Err(err);
+        }
+        self.cluster.bump()?;
+        self.replicate().await;
+        if req.start {
+            self.start(created.id).await
+        } else {
+            self.get(created.id)
+        }
+    }
+
+    async fn finish_clone(
+        &self,
+        source: &VmRecord,
+        new_id: VmId,
+        name: &str,
+        req: &CloneVmRequest,
+    ) -> Result<(), DaemonError> {
+        for disk in &source.spec.disks {
+            if disk.cdrom {
+                continue;
+            }
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let source_vol = self.volumes.get_volume(volume_id)?;
+            let vol_name = self.unique_volume_name(&format!("{name}-{}", source_vol.name))?;
+            let cloned = match self
+                .clone_volume(
+                    volume_id,
+                    CloneVolumeRequest {
+                        name: vol_name.clone(),
+                        linked: req.linked,
+                    },
+                )
+                .await
+            {
+                Err(DaemonError::Storage(StorageError::LinkedRequiresQemu)) if req.linked => {
+                    self.clone_volume(
+                        volume_id,
+                        CloneVolumeRequest {
+                            name: vol_name,
+                            linked: false,
+                        },
+                    )
+                    .await?
+                }
+                other => other?,
+            };
+            self.attach_disk(
+                new_id,
+                AttachDiskRequest {
+                    volume_id: cloned.id,
+                },
+            )?;
+        }
+        if let Some(ci) = &req.cloud_init {
+            let hostname = ci
+                .hostname
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(name)
+                .to_string();
+            let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
+                name: format!("{name}-{new_id}-cidata.iso"),
+                hostname: Some(hostname),
+                user: ci.user.clone(),
+                password: ci.password.clone(),
+                ssh_authorized_keys: ci.ssh_authorized_keys.clone(),
+                userdata: ci.userdata.clone(),
+            })?;
+            self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
+        }
+        let network_id = req.network_id.or_else(|| {
+            source
+                .spec
+                .nets
+                .first()
+                .and_then(|nic| nic.network_id)
+        });
+        if let Some(network_id) = network_id {
+            self.attach_nic(
+                new_id,
+                AttachNicRequest {
+                    network_id,
+                    ip: req.ip.clone(),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     pub async fn start(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let mut record = self.store.get(id)?;
+        self.require_not_template(&record, "start")?;
         let affinity = self.volume_affinity(&record.spec);
         let dest = match record.node_id {
             Some(current) if affinity.is_empty() || affinity.contains(&current) => current,
@@ -410,6 +621,7 @@ impl Service {
 
     pub async fn start_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         let mut record = self.store.get(id)?;
+        self.require_not_template(&record, "start")?;
         self.localize_disks(&mut record)?;
         self.store.upsert(record.clone())?;
         match record.state {
@@ -492,6 +704,7 @@ impl Service {
     pub async fn stop(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let record = self.store.get(id)?;
+        self.require_not_template(&record, "stop")?;
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
@@ -527,6 +740,7 @@ impl Service {
     pub async fn shutdown(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let record = self.store.get(id)?;
+        self.require_not_template(&record, "shutdown")?;
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
@@ -569,6 +783,7 @@ impl Service {
     pub async fn restart(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let record = self.store.get(id)?;
+        self.require_not_template(&record, "restart")?;
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
@@ -697,6 +912,7 @@ impl Service {
     ) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         let mut record = self.store.get(id)?;
+        self.require_not_template(&record, "migrate")?;
         let dest = self.pick_node(&record.spec, target)?;
         let src = record.node_id.unwrap_or(self.cluster.self_id());
         if dest == src {
@@ -884,7 +1100,7 @@ impl Service {
 
     pub fn create_cloudinit_iso(
         &self,
-        req: pertisk_types::CloudInitIsoRequest,
+        req: CloudInitIsoRequest,
     ) -> Result<IsoRecord, DaemonError> {
         Ok(self.volumes.create_cloudinit_iso(req)?)
     }
@@ -979,6 +1195,47 @@ impl Service {
             return Err(DaemonError::MustBeStopped(vm.id, op));
         }
         Ok(())
+    }
+
+    fn require_not_template(&self, vm: &VmRecord, op: &'static str) -> Result<(), DaemonError> {
+        if vm.template {
+            return Err(DaemonError::IsTemplate(vm.id, op));
+        }
+        Ok(())
+    }
+
+    fn next_numeric_vm_id(&self) -> Result<VmId, DaemonError> {
+        let used: HashSet<u64> = self
+            .store
+            .list()?
+            .into_iter()
+            .filter_map(|vm| match vm.id {
+                VmId::Numeric(n) => Some(n),
+                VmId::Legacy(_) => None,
+            })
+            .collect();
+        let mut n = 100u64;
+        while used.contains(&n) {
+            n += 1;
+            if n > 9_999_999_999 {
+                return Ok(VmId::new());
+            }
+        }
+        Ok(VmId::Numeric(n))
+    }
+
+    fn unique_volume_name(&self, base: &str) -> Result<String, DaemonError> {
+        let vols = self.volumes.list_volumes()?;
+        if !vols.iter().any(|vol| vol.name == base) {
+            return Ok(base.to_string());
+        }
+        for i in 2..10_000 {
+            let name = format!("{base}-{i}");
+            if !vols.iter().any(|vol| vol.name == name) {
+                return Ok(name);
+            }
+        }
+        Ok(format!("{base}-{}", VolumeId::new()))
     }
 
     fn require_volume_idle(&self, id: VolumeId, _op: &str) -> Result<(), DaemonError> {
@@ -1672,7 +1929,7 @@ impl Service {
         let loads = self.loads()?;
         let vms = self.store.list()?;
         for mut vm in vms {
-            if !vm.spec.ha || vm.state != VmState::Running {
+            if vm.template || !vm.spec.ha || vm.state != VmState::Running {
                 continue;
             }
             let Some(owner) = vm.node_id else {
@@ -1742,7 +1999,10 @@ impl Service {
         let mut candidates: Vec<_> = vms
             .into_iter()
             .filter(|vm| {
-                vm.spec.autostart && vm.node_id == Some(self_id) && !created.contains(&vm.id)
+                !vm.template
+                    && vm.spec.autostart
+                    && vm.node_id == Some(self_id)
+                    && !created.contains(&vm.id)
             })
             .collect();
         candidates.sort_by_key(|vm| (vm.spec.autostart_order, vm.spec.autostart_delay, vm.id));

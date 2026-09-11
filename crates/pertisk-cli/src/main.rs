@@ -8,11 +8,12 @@ use pertisk_api::{
     TaskRecord, TokenResponse, UserRecord,
 };
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
-    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateVolumeRequest, DEFAULT_LISTEN,
-    DiskSpec, HostInfo, ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId,
-    NetworkRecord, ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId,
-    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
+    CloudInitConfig, CloudInitIsoRequest, ClusterStatus, ConsoleInfo, CreateNetworkRequest,
+    CreateTemplateRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
+    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
+    ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec,
+    VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -73,6 +74,11 @@ enum Command {
     Cluster {
         #[command(subcommand)]
         command: ClusterCommand,
+    },
+    /// Cloud templates (golden images + cloud-init clones).
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommand,
     },
 }
 
@@ -205,6 +211,40 @@ enum VmCommand {
         autostart_delay: Option<u64>,
         #[arg(long)]
         autostart_order: Option<u32>,
+    },
+    /// Convert a stopped guest into a cloud template.
+    Template {
+        id: VmId,
+    },
+    /// Clone a guest or cloud template.
+    Clone {
+        id: VmId,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        new_id: Option<VmId>,
+        #[arg(long)]
+        linked: bool,
+        #[arg(long)]
+        cpus: Option<u8>,
+        #[arg(long)]
+        memory: Option<u32>,
+        #[arg(long)]
+        net: Option<String>,
+        #[arg(long)]
+        ip: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long = "ssh-key")]
+        ssh_key: Vec<String>,
+        #[arg(long)]
+        cloud_init: bool,
+        #[arg(long)]
+        start: bool,
     },
     Disk {
         #[command(subcommand)]
@@ -341,6 +381,36 @@ enum VolCommand {
         id: VolumeId,
         #[arg(long)]
         snap: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TemplateCommand {
+    List,
+    /// Wrap an existing volume as a cloud template.
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        volume: VolumeId,
+        #[arg(long)]
+        id: Option<VmId>,
+        #[arg(long, default_value_t = 1)]
+        cpus: u8,
+        #[arg(long, default_value_t = 1024)]
+        memory: u32,
+    },
+    /// Upload a cloud disk image (qcow2/raw) and wrap it as a template.
+    Import {
+        image: PathBuf,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        format: Option<VolumeFormat>,
+        #[arg(long, default_value_t = 1)]
+        cpus: u8,
+        #[arg(long, default_value_t = 1024)]
+        memory: u32,
     },
 }
 
@@ -644,6 +714,86 @@ async fn run() -> Result<()> {
                 println!("solo {} quorum {}", status.name, status.quorum);
             }
         },
+        Command::Template { command } => match command {
+            TemplateCommand::List => {
+                let vms: Vec<VmRecord> = get_json(&client, &cli.url, "/v1/templates").await?;
+                if vms.is_empty() {
+                    println!("no templates");
+                    return Ok(());
+                }
+                println!(
+                    "{:<38} {:<16} {:>4} {:>8} {:>6}",
+                    "ID", "NAME", "CPU", "MEM", "DISKS"
+                );
+                for vm in vms {
+                    println!(
+                        "{:<38} {:<16} {:>4} {:>8} {:>6}",
+                        vm.id,
+                        vm.spec.name,
+                        vm.spec.vcpus,
+                        vm.spec.memory_mib,
+                        vm.spec.disks.len()
+                    );
+                }
+            }
+            TemplateCommand::Create {
+                name,
+                volume,
+                id,
+                cpus,
+                memory,
+            } => {
+                let record: VmRecord = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/templates",
+                    &CreateTemplateRequest {
+                        id,
+                        name,
+                        volume_id: volume,
+                        vcpus: Some(cpus),
+                        memory_mib: Some(memory),
+                        console_type: None,
+                    },
+                )
+                .await?;
+                print_vm(&record);
+            }
+            TemplateCommand::Import {
+                image,
+                name,
+                format,
+                cpus,
+                memory,
+            } => {
+                let format = format.unwrap_or_else(|| {
+                    match image
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "qcow2" | "img" => VolumeFormat::Qcow2,
+                        _ => VolumeFormat::Raw,
+                    }
+                });
+                let bytes = tokio::fs::read(&image).await?;
+                let url = format!(
+                    "{}/v1/templates/import?name={}&format={}&vcpus={cpus}&memory_mib={memory}",
+                    cli.url.trim_end_matches('/'),
+                    urlencoding_name(&name),
+                    format.as_str()
+                );
+                let response = with_auth(client.post(url))
+                    .header("content-type", "application/octet-stream")
+                    .body(bytes)
+                    .send()
+                    .await?;
+                let record: VmRecord = read_json(response).await?;
+                print_vm(&record);
+            }
+        },
         Command::Vm { command } => match command {
             VmCommand::Create {
                 id,
@@ -812,7 +962,11 @@ async fn run() -> Result<()> {
                         "{:<38} {:<16} {:<10} {:>4} {:>8} {:>6} {:>4}",
                         vm.id,
                         vm.spec.name,
-                        vm.state,
+                        if vm.template {
+                            "template".to_string()
+                        } else {
+                            vm.state.to_string()
+                        },
                         vm.spec.vcpus,
                         vm.spec.memory_mib,
                         vm.spec.disks.len(),
@@ -847,6 +1001,69 @@ async fn run() -> Result<()> {
                         autostart,
                         autostart_delay,
                         autostart_order,
+                    },
+                )
+                .await?;
+                print_vm(&record);
+            }
+            VmCommand::Template { id } => {
+                let record: VmRecord =
+                    post_empty(&client, &cli.url, &format!("/v1/vms/{id}/template")).await?;
+                print_vm(&record);
+            }
+            VmCommand::Clone {
+                id,
+                name,
+                new_id,
+                linked,
+                cpus,
+                memory,
+                net,
+                ip,
+                user,
+                password,
+                hostname,
+                ssh_key,
+                cloud_init,
+                start,
+            } => {
+                let network_id = if let Some(net) = net {
+                    Some(resolve_network(&client, &cli.url, &net).await?)
+                } else {
+                    None
+                };
+                let cloud_init = if cloud_init
+                    || user.is_some()
+                    || password.is_some()
+                    || hostname.is_some()
+                    || !ssh_key.is_empty()
+                {
+                    Some(CloudInitConfig {
+                        hostname: hostname.or(Some(name.clone())),
+                        user,
+                        password,
+                        ssh_authorized_keys: ssh_key,
+                        userdata: None,
+                    })
+                } else {
+                    None
+                };
+                let record: VmRecord = post_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/vms/{id}/clone"),
+                    &CloneVmRequest {
+                        id: new_id,
+                        name,
+                        linked,
+                        vcpus: cpus,
+                        memory_mib: memory,
+                        ha: None,
+                        autostart: None,
+                        network_id,
+                        ip,
+                        cloud_init,
+                        start,
                     },
                 )
                 .await?;
@@ -1161,12 +1378,29 @@ fn print_vm(record: &VmRecord) {
         "{} {} {} {}",
         record.id,
         record.spec.name,
-        record.state,
+        if record.template {
+            "template".to_string()
+        } else {
+            record.state.to_string()
+        },
         record
             .node_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "-".into())
     );
+}
+
+fn urlencoding_name(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn print_vol(record: &VolumeRecord) {

@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
-import { api, asList } from '../api'
+import { api, asList, isTemplate } from '../api'
 import { Btn } from '../components/Icons'
 import Modal from '../components/Modal'
 import ResourceView from '../components/ResourceView'
 import { useConfirm } from '../components/Confirm'
+import CloneWizard from '../components/CloneWizard'
 
 export function useGuest() {
   const { vmId } = useParams()
@@ -33,9 +34,11 @@ export default function GuestView() {
   const nav = useNavigate()
   const [migrateOpen, setMigrateOpen] = useState(false)
   const [migrateTarget, setMigrateTarget] = useState('')
+  const [cloneOpen, setCloneOpen] = useState(false)
 
   const peers = asList(inv.cluster?.members).filter((m) => m.online && m.id !== vm?.node_id)
   const running = vm?.state === 'running'
+  const template = isTemplate(vm)
 
   async function act(kind) {
     if (kind === 'rm') {
@@ -73,14 +76,18 @@ export default function GuestView() {
   return (
     <>
       <ResourceView
-        icon="guests"
-        kind="Guest"
+        icon={template ? 'template' : 'guests'}
+        kind={template ? 'Template' : 'Guest'}
         name={vm.spec?.name || vmId}
         status={
           <>
-            <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
-            {vm.spec?.ha !== false && <span className="badge pending">HA</span>}
-            {vm.spec?.autostart && <span className="badge pending">boot</span>}
+            {template ? (
+              <span className="badge template">template</span>
+            ) : (
+              <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
+            )}
+            {!template && vm.spec?.ha !== false && <span className="badge pending">HA</span>}
+            {!template && vm.spec?.autostart && <span className="badge pending">boot</span>}
           </>
         }
         tabs={[
@@ -92,12 +99,17 @@ export default function GuestView() {
         actions={
           canWrite && (
             <>
-              {!running && (
+              {template && (
+                <Btn icon="clone" variant="secondary" onClick={() => setCloneOpen(true)}>
+                  Clone
+                </Btn>
+              )}
+              {!template && !running && (
                 <Btn icon="play" variant="secondary" onClick={() => act('start')}>
                   Start
                 </Btn>
               )}
-              {running && (
+              {!template && running && (
                 <>
                   <Btn icon="stop" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
                     Shutdown
@@ -110,7 +122,7 @@ export default function GuestView() {
                   </Btn>
                 </>
               )}
-              {running && peers.length > 0 && (
+              {!template && running && peers.length > 0 && (
                 <Btn
                   icon="migrate"
                   variant="secondary"
@@ -177,6 +189,15 @@ export default function GuestView() {
             </div>
           </form>
         </Modal>
+      )}
+      {cloneOpen && (
+        <CloneWizard
+          source={vm}
+          vms={inv.vms}
+          networks={inv.networks}
+          onClose={() => setCloneOpen(false)}
+          onCreated={inv.refresh}
+        />
       )}
     </>
   )

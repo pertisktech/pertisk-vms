@@ -1,5 +1,5 @@
 import { useOutletContext, useParams } from 'react-router-dom'
-import { asList } from '../api'
+import { asList, isTemplate } from '../api'
 import ResourceView from '../components/ResourceView'
 
 export function useNode() {
@@ -18,7 +18,8 @@ export function useNode() {
         }
       : null)
   const guests = ctx.inv.vms.filter(
-    (vm) => vm.node_id === nodeId || (!vm.node_id && members.length === 0),
+    (vm) =>
+      !isTemplate(vm) && (vm.node_id === nodeId || (!vm.node_id && members.length === 0)),
   )
   return { ...ctx, nodeId, node, guests }
 }

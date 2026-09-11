@@ -1,4 +1,4 @@
-import { asList, disksOf, netsOf, nicAddrs, shortId } from '../../api'
+import { asList, disksOf, isTemplate, netsOf, nicAddrs, shortId } from '../../api'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
@@ -56,14 +56,14 @@ export default function GuestSummary() {
 
       <MetricsCharts
         scope="vm"
-        title="Guest resources"
+        title={isTemplate(vm) ? 'Template' : 'Guest resources'}
         history={metrics.history}
         latest={metrics.data}
         live={metrics.live}
         setLive={metrics.setLive}
         loading={metrics.loading}
         onRefresh={() => metrics.refresh()}
-        empty={running ? undefined : 'Guest stopped'}
+        empty={isTemplate(vm) ? 'Templates do not run' : running ? undefined : 'Guest stopped'}
       />
 
       <section className="card">
@@ -71,6 +71,8 @@ export default function GuestSummary() {
         <dl className="pve-kv">
           <dt>Name</dt>
           <dd>{vm.spec?.name || '—'}</dd>
+          <dt>Type</dt>
+          <dd>{isTemplate(vm) ? 'cloud template' : 'guest'}</dd>
           <dt>ID</dt>
           <dd className="mono-inline">{vm.id}</dd>
           <dt>High availability</dt>

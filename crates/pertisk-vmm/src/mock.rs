@@ -156,6 +156,7 @@ mod tests {
             graphics_socket: None,
             last_error: None,
             node_id: None,
+            template: false,
         }
     }
 

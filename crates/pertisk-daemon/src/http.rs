@@ -20,11 +20,11 @@ use pertisk_api::{
     SetPasswordRequest, openapi_json,
 };
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVolumeRequest, CloudInitIsoRequest,
-    ClusterSnapshot, ConsoleInput, CreateNetworkRequest, CreateVolumeRequest, HeartbeatMessage,
-    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
-    SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId,
-    VolumeRecord,
+    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
+    CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
+    CreateTemplateRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
+    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
+    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -50,6 +50,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/shutdown", post(shutdown))
         .route("/v1/vms/{id}/restart", post(restart))
         .route("/v1/vms/{id}/migrate", post(migrate))
+        .route("/v1/vms/{id}/clone", post(clone_vm))
+        .route("/v1/vms/{id}/template", post(convert_to_template))
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
             "/v1/vms/{id}/disks/{volume_id}",
@@ -72,10 +74,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/volumes/{id}/resize", post(resize_volume))
         .route("/v1/volumes/{id}/clone", post(clone_volume))
         .route("/v1/volumes/{id}/snapshots", post(snapshot_volume))
-        .route(
-            "/v1/volumes/{id}/snapshots/{name}/restore",
-            post(restore_volume),
-        )
+        .route("/v1/volumes/{id}/snapshots/{name}/restore", post(restore_volume))
+        .route("/v1/templates", get(list_templates).post(create_template))
         .route("/v1/isos", get(list_isos).post(import_iso))
         .route("/v1/isos/cloud-init", post(create_cloudinit_iso))
         .route("/v1/isos/{name}", axum::routing::delete(delete_iso))
@@ -120,6 +120,7 @@ pub fn router(service: Service) -> Router {
     let large_upload = Router::new()
         .route("/v1/isos/upload", post(upload_iso))
         .route("/v1/volumes/import", post(upload_volume_import))
+        .route("/v1/templates/import", post(import_template))
         .route_layer(middleware::from_fn_with_state(
             service.clone(),
             auth_middleware,
@@ -561,6 +562,63 @@ async fn migrate(
     ))
 }
 
+async fn clone_vm(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<CloneVmRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(&service, &user, "vm.clone", name, service.clone_vm(id, req)).await?,
+        ),
+    ))
+}
+
+async fn convert_to_template(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.template",
+            id.to_string(),
+            service.convert_to_template(id),
+        )
+        .await?,
+    ))
+}
+
+async fn list_templates(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.list_templates()?))
+}
+
+async fn create_template(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<CreateTemplateRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(
+                &service,
+                &user,
+                "template.create",
+                name,
+                service.create_template(req),
+            )
+            .await?,
+        ),
+    ))
+}
+
 async fn list_volumes(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.list_volumes()?))
 }
@@ -697,6 +755,100 @@ async fn upload_volume_import(
     }
     let result = tracked(&service, &user, "volume.import", name.clone(), async {
         service.import_volume(name, format, tmp.clone()).await
+    })
+    .await;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Ok((StatusCode::CREATED, Json(result?)))
+}
+
+#[derive(Deserialize)]
+struct TemplateImportQuery {
+    name: Option<String>,
+    format: Option<String>,
+    vcpus: Option<u8>,
+    memory_mib: Option<u32>,
+}
+
+async fn import_template(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Query(q): Query<TemplateImportQuery>,
+    body: Body,
+) -> Result<impl IntoResponse, DaemonError> {
+    let format = match q.format.as_deref().unwrap_or("qcow2") {
+        "qcow2" | "QCOW2" => VolumeFormat::Qcow2,
+        "raw" | "RAW" => VolumeFormat::Raw,
+        other => {
+            return Err(pertisk_storage::StorageError::Message(format!(
+                "unknown volume format '{other}' (raw | qcow2)"
+            ))
+            .into());
+        }
+    };
+    let name = q
+        .name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
+    let ext = format.extension();
+    let tmp = std::env::temp_dir().join(format!("pertisk-tpl-{}.{ext}", uuid::Uuid::new_v4()));
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let mut stream = body.into_data_stream();
+    let mut written = 0u64;
+    const MAX: u64 = 8 * 1024 * 1024 * 1024;
+    let write = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
+            written += chunk.len() as u64;
+            if written > MAX {
+                return Err(pertisk_storage::StorageError::Message(
+                    "volume larger than 8GiB".into(),
+                )
+                .into());
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(pertisk_storage::StorageError::Io)?;
+        }
+        file.flush()
+            .await
+            .map_err(pertisk_storage::StorageError::Io)?;
+        Ok::<(), DaemonError>(())
+    }
+    .await;
+    if let Err(err) = write {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err);
+    }
+    drop(file);
+    if written == 0 {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
+    }
+    let vol_name = format!("{name}-disk");
+    let result = tracked(&service, &user, "template.import", name.clone(), async {
+        let volume = service
+            .import_volume(vol_name, format, tmp.clone())
+            .await?;
+        match service
+            .create_template(CreateTemplateRequest {
+                id: None,
+                name: name.clone(),
+                volume_id: volume.id,
+                vcpus: q.vcpus,
+                memory_mib: q.memory_mib,
+                console_type: None,
+            })
+            .await
+        {
+            Ok(record) => Ok(record),
+            Err(err) => {
+                let _ = service.delete_volume(volume.id).await;
+                Err(err)
+            }
+        }
     })
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
@@ -1255,8 +1407,9 @@ impl IntoResponse for DaemonError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::NameTaken(_) => StatusCode::CONFLICT,
+            Self::NameTaken(_) | Self::IdTaken(_) => StatusCode::CONFLICT,
             Self::MustBeStopped(_, _)
+            | Self::IsTemplate(_, _)
             | Self::VolumeBusy(_)
             | Self::IsoBusy(_)
             | Self::NetworkBusy(_) => StatusCode::CONFLICT,
@@ -1557,6 +1710,115 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(iso["name"], "web-cidata.iso");
         assert!(iso["size_bytes"].as_u64().unwrap() > 2048);
+    }
+
+    #[tokio::test]
+    async fn cloud_template_import_clone_and_start_guard() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, vol) = send(
+            &app,
+            Method::POST,
+            "/v1/volumes",
+            Some(token),
+            Some(json!({ "name": "ubuntu-cloud", "size_bytes": 1048576, "format": "raw" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{vol}");
+        let (status, tpl) = send(
+            &app,
+            Method::POST,
+            "/v1/templates",
+            Some(token),
+            Some(json!({
+                "name": "ubuntu-24.04",
+                "volume_id": vol["id"],
+                "vcpus": 1,
+                "memory_mib": 1024
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{tpl}");
+        assert_eq!(tpl["template"], true);
+        assert_eq!(tpl["spec"]["name"], "ubuntu-24.04");
+        let (status, listed) = send(&app, Method::GET, "/v1/templates", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        let (status, err) = send(
+            &app,
+            Method::POST,
+            &format!("/v1/vms/{}/start", tpl["id"]),
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{err}");
+        assert!(
+            err["error"].as_str().unwrap().contains("template"),
+            "{err}"
+        );
+        let (status, guest) = send(
+            &app,
+            Method::POST,
+            &format!("/v1/vms/{}/clone", tpl["id"]),
+            Some(token),
+            Some(json!({
+                "name": "web-1",
+                "linked": false,
+                "cloud_init": {
+                    "hostname": "web-1",
+                    "user": "ubuntu",
+                    "password": "ubuntu"
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{guest}");
+        assert_ne!(guest["template"], true);
+        assert_eq!(guest["spec"]["name"], "web-1");
+        assert_eq!(guest["spec"]["disks"].as_array().unwrap().len(), 2);
+        let cdrom = guest["spec"]["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["cdrom"] == true)
+            .expect("cloud-init cdrom");
+        assert!(
+            cdrom["iso_name"]
+                .as_str()
+                .unwrap()
+                .contains("cidata"),
+            "{cdrom}"
+        );
+        let (status, converted) = send(
+            &app,
+            Method::POST,
+            "/v1/vms",
+            Some(token),
+            Some(json!({ "id": 200, "name": "plain", "vcpus": 1, "memory_mib": 512 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{converted}");
+        let (status, converted) = send(
+            &app,
+            Method::POST,
+            "/v1/vms/200/template",
+            Some(token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{converted}");
+        assert_eq!(converted["template"], true);
     }
 
     #[tokio::test]

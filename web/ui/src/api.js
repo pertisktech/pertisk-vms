@@ -64,6 +64,18 @@ export function asList(value) {
   return Array.isArray(value) ? value : []
 }
 
+export function isTemplate(vm) {
+  return Boolean(vm?.template)
+}
+
+export function nextVmId(vms) {
+  const used = new Set((vms || []).map((vm) => String(vm.id)).filter((id) => /^\d{3,10}$/.test(id)))
+  for (let id = 100; id <= 9_999_999_999; id += 1) {
+    if (!used.has(String(id))) return String(id)
+  }
+  return ''
+}
+
 export function disksOf(vm) {
   return asList(vm?.spec?.disks)
 }

@@ -645,6 +645,63 @@ pub struct CloudInitIsoRequest {
     pub userdata: Option<String>,
 }
 
+/// Cloud-init identity for a guest cloned from a template (ISO name is generated).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CloudInitConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh_authorized_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userdata: Option<String>,
+}
+
+/// Clone a VM or cloud template into a new guest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CloneVmRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<VmId>,
+    pub name: String,
+    /// Linked qcow2 clone of template disks (falls back to a full copy without qemu-img).
+    #[serde(default)]
+    pub linked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ha: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<NetworkId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_init: Option<CloudInitConfig>,
+    #[serde(default)]
+    pub start: bool,
+}
+
+/// Wrap an imported cloud image volume as a template VM.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateTemplateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<VmId>,
+    pub name: String,
+    pub volume_id: VolumeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_type: Option<ConsoleType>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DriverKind {
@@ -838,6 +895,9 @@ pub struct VmRecord {
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<NodeId>,
+    /// Golden image: cannot start; clone to create guests.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub template: bool,
 }
 
 /// Point-in-time live resource sample (host or guest).
@@ -1306,6 +1366,15 @@ mod tests {
         assert_eq!(parse_size("10G").unwrap(), 10 * 1024 * 1024 * 1024);
         assert_eq!(parse_size("512M").unwrap(), 512 * 1024 * 1024);
         assert_eq!(format_size(1024 * 1024 * 1024), "1GiB");
+    }
+
+    #[test]
+    fn vm_record_template_defaults_false() {
+        let json = r#"{"id":100,"spec":{"name":"t","vcpus":1,"memory_mib":512},"state":"created"}"#;
+        let record: VmRecord = serde_json::from_str(json).unwrap();
+        assert!(!record.template);
+        let out = serde_json::to_value(&record).unwrap();
+        assert!(out.get("template").is_none());
     }
 
     #[test]

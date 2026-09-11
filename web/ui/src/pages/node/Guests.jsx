@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { api, disksOf, netsOf, nicAddrs } from '../../api'
+import { api, disksOf, isTemplate, netsOf, nicAddrs } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useConfirm } from '../../components/Confirm'
 import { useNode } from '../NodeView'
@@ -17,8 +17,9 @@ function guestIps(vm) {
 }
 
 export default function NodeGuests() {
-  const { guests, canWrite, inv } = useNode()
+  const { guests: allGuests, canWrite, inv } = useNode()
   const confirm = useConfirm()
+  const guests = allGuests.filter((vm) => !isTemplate(vm))
 
   async function act(kind, vm) {
     if (kind === 'rm') {

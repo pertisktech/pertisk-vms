@@ -1,13 +1,17 @@
 import { useState } from 'react'
-import { api } from '../../api'
+import { api, isTemplate } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
+import { useConfirm } from '../../components/Confirm'
 import { useGuest } from '../GuestView'
 
 export default function GuestOptions() {
   const { vm, canWrite, inv } = useGuest()
+  const confirm = useConfirm()
   const [dialog, setDialog] = useState(null)
   const [form, setForm] = useState({})
+  const template = isTemplate(vm)
+  const running = vm?.state === 'running'
 
   function openDialog(kind) {
     if (kind === 'name') setForm({ name: vm.spec?.name || '' })
@@ -79,7 +83,29 @@ export default function GuestOptions() {
   return (
     <div className="pve-hw">
       <div className="pve-hw-bar">
-        <span className="muted">Guest options. Start at boot powers the VM on when this node starts.</span>
+        <span className="muted">
+          {template
+            ? 'Template options. Clone this image to create guests; it cannot be started.'
+            : 'Guest options. Start at boot powers the VM on when this node starts.'}
+        </span>
+        {canWrite && !template && !running && (
+          <Btn
+            icon="template"
+            variant="secondary"
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Convert to template',
+                message: `Turn ${vm.spec?.name || vm.id} into a cloud template? It cannot be started afterward; clone it to create guests.`,
+                confirmLabel: 'Convert',
+                tone: 'primary',
+              })
+              if (!ok) return
+              await inv.mutate(() => api(`/v1/vms/${vm.id}/template`, { method: 'POST' }))
+            }}
+          >
+            Convert to template
+          </Btn>
+        )}
       </div>
 
       <div className="table-shell">

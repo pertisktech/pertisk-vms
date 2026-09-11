@@ -17,6 +17,7 @@ import GuestSummary from './pages/guest/Summary'
 import GuestConsoleRoute from './pages/guest/ConsoleRoute'
 import GuestHardware from './pages/guest/Hardware'
 import GuestOptions from './pages/guest/Options'
+import Templates from './pages/Templates'
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
               <Route index element={<Navigate to="summary" replace />} />
               <Route path="summary" element={<Overview />} />
               <Route path="storage" element={<Storage />} />
+              <Route path="templates" element={<Templates />} />
               <Route path="networks" element={<Networks />} />
               <Route path="cluster" element={<Cluster />} />
               <Route path="tasks" element={<Activity />} />

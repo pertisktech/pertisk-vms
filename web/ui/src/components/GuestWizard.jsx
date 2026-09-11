@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, parseSize } from '../api'
+import { api, nextVmId } from '../api'
 import Modal from './Modal'
 
 const STEPS = [
@@ -18,14 +18,6 @@ function defaultMemory() {
   return 1024
 }
 
-function nextVmId(vms) {
-  const used = new Set(vms.map((vm) => String(vm.id)).filter((id) => /^\d{3,10}$/.test(id)))
-  for (let id = 100; id <= 9_999_999_999; id += 1) {
-    if (!used.has(String(id))) return String(id)
-  }
-  return ''
-}
-
 const EMPTY = {
   id: '',
   name: '',
@@ -38,6 +30,8 @@ const EMPTY = {
   diskName: '',
   diskSize: '32G',
   volumeId: '',
+  templateId: '',
+  linked: true,
   iso: '',
   cloudInit: false,
   ciUser: 'ubuntu',
@@ -92,6 +86,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     if (step === 0) return /^\d{3,10}$/.test(form.id) && form.name.trim().length > 0 && Number(form.vcpus) >= 1 && Number(form.memory_mib) >= 64
     if (step === 1 && form.diskMode === 'new') return (form.diskName.trim() || form.name.trim()).length > 0
     if (step === 1 && form.diskMode === 'existing') return Boolean(form.volumeId)
+    if (step === 1 && form.diskMode === 'template') return Boolean(form.templateId)
     return true
   }
 
@@ -101,6 +96,46 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     setError('')
     setCreated(false)
     setProgress([])
+    if (form.diskMode === 'template') {
+      try {
+        await run('Clone template', () =>
+          api(`/v1/vms/${form.templateId}/clone`, {
+            method: 'POST',
+            body: {
+              id: Number(form.id),
+              name: form.name.trim(),
+              linked: form.linked,
+              vcpus: Number(form.vcpus),
+              memory_mib: Number(form.memory_mib),
+              ha: form.ha,
+              autostart: form.autostart,
+              network_id: form.networkId || undefined,
+              ip: form.nicIp.trim() || undefined,
+              cloud_init: form.cloudInit
+                ? {
+                    hostname: form.name.trim(),
+                    user: form.ciUser.trim() || 'ubuntu',
+                    password: form.ciPassword || undefined,
+                    ssh_authorized_keys: form.ciSshKey
+                      .split('\n')
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  }
+                : undefined,
+              start: form.start,
+            },
+          }),
+        )
+        await onCreated()
+        setCreated(true)
+      } catch (err) {
+        await onCreated()
+        setError(err.message || String(err))
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     let createdVolumeId = ''
     let createdVmId = ''
     try {
@@ -204,7 +239,9 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
       ? 'No disk'
       : form.diskMode === 'new'
         ? `New ${(form.diskName || `${form.name}-disk`).trim()} (${form.diskSize})`
-        : volumes.find((v) => v.id === form.volumeId)?.name || 'Existing volume'
+        : form.diskMode === 'template'
+          ? `Clone ${vms.find((v) => String(v.id) === String(form.templateId))?.spec?.name || 'template'}${form.linked ? ' (linked)' : ''}`
+          : volumes.find((v) => v.id === form.volumeId)?.name || 'Existing volume'
   const isoLabel =
     [form.iso || null, form.cloudInit ? 'cloud-init seed' : null].filter(Boolean).join(' + ') || 'None'
   const selectedNetwork = networks.find((n) => n.id === form.networkId)
@@ -362,6 +399,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               {[
                 ['new', 'New volume'],
                 ['existing', 'Existing'],
+                ['template', 'Cloud template'],
                 ['none', 'None'],
               ].map(([id, label]) => (
                 <button
@@ -413,38 +451,84 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 {volumes.length === 0 && <p className="muted">No volumes yet. Create one in Storage, or pick New volume.</p>}
               </div>
             )}
+            {form.diskMode === 'template' && (
+              <div style={{ marginTop: '1rem' }}>
+                <div className="field">
+                  <label htmlFor="disk-template">Template</label>
+                  <select
+                    id="disk-template"
+                    value={form.templateId}
+                    onChange={(e) => {
+                      const tpl = vms.find((vm) => String(vm.id) === e.target.value)
+                      set({
+                        templateId: e.target.value,
+                        cloudInit: true,
+                        vcpus: tpl?.spec?.vcpus || form.vcpus,
+                        memory_mib: tpl?.spec?.memory_mib || form.memory_mib,
+                      })
+                    }}
+                  >
+                    <option value="">Select…</option>
+                    {vms
+                      .filter((vm) => vm.template)
+                      .map((vm) => (
+                        <option key={vm.id} value={vm.id}>
+                          {vm.spec?.name || vm.id}
+                        </option>
+                      ))}
+                  </select>
+                  {vms.filter((vm) => vm.template).length === 0 && (
+                    <p className="muted">No templates yet. Import a cloud image under Templates, or convert a guest.</p>
+                  )}
+                </div>
+                <label className="chk" style={{ marginTop: '0.75rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.linked}
+                    onChange={(e) => set({ linked: e.target.checked })}
+                  />
+                  <span className="chk-box" />
+                  <span className="chk-label">
+                    Linked clone
+                    <small>Thin disk from the template; falls back to a full copy without qemu-img</small>
+                  </span>
+                </label>
+              </div>
+            )}
           </>
         )}
 
         {step === 2 && (
           <>
-            <p className="wizard-section-title">Install media</p>
-            <div className="field">
-              <label htmlFor="guest-iso">ISO</label>
-              <select id="guest-iso" value={form.iso} onChange={(e) => set({ iso: e.target.value })}>
-                <option value="">None</option>
-                {isos.map((iso) => (
-                  <option key={iso.name} value={iso.name}>
-                    {iso.name}
-                  </option>
-                ))}
-              </select>
-              {isos.length === 0 && (
-                <p className="muted">Import an ISO under Storage first (Upload file or host path).</p>
-              )}
-              {form.iso && host?.driver === 'cloud-hypervisor' && !host?.firmware && (
-                <p className="muted">
-                  This node has no firmware (hypervisor-fw). Disk/ISO boot needs it; kernel boot still works.
-                </p>
-              )}
-              {form.iso && host?.driver === 'cloud-hypervisor' && (
-                <p className="muted">
-                  Console is serial only. Ubuntu/Debian installer ISOs cannot EFI-boot (Secure Boot shim);
-                  pertisk boots their installer kernel on ttyS0 instead. Alpine virt works. Ubuntu Desktop
-                  and Windows need VGA (not available).
-                </p>
-              )}
-            </div>
+            <p className="wizard-section-title">{form.diskMode === 'template' ? 'Cloud-init' : 'Install media'}</p>
+            {form.diskMode !== 'template' && (
+              <div className="field">
+                <label htmlFor="guest-iso">ISO</label>
+                <select id="guest-iso" value={form.iso} onChange={(e) => set({ iso: e.target.value })}>
+                  <option value="">None</option>
+                  {isos.map((iso) => (
+                    <option key={iso.name} value={iso.name}>
+                      {iso.name}
+                    </option>
+                  ))}
+                </select>
+                {isos.length === 0 && (
+                  <p className="muted">Import an ISO under Storage first (Upload file or host path).</p>
+                )}
+                {form.iso && host?.driver === 'cloud-hypervisor' && !host?.firmware && (
+                  <p className="muted">
+                    This node has no firmware (hypervisor-fw). Disk/ISO boot needs it; kernel boot still works.
+                  </p>
+                )}
+                {form.iso && host?.driver === 'cloud-hypervisor' && (
+                  <p className="muted">
+                    Console is serial only. Ubuntu/Debian installer ISOs cannot EFI-boot (Secure Boot shim);
+                    pertisk boots their installer kernel on ttyS0 instead. Alpine virt works. Ubuntu Desktop
+                    and Windows need VGA (not available).
+                  </p>
+                )}
+              </div>
+            )}
             <label className="chk">
               <input
                 type="checkbox"
