@@ -7,7 +7,6 @@ export function ConfirmProvider({ children }) {
   const [state, setState] = useState(null)
   const resolver = useRef(null)
   const cardRef = useRef(null)
-  const backdropDown = useRef(false)
 
   const confirm = useCallback((opts) => {
     return new Promise((resolve) => {
@@ -53,17 +52,7 @@ export function ConfirmProvider({ children }) {
     <ConfirmCtx.Provider value={confirm}>
       {children}
       {state && (
-        <div
-          className="modal-backdrop confirm-backdrop"
-          role="presentation"
-          onPointerDown={(e) => {
-            backdropDown.current = e.target === e.currentTarget
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget && backdropDown.current) close(false)
-            backdropDown.current = false
-          }}
-        >
+        <div className="modal-backdrop confirm-backdrop modal-locked" role="presentation">
           <div
             ref={cardRef}
             className="modal-card"

@@ -17,11 +17,12 @@ function focusables(root) {
   )].filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
 }
 
-export default function Modal({ title, hint, wide, wizard, onClose, children, footer }) {
+export default function Modal({ title, hint, wide, wizard, lock, onClose, children, footer }) {
   const cardRef = useRef(null)
   const onCloseRef = useRef(onClose)
   const backdropDown = useRef(false)
   onCloseRef.current = onClose
+  const locked = lock ?? true
 
   useEffect(() => {
     const card = cardRef.current
@@ -64,11 +65,11 @@ export default function Modal({ title, hint, wide, wizard, onClose, children, fo
   }, [])
 
   function onBackdropPointerDown(e) {
-    backdropDown.current = e.target === e.currentTarget
+    backdropDown.current = !locked && e.target === e.currentTarget
   }
 
   function onBackdropClick(e) {
-    if (e.target === e.currentTarget && backdropDown.current) {
+    if (!locked && e.target === e.currentTarget && backdropDown.current) {
       onCloseRef.current?.()
     }
     backdropDown.current = false
@@ -76,7 +77,7 @@ export default function Modal({ title, hint, wide, wizard, onClose, children, fo
 
   return (
     <div
-      className={`modal-backdrop${wizard ? ' wizard-backdrop' : ''}`}
+      className={`modal-backdrop${wizard ? ' wizard-backdrop' : ''}${locked ? ' modal-locked' : ''}`}
       role="presentation"
       onPointerDown={onBackdropPointerDown}
       onClick={onBackdropClick}

@@ -615,7 +615,18 @@ a.btn-icon:hover { color: var(--accent-on); }
 .login-card p { color: var(--text-muted); margin: 0 0 1.5rem; font-size: 0.9rem; }
 .login-version { margin: -1rem 0 1.25rem !important; font-family: var(--mono); font-size: 0.8rem !important; }
 .login-submit { width: 100%; min-height: 2.65rem; border-radius: 10px; font-weight: 600; }
-.login-remember { margin-bottom: 1.15rem; }
+.login-remember,
+.login-remember:hover,
+.login-remember:has(input:focus-visible),
+.login-remember:has(input:checked),
+.login-remember:has(input:checked):hover {
+  margin-bottom: 1.15rem;
+  padding: 0.2rem 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  width: auto;
+}
 
 .user-menu { position: relative; }
 .user-menu-trigger {
@@ -691,17 +702,20 @@ a.btn-icon:hover { color: var(--accent-on); }
   user-select: none;
   margin: 0;
   padding: 0.75rem 0.85rem;
-  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, var(--border));
   border-radius: 10px;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--text) 4%, var(--bg-elevated));
   position: relative;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 .chk + .chk { margin-top: 0.45rem; }
-.chk:hover { border-color: color-mix(in srgb, var(--text) 26%, transparent); }
+.chk:hover {
+  border-color: color-mix(in srgb, var(--text) 26%, var(--border));
+  background: var(--bg-hover);
+}
 .chk:has(input:focus-visible) {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .chk input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .chk-box {
@@ -709,16 +723,13 @@ a.btn-icon:hover { color: var(--accent-on); }
   height: 18px;
   margin-top: 0.12rem;
   border-radius: 5px;
-  border: 1.5px solid color-mix(in srgb, var(--text) 28%, transparent);
-  background: var(--bg-elevated);
+  border: 1.5px solid color-mix(in srgb, var(--text) 28%, var(--border));
+  background: var(--bg-surface);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-}
-.chk:has(input:checked) {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: var(--accent-soft);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 .chk:has(input:checked) .chk-box {
   background: var(--accent);
@@ -754,6 +765,9 @@ a.btn-icon:hover { color: var(--accent-on); }
   justify-content: center;
   z-index: 1000;
   padding: 1rem;
+}
+.modal-backdrop.modal-locked {
+  cursor: default;
 }
 .modal-card {
   width: min(420px, 100%);
