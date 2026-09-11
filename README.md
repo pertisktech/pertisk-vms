@@ -138,7 +138,11 @@ make release-amd VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** with **no network**. If that does not start, the HDMI console is already root — run `pertisk-install --auto` (or `--list` then `--disk /dev/nvme0n1 --yes`). Unplug USB after it reboots. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`. Later upgrades: `sudo ./upgrade.sh`.
+Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** with **no network**. If that does not start, the HDMI console is already root — run `pertisk-install --auto` (or `--list` then `--disk /dev/nvme0n1 --yes`). Unplug USB after it reboots. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`.
+
+**In-place updates** (do not reflash): Node → Updates → Refresh, then Upgrade. That runs `apt-get dist-upgrade` on the hypervisor and keeps guests in `/var/lib/pertisk`. Repositories is the apt sources list. CLI: `pertisk updates list|refresh|upgrade` and `pertisk repo list`. Rebuild Pertisk binaries from source with `sudo ./upgrade.sh`.
+
+**Host shell:** Node → Shell opens a root terminal on that hypervisor (same idea as Proxmox). Use the UI on the node you want to type on.
 
 Admin password: `/etc/pertisk/admin`. Existing Ubuntu/Debian with KVM can still use `sudo ./upgrade.sh` instead of flashing.
 

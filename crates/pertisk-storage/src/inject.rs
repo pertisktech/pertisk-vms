@@ -109,9 +109,7 @@ fn losetup(disk: &Path) -> Result<String> {
 fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
     let parts = partitions(loopdev);
     if parts.is_empty() {
-        return Err(StorageError::Message(format!(
-            "no partitions on {loopdev}"
-        )));
+        return Err(StorageError::Message(format!("no partitions on {loopdev}")));
     }
     let mnt = tempfile_mnt()?;
     let mut mounted = None;
@@ -171,7 +169,13 @@ fn try_mount(dev: &Path, mnt: &Path) -> bool {
         if let Some(opt) = extra {
             cmd.args(["-o", opt]);
         }
-        if cmd.arg(dev).arg(mnt).status().map(|s| s.success()).unwrap_or(false) {
+        if cmd
+            .arg(dev)
+            .arg(mnt)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
             return true;
         }
     }
@@ -495,7 +499,9 @@ fn hash_password(password: &str) -> Result<String> {
     }
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if hash.is_empty() {
-        return Err(StorageError::Message("openssl passwd produced no hash".into()));
+        return Err(StorageError::Message(
+            "openssl passwd produced no hash".into(),
+        ));
     }
     Ok(hash)
 }
@@ -553,7 +559,11 @@ fn unlock_passwd(root: &Path, user: &str) {
 }
 
 fn write_authorized_keys(root: &Path, user: &str, keys: &[String]) -> Result<()> {
-    let keys: Vec<&str> = keys.iter().map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<&str> = keys
+        .iter()
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty())
+        .collect();
     if keys.is_empty() {
         return Ok(());
     }
@@ -622,11 +632,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(dir.join("etc")).unwrap();
-        fs::write(
-            dir.join("etc/passwd"),
-            "root:x:0:0:root:/root:/bin/bash\n",
-        )
-        .unwrap();
+        fs::write(dir.join("etc/passwd"), "root:x:0:0:root:/root:/bin/bash\n").unwrap();
         fs::write(dir.join("etc/shadow"), "root:*:0:0:99999:7:::\n").unwrap();
         fs::write(dir.join("etc/group"), "root:x:0:\nwheel:x:10:\nadm:x:4:\n").unwrap();
         dir
@@ -685,7 +691,10 @@ mod tests {
             .split(':')
             .nth(2)
             .unwrap();
-        assert_ne!(lastchg, "0", "lastchg=0 forces an immediate password change");
+        assert_ne!(
+            lastchg, "0",
+            "lastchg=0 forces an immediate password change"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

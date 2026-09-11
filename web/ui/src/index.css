@@ -1699,3 +1699,22 @@ a.guest-card:hover { color: inherit; }
 .pve-hw-act .btn-icon { margin-left: 0.3rem; }
 .pve-hw-table tr.pve-hw-row-edit { cursor: pointer; }
 .pve-hw-table tr.pve-hw-row-edit:hover { background: var(--bg-hover); }
+
+.update-log {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  max-height: 16rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  background: var(--color-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+}
+.repo-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}

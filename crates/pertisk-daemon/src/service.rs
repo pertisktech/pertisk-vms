@@ -6,11 +6,12 @@ use std::time::Instant;
 use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool};
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
-    CloudInitIsoRequest, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
-    ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest,
-    SerialChunk, SnapshotRequest, StorageBackend, UpdateVmRequest, VmId, VmMetrics, VmRecord,
+    AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
+    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, ClusterMetrics,
+    ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
+    DiskSpec, DriverKind, HostConfig, HostInfo, ImportIsoRequest, IsoRecord, NetworkId,
+    NetworkRecord, NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmId, VmMetrics, VmRecord,
     VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, probe_host,
 };
 use pertisk_vmm::VmmBackend;
@@ -50,6 +51,8 @@ pub enum DaemonError {
     Unschedulable(String),
     #[error("cluster peer: {0}")]
     Peer(String),
+    #[error("apt: {0}")]
+    Apt(String),
     #[error(transparent)]
     Control(#[from] ControlError),
     #[error(transparent)]
@@ -216,6 +219,39 @@ impl Service {
         info.quorum = self.cluster.has_quorum();
         info.ssh_authorized_keys = pertisk_storage::operator_ssh_keys();
         info
+    }
+
+    pub async fn list_updates(&self) -> Result<UpdatesStatus, DaemonError> {
+        tokio::task::spawn_blocking(crate::updates::list_updates)
+            .await
+            .map_err(|err| DaemonError::Apt(err.to_string()))?
+            .map_err(DaemonError::Apt)
+    }
+
+    pub async fn refresh_updates(&self) -> Result<AptActionResult, DaemonError> {
+        tokio::task::spawn_blocking(crate::updates::refresh)
+            .await
+            .map_err(|err| DaemonError::Apt(err.to_string()))?
+            .map_err(DaemonError::Apt)
+    }
+
+    pub async fn upgrade_updates(&self) -> Result<AptActionResult, DaemonError> {
+        tokio::task::spawn_blocking(crate::updates::upgrade)
+            .await
+            .map_err(|err| DaemonError::Apt(err.to_string()))?
+            .map_err(DaemonError::Apt)
+    }
+
+    pub fn list_repositories(&self) -> Result<Vec<AptRepository>, DaemonError> {
+        crate::updates::list_repos().map_err(DaemonError::Apt)
+    }
+
+    pub fn add_repository(&self, req: AddRepositoryRequest) -> Result<AptRepository, DaemonError> {
+        crate::updates::add_repo(req).map_err(DaemonError::Apt)
+    }
+
+    pub fn set_repository(&self, req: SetRepositoryRequest) -> Result<AptRepository, DaemonError> {
+        crate::updates::set_repo(req).map_err(DaemonError::Apt)
     }
 
     pub fn node_metrics(&self) -> Result<NodeMetrics, DaemonError> {
@@ -567,11 +603,8 @@ impl Service {
             };
             let cloned = if let Some(size) = grow.take() {
                 if size > cloned.size_bytes {
-                    self.resize_volume(
-                        cloned.id,
-                        ResizeVolumeRequest { size_bytes: size },
-                    )
-                    .await?
+                    self.resize_volume(cloned.id, ResizeVolumeRequest { size_bytes: size })
+                        .await?
                 } else {
                     cloned
                 }
@@ -633,9 +666,7 @@ impl Service {
                     )
                 })
                 .await
-                .map_err(|err| {
-                    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
-                })??;
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
             }
             let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
                 name: format!("{name}-{new_id}-cidata.iso"),
@@ -2344,9 +2375,10 @@ impl Service {
             return;
         }
         let online = self.cluster.online_ids();
-        let has_remote = record.replicas.iter().any(|replica| {
-            *replica != self.cluster.self_id() && online.contains(replica)
-        });
+        let has_remote = record
+            .replicas
+            .iter()
+            .any(|replica| *replica != self.cluster.self_id() && online.contains(replica));
         if !has_remote {
             return;
         }

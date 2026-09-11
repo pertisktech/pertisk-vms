@@ -13,6 +13,9 @@ import Activity from './pages/Activity'
 import Users from './pages/Users'
 import NodeSummary from './pages/node/Summary'
 import NodeGuests from './pages/node/Guests'
+import NodeUpdates from './pages/node/Updates'
+import NodeRepositories from './pages/node/Repositories'
+import NodeShell from './pages/node/Shell'
 import GuestSummary from './pages/guest/Summary'
 import GuestConsoleRoute from './pages/guest/ConsoleRoute'
 import GuestHardware from './pages/guest/Hardware'
@@ -40,6 +43,9 @@ export default function App() {
               <Route index element={<Navigate to="summary" replace />} />
               <Route path="summary" element={<NodeSummary />} />
               <Route path="guests" element={<NodeGuests />} />
+              <Route path="updates" element={<NodeUpdates />} />
+              <Route path="repositories" element={<NodeRepositories />} />
+              <Route path="shell" element={<NodeShell />} />
               <Route path="tasks" element={<Activity />} />
             </Route>
             <Route path="/vm/:vmId" element={<GuestView />}>

@@ -6,6 +6,10 @@ sudo ./upgrade.sh
 
 # That builds UI + binaries, installs to /usr/bin, restarts pertiskd.
 # Keeps guests/data in /var/lib/pertisk and password in /etc/pertisk/admin.
+#
+# Debian package updates (kernel/QEMU/firmware) without reflash:
+#   Node → Updates → Refresh, then Upgrade
+#   pertisk updates refresh && pertisk updates upgrade
 
 # UI: https://<this-machine-ip>:7443/   admin / (see /etc/pertisk/admin)
 

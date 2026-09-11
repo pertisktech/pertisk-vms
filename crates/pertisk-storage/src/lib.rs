@@ -322,10 +322,7 @@ impl VolumePool {
         if size < 8 * 1024 * 1024 {
             return false;
         }
-        matches!(
-            info.get("format").and_then(|x| x.as_str()),
-            Some("qcow2")
-        )
+        matches!(info.get("format").and_then(|x| x.as_str()), Some("qcow2"))
     }
 
     pub fn create_volume(&self, req: CreateVolumeRequest) -> Result<VolumeRecord> {
@@ -707,7 +704,9 @@ fn write_vfat_configdrive(dest: &Path, files: &[(&str, &[u8])]) -> Result<u64> {
     if !mounted {
         let _ = std::fs::remove_dir_all(&mnt);
         let _ = std::fs::remove_file(dest);
-        return Err(StorageError::Message("mount loop for config-2 vfat failed".into()));
+        return Err(StorageError::Message(
+            "mount loop for config-2 vfat failed".into(),
+        ));
     }
     let written = (|| -> Result<()> {
         for (path, data) in files {
@@ -786,7 +785,8 @@ fn cloudinit_password(req: &CloudInitIsoRequest) -> Option<&str> {
 
 fn cloudinit_meta_data(req: &CloudInitIsoRequest) -> String {
     let hostname = cloud_hostname(req);
-    let mut yaml = format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n");
+    let mut yaml =
+        format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n");
     let keys = cloudinit_keys(req);
     if !keys.is_empty() {
         yaml.push_str("public-keys:\n");
@@ -821,7 +821,8 @@ fn cloudinit_meta_json(req: &CloudInitIsoRequest) -> String {
         }
         value["public_keys"] = serde_json::Value::Object(public_keys);
     }
-    serde_json::to_string(&value).unwrap_or_else(|_| format!(r#"{{"uuid":"iid-{hostname}","hostname":"{hostname}"}}"#))
+    serde_json::to_string(&value)
+        .unwrap_or_else(|_| format!(r#"{{"uuid":"iid-{hostname}","hostname":"{hostname}"}}"#))
         + "\n"
 }
 

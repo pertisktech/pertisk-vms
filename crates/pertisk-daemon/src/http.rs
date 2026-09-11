@@ -20,11 +20,12 @@ use pertisk_api::{
     SetPasswordRequest, openapi_json,
 };
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
-    CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
+    AddRepositoryRequest, AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest,
+    CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
     CreateTemplateRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
-    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SnapshotRequest,
-    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
+    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SetRepositoryRequest,
+    SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId,
+    VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -39,6 +40,16 @@ pub fn router(service: Service) -> Router {
         .route("/v1/session", get(session))
         .route("/v1/session/password", post(change_own_password))
         .route("/v1/host", get(host))
+        .route("/v1/node/shell/ws", get(host_shell_ws))
+        .route("/v1/updates", get(list_updates))
+        .route("/v1/updates/refresh", post(refresh_updates))
+        .route("/v1/updates/upgrade", post(upgrade_updates))
+        .route(
+            "/v1/repositories",
+            get(list_repositories)
+                .post(add_repository)
+                .patch(set_repository),
+        )
         .route("/v1/metrics", get(cluster_metrics))
         .route("/v1/metrics/node", get(node_metrics))
         .route("/v1/events/ws", get(events_ws))
@@ -205,6 +216,8 @@ fn required_role(method: &Method, path: &str) -> Role {
         Role::Viewer
     } else if path.starts_with("/v1/users") {
         Role::Admin
+    } else if path.starts_with("/v1/node/shell") {
+        Role::Operator
     } else if *method == Method::GET {
         Role::Viewer
     } else {
@@ -271,6 +284,88 @@ async fn tracked<T>(
 
 async fn host(State(service): State<Service>) -> impl IntoResponse {
     Json(service.host_info())
+}
+
+async fn host_shell_ws(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, DaemonError> {
+    let _ = service.audit(&user.username, "node.shell", Some("host"));
+    Ok(ws.on_upgrade(crate::shell::proxy))
+}
+
+async fn list_updates(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.list_updates().await?))
+}
+
+async fn refresh_updates(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "updates.refresh",
+            "apt".into(),
+            service.refresh_updates(),
+        )
+        .await?,
+    ))
+}
+
+async fn upgrade_updates(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "updates.upgrade",
+            "apt".into(),
+            service.upgrade_updates(),
+        )
+        .await?,
+    ))
+}
+
+async fn list_repositories(
+    State(service): State<Service>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.list_repositories()?))
+}
+
+async fn add_repository(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<AddRepositoryRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(&service, &user, "repo.add", name, async {
+                service.add_repository(req)
+            })
+            .await?,
+        ),
+    ))
+}
+
+async fn set_repository(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<SetRepositoryRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let id = req.id.clone();
+    Ok(Json(
+        tracked(&service, &user, "repo.set", id, async {
+            service.set_repository(req)
+        })
+        .await?,
+    ))
 }
 
 async fn cluster_metrics(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
@@ -1432,6 +1527,7 @@ impl IntoResponse for DaemonError {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Self::Peer(_) => StatusCode::BAD_GATEWAY,
+            Self::Apt(_) => StatusCode::BAD_REQUEST,
             Self::Storage(err) => storage_status(err),
             Self::Net(err) => net_status(err),
             Self::Vmm(pertisk_vmm::VmmError::InvalidState { .. }) => StatusCode::CONFLICT,
@@ -1546,6 +1642,53 @@ mod tests {
         assert_eq!(body["openapi"], "3.0.3");
         let (status, _) = send(&app, Method::GET, "/", None, None).await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn updates_and_repositories_list() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, body) = send(&app, Method::GET, "/v1/updates", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["packages"].is_array());
+        assert!(body["apt"].is_boolean());
+        let (status, body) = send(&app, Method::GET, "/v1/repositories", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_array());
+    }
+
+    #[tokio::test]
+    async fn viewer_cannot_open_host_shell() {
+        let (svc, _dir) = service();
+        svc.create_user(CreateUserRequest {
+            username: "view".into(),
+            password: "viewpass".into(),
+            role: Role::Viewer,
+        })
+        .unwrap();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "view", "password": "viewpass" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, body) = send(&app, Method::GET, "/v1/node/shell/ws", Some(token), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     }
 
     #[tokio::test]
@@ -2433,6 +2576,43 @@ mod tests {
         }
         node.kill();
         assert!(got.contains("ping"), "ws did not echo input: {got:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_shell_websocket_runs_command() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::connect_async;
+
+        let node = spawn_node("shell").await;
+        let ws_url = format!(
+            "{}/v1/node/shell/ws?token={}",
+            node.url.replacen("http://", "ws://", 1),
+            node.token
+        );
+        let (ws, _) = connect_async(&ws_url).await.expect("shell ws connect");
+        let (mut sink, mut stream) = ws.split();
+        sink.send(tokio_tungstenite::tungstenite::Message::Text(
+            "echo PERTISK_SHELL_OK\n".into(),
+        ))
+        .await
+        .unwrap();
+        let mut got = String::new();
+        for _ in 0..40 {
+            match tokio::time::timeout(std::time::Duration::from_millis(250), stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    got.push_str(&msg.to_string());
+                    if got.contains("PERTISK_SHELL_OK") {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        node.kill();
+        assert!(
+            got.contains("PERTISK_SHELL_OK"),
+            "host shell did not run echo: {got:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

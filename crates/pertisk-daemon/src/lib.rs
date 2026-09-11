@@ -6,9 +6,11 @@ mod control;
 mod http;
 mod metrics;
 mod service;
+mod shell;
 mod static_files;
 mod store;
 mod tls;
+mod updates;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

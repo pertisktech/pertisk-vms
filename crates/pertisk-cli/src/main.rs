@@ -8,11 +8,12 @@ use pertisk_api::{
     TaskRecord, TokenResponse, UserRecord,
 };
 use pertisk_types::{
-    AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest, CloneVolumeRequest,
-    CloudInitConfig, CloudInitIsoRequest, ClusterStatus, ConsoleInfo, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, HostInfo,
-    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
-    ResizeVolumeRequest, SerialChunk, SnapshotRequest, UpdateVmRequest, VmId, VmRecord, VmSpec,
+    AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
+    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
+    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
+    DEFAULT_LISTEN, DiskSpec, HostInfo, ImportIsoRequest, IsoRecord, JoinClusterRequest,
+    MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
+    SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId, VmRecord, VmSpec,
     VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
@@ -79,6 +80,16 @@ enum Command {
     Template {
         #[command(subcommand)]
         command: TemplateCommand,
+    },
+    /// Host apt updates (in-place, does not reflash the node).
+    Updates {
+        #[command(subcommand)]
+        command: UpdatesCommand,
+    },
+    /// Apt repositories on this node.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
     },
 }
 
@@ -414,6 +425,37 @@ enum TemplateCommand {
         cpus: u8,
         #[arg(long, default_value_t = 1024)]
         memory: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UpdatesCommand {
+    /// List packages that apt can upgrade.
+    List,
+    /// apt-get update
+    Refresh,
+    /// apt-get dist-upgrade (keeps guests and /var/lib/pertisk).
+    Upgrade,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepoCommand {
+    List,
+    Add {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        uri: String,
+        #[arg(long)]
+        suite: String,
+        #[arg(long, default_value = "main")]
+        components: String,
+    },
+    Enable {
+        id: String,
+    },
+    Disable {
+        id: String,
     },
 }
 
@@ -797,6 +839,119 @@ async fn run() -> Result<()> {
                 print_vm(&record);
             }
         },
+        Command::Updates { command } => match command {
+            UpdatesCommand::List => {
+                let status: UpdatesStatus = get_json(&client, &cli.url, "/v1/updates").await?;
+                if !status.apt {
+                    println!(
+                        "{}",
+                        status.reason.unwrap_or_else(|| "apt not available".into())
+                    );
+                    return Ok(());
+                }
+                if status.reboot_required {
+                    println!("reboot required");
+                }
+                if status.packages.is_empty() {
+                    println!("already up to date");
+                    return Ok(());
+                }
+                println!(
+                    "{:<28} {:<22} {:<22} {}",
+                    "PACKAGE", "VERSION", "AVAILABLE", "ORIGIN"
+                );
+                for pkg in status.packages {
+                    println!(
+                        "{:<28} {:<22} {:<22} {}",
+                        pkg.name, pkg.version, pkg.available, pkg.origin
+                    );
+                }
+            }
+            UpdatesCommand::Refresh => {
+                let result: AptActionResult =
+                    post_empty(&client, &cli.url, "/v1/updates/refresh").await?;
+                print!("{}", result.log);
+                if !result.log.ends_with('\n') {
+                    println!();
+                }
+            }
+            UpdatesCommand::Upgrade => {
+                let result: AptActionResult =
+                    post_empty(&client, &cli.url, "/v1/updates/upgrade").await?;
+                print!("{}", result.log);
+                if !result.log.ends_with('\n') {
+                    println!();
+                }
+                if result.reboot_required {
+                    println!("reboot required (kernel or firmware changed)");
+                }
+            }
+        },
+        Command::Repo { command } => match command {
+            RepoCommand::List => {
+                let repos: Vec<AptRepository> =
+                    get_json(&client, &cli.url, "/v1/repositories").await?;
+                if repos.is_empty() {
+                    println!("no repositories");
+                    return Ok(());
+                }
+                println!(
+                    "{:<8} {:<8} {:<40} {:<18} {}",
+                    "ON", "TYPE", "URI", "SUITE", "COMPONENTS"
+                );
+                for repo in repos {
+                    println!(
+                        "{:<8} {:<8} {:<40} {:<18} {}",
+                        if repo.enabled { "yes" } else { "no" },
+                        repo.types,
+                        repo.uri,
+                        repo.suite,
+                        repo.components
+                    );
+                    println!("         {}", repo.id);
+                }
+            }
+            RepoCommand::Add {
+                name,
+                uri,
+                suite,
+                components,
+            } => {
+                let repo: AptRepository = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/repositories",
+                    &AddRepositoryRequest {
+                        name,
+                        uri,
+                        suite,
+                        components,
+                    },
+                )
+                .await?;
+                println!("{} {}", repo.id, repo.uri);
+            }
+            RepoCommand::Enable { id } => {
+                let repo: AptRepository = patch_json(
+                    &client,
+                    &cli.url,
+                    "/v1/repositories",
+                    &SetRepositoryRequest { id, enabled: true },
+                )
+                .await?;
+                println!("enabled {}", repo.id);
+            }
+            RepoCommand::Disable { id } => {
+                let repo: AptRepository = patch_json(
+                    &client,
+                    &cli.url,
+                    "/v1/repositories",
+                    &SetRepositoryRequest { id, enabled: false },
+                )
+                .await?;
+                println!("disabled {}", repo.id);
+            }
+        },
         Command::Vm { command } => match command {
             VmCommand::Create {
                 id,
@@ -1067,10 +1222,7 @@ async fn run() -> Result<()> {
                         network_id,
                         ip,
                         cloud_init,
-                        disk_size_bytes: disk_size
-                            .as_deref()
-                            .map(parse_size)
-                            .transpose()?,
+                        disk_size_bytes: disk_size.as_deref().map(parse_size).transpose()?,
                         start,
                     },
                 )

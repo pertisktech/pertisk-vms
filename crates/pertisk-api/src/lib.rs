@@ -234,7 +234,16 @@ pub fn openapi_json() -> serde_json::Value {
                 "get": { "summary": "List cloud templates" },
                 "post": { "summary": "Create a cloud template from an imported volume" }
             },
-            "/v1/templates/import": { "post": { "summary": "Upload a cloud disk image and wrap it as a template" } }
+            "/v1/templates/import": { "post": { "summary": "Upload a cloud disk image and wrap it as a template" } },
+            "/v1/updates": { "get": { "summary": "List apt packages that can be upgraded on this node" } },
+            "/v1/updates/refresh": { "post": { "summary": "apt-get update" } },
+            "/v1/updates/upgrade": { "post": { "summary": "apt-get dist-upgrade (in-place; keeps guests)" } },
+            "/v1/repositories": {
+                "get": { "summary": "List apt repositories" },
+                "post": { "summary": "Add an apt repository" },
+                "patch": { "summary": "Enable or disable an apt repository" }
+            },
+            "/v1/node/shell/ws": { "get": { "summary": "Interactive host shell websocket (operator)" } }
         }
     })
 }

@@ -172,9 +172,8 @@ impl QemuDriver {
                     "file={},if=none,id={drive_id},readonly=on,format=raw",
                     disk.path.display()
                 ));
-                cmd.arg("-device").arg(format!(
-                    "virtio-blk-pci,drive={drive_id},serial=cidata"
-                ));
+                cmd.arg("-device")
+                    .arg(format!("virtio-blk-pci,drive={drive_id},serial=cidata"));
             } else if disk.cdrom {
                 cmd.arg("-drive").arg(format!(
                     "file={},if=none,id={drive_id},media=cdrom,readonly=on,format={format}",

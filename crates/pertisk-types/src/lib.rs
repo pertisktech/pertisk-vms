@@ -1234,6 +1234,74 @@ pub struct HostInfo {
     pub ssh_authorized_keys: Vec<String>,
 }
 
+/// One host package that apt can upgrade (Proxmox-style Updates view).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdatePackage {
+    pub name: String,
+    /// Currently installed version.
+    pub version: String,
+    /// Candidate version from the repo.
+    pub available: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdatesStatus {
+    /// False when this node has no apt (macOS mock, non-Debian).
+    pub apt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub packages: Vec<UpdatePackage>,
+    #[serde(default)]
+    pub reboot_required: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AptActionResult {
+    pub ok: bool,
+    #[serde(default)]
+    pub log: String,
+    #[serde(default)]
+    pub reboot_required: bool,
+}
+
+/// One apt source line/stanza (Proxmox-style Repositories view).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AptRepository {
+    pub id: String,
+    pub enabled: bool,
+    pub file: String,
+    #[serde(rename = "type")]
+    pub types: String,
+    pub uri: String,
+    pub suite: String,
+    #[serde(default)]
+    pub components: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddRepositoryRequest {
+    pub name: String,
+    pub uri: String,
+    pub suite: String,
+    #[serde(default = "default_apt_components")]
+    pub components: String,
+}
+
+fn default_apt_components() -> String {
+    "main".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetRepositoryRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
 pub fn default_home() -> PathBuf {
     if let Ok(path) = std::env::var("PERTISK_HOME") {
         return PathBuf::from(path);

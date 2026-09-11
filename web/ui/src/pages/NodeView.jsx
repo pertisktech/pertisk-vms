@@ -45,6 +45,9 @@ export default function NodeView() {
       tabs={[
         { to: 'summary', label: 'Summary', icon: 'summary' },
         { to: 'guests', label: 'Guests', icon: 'guests' },
+        { to: 'updates', label: 'Updates', icon: 'updates' },
+        { to: 'repositories', label: 'Repositories', icon: 'repo' },
+        { to: 'shell', label: 'Shell', icon: 'terminal' },
         { to: 'tasks', label: 'Task History', icon: 'activity' },
       ]}
     />

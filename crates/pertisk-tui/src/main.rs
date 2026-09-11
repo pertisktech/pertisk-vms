@@ -10,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use pertisk_types::{DEFAULT_LISTEN, VmId, VmRecord, VmState};
+use pertisk_types::{DEFAULT_LISTEN, VERSION, VmId, VmRecord, VmState};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -91,6 +91,14 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        println!("pertisk-tui {VERSION}");
+        return Ok(());
+    }
+
     // Soften kernel console spam without breaking the Linux VT redraw path.
     let _quiet = ConsoleQuiet::enter();
 
@@ -597,7 +605,7 @@ fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11),
+            Constraint::Length(12),
             Constraint::Min(6),
             Constraint::Length(3),
         ])
@@ -671,8 +679,14 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
             Span::raw("   "),
             auth,
         ]),
+        Line::from(vec![
+            Span::styled("Ver    ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("v{VERSION}")),
+        ]),
     ];
-    let block = Block::default().title(" pertisk-vm ").borders(Borders::ALL);
+    let block = Block::default()
+        .title(format!(" pertisk-vm v{VERSION} "))
+        .borders(Borders::ALL);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 

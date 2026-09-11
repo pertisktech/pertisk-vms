@@ -205,6 +205,11 @@ grep -q 'linux-image-arm64' "$ROOT/iso/mkosi.conf.d/10-arm64.conf" \
   || { echo "FAIL linux-image-arm64"; fail=1; }
 grep -q 'pertiskd.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \
   || { echo "FAIL preset"; fail=1; }
+[[ -f "$OVERLAY/etc/apt/apt.conf.d/90pertisk" ]] || { echo "FAIL apt unattended options"; fail=1; }
+grep -q '/v1/updates' "$ROOT/crates/pertisk-api/src/lib.rs" \
+  || { echo "FAIL OpenAPI updates path"; fail=1; }
+grep -q '/v1/node/shell/ws' "$ROOT/crates/pertisk-api/src/lib.rs" \
+  || { echo "FAIL OpenAPI node shell path"; fail=1; }
 echo "ok  mkosi disk image + systemd preset"
 
 wf="$ROOT/.github/workflows/release.yml"

@@ -38,6 +38,8 @@ import {
   HiOutlineKey,
   HiOutlineDuplicate,
   HiOutlineTemplate,
+  HiOutlineDownload,
+  HiOutlineLibrary,
 } from 'react-icons/hi'
 
 const ICONS = {
@@ -80,6 +82,8 @@ const ICONS = {
   key: HiOutlineKey,
   clone: HiOutlineDuplicate,
   template: HiOutlineTemplate,
+  updates: HiOutlineDownload,
+  repo: HiOutlineLibrary,
 }
 
 export function Icon({ name, size = 18, className = '' }) {
