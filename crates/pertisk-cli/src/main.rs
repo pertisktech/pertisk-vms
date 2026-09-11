@@ -505,6 +505,9 @@ async fn run() -> Result<()> {
         .danger_accept_invalid_certs(cli.insecure)
         .build()
         .context("http client")?;
+    if !matches!(cli.command, Command::Login { .. }) {
+        let _ = ensure_local_auth(&client, &cli.url).await;
+    }
     match cli.command {
         Command::Host => {
             let info: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
@@ -1638,6 +1641,65 @@ fn load_token() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn local_admin_password() -> Option<String> {
+    if let Ok(pass) = std::env::var("PERTISK_ADMIN_PASSWORD") {
+        let pass = pass.trim().to_string();
+        if !pass.is_empty() {
+            return Some(pass);
+        }
+    }
+    for path in ["/etc/pertisk/admin", "/etc/pertisk/admin.pass"] {
+        if let Ok(pass) = std::fs::read_to_string(path) {
+            let pass = pass.trim().to_string();
+            if !pass.is_empty() {
+                return Some(pass);
+            }
+        }
+    }
+    None
+}
+
+/// On the node itself, root can use /etc/pertisk/admin instead of `pertisk login`.
+async fn ensure_local_auth(client: &reqwest::Client, base: &str) -> Result<()> {
+    if load_token().is_some() || !is_loopback_url(base) {
+        return Ok(());
+    }
+    let Some(password) = local_admin_password() else {
+        return Ok(());
+    };
+    let out: TokenResponse = post_json(
+        client,
+        base,
+        "/v1/login",
+        &LoginRequest {
+            username: "admin".into(),
+            password,
+        },
+    )
+    .await
+    .context("local admin login")?;
+    let path = token_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &out.token)?;
+    Ok(())
+}
+
 async fn ensure_iso(client: &reqwest::Client, base: &str, iso: &str) -> Result<String> {
     let path = PathBuf::from(iso);
     if path.is_file() {
@@ -1816,6 +1878,11 @@ async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) 
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        if status.as_u16() == 401 && load_token().is_none() {
+            bail!(
+                "not logged in (on this node: uses /etc/pertisk/admin automatically; otherwise: pertisk login -u admin -p …)"
+            );
+        }
         if let Ok(err) = serde_json::from_str::<serde_json::Value>(&text)
             && let Some(msg) = err.get("error").and_then(|v| v.as_str())
         {
@@ -1824,4 +1891,18 @@ async fn read_json<T: serde::de::DeserializeOwned>(response: reqwest::Response) 
         bail!("{status}: {text}");
     }
     serde_json::from_str(&text).with_context(|| format!("decoding response: {text}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_url;
+
+    #[test]
+    fn loopback_urls() {
+        assert!(is_loopback_url("http://127.0.0.1:7480"));
+        assert!(is_loopback_url("https://localhost:7443/"));
+        assert!(is_loopback_url("http://[::1]:7480"));
+        assert!(!is_loopback_url("https://10.1.1.10:7443"));
+        assert!(!is_loopback_url("http://pertisk:7480"));
+    }
 }

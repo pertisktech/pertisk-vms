@@ -8,6 +8,7 @@ ConditionPathExists=/usr/bin/pertiskd
 [Service]
 Type=simple
 Environment=PERTISK_HOME=/var/lib/pertisk
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/pertisk/daemon.env
 ExecStartPre=/usr/sbin/pertisk-kvm-check
 ExecStart=/usr/bin/pertiskd

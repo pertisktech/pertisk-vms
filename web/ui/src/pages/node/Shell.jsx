@@ -7,7 +7,7 @@ import { Btn, Icon } from '../../components/Icons'
 import { useNode } from '../NodeView'
 
 function scheduleFit(fit, term, socket) {
-  requestAnimationFrame(() => {
+  const run = () => {
     try {
       fit.fit()
       if (socket?.readyState === 1 && term) {
@@ -16,6 +16,10 @@ function scheduleFit(fit, term, socket) {
     } catch {
       /* host may be hidden briefly */
     }
+  }
+  requestAnimationFrame(() => {
+    run()
+    requestAnimationFrame(run)
   })
 }
 
@@ -49,14 +53,18 @@ export default function NodeShell() {
 
     term = new Terminal({
       cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily:
+        '"MesloLGS NF", "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
+      lineHeight: 1,
       theme: {
         background: '#0b0d12',
         foreground: '#c8c9de',
         cursor: '#c8c9de',
       },
       convertEol: false,
+      allowProposedApi: true,
+      scrollback: 1000,
       disableStdin: false,
     })
     fit = new FitAddon()
@@ -88,6 +96,8 @@ export default function NodeShell() {
         setConnecting(false)
         setWsError('')
         scheduleFit(fit, term, socket)
+        window.setTimeout(() => scheduleFit(fit, term, socket), 50)
+        window.setTimeout(() => scheduleFit(fit, term, socket), 200)
         focusTerm()
       }
     }
@@ -132,6 +142,11 @@ export default function NodeShell() {
       ro = new ResizeObserver(onResize)
       ro.observe(host)
     }
+    if (document.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        if (!cancelled) scheduleFit(fit, term, socket)
+      })
+    }
 
     return () => {
       cancelled = true
@@ -173,7 +188,7 @@ export default function NodeShell() {
       <div className="pve-console-bar">
         <span className={`badge ${statusClass}`}>{statusLabel}</span>
         <span className="muted">
-          {wsError || 'Root shell on this hypervisor. Guests are not affected.'}
+          {wsError || 'Root zsh on this hypervisor (Oh My Zsh + Powerlevel10k). Guests are not affected.'}
         </span>
         <span className="pve-header-spacer" />
         <Btn icon="trash" variant="secondary" onClick={() => termRef.current?.clear()}>

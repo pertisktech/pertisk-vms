@@ -40,8 +40,16 @@ fn spawn_shell() -> Result<ShellSession, String> {
         })
         .map_err(|err| format!("open pty: {err}"))?;
     let mut cmd = CommandBuilder::new(shell_bin());
+    cmd.arg("-i");
     cmd.arg("-l");
     cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("LANG", "C.UTF-8");
+    cmd.env("LC_ALL", "C.UTF-8");
+    cmd.env("SHELL", shell_bin());
+    cmd.env("ZSH", "/usr/share/oh-my-zsh");
+    cmd.env("POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD", "true");
+    cmd.env("POWERLEVEL9K_INSTANT_PROMPT", "off");
     cmd.env(
         "PATH",
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -73,10 +81,17 @@ fn spawn_shell() -> Result<ShellSession, String> {
 }
 
 fn shell_bin() -> &'static str {
-    ["/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"]
-        .into_iter()
-        .find(|path| Path::new(path).is_file())
-        .unwrap_or("/bin/sh")
+    [
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/sh",
+        "/usr/bin/sh",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).is_file())
+    .unwrap_or("/bin/sh")
 }
 
 enum PtyIn {
@@ -194,7 +209,8 @@ fn parse_resize(text: &str) -> Option<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_resize;
+    use super::{parse_resize, shell_bin};
+    use std::path::Path;
 
     #[test]
     fn parse_resize_json() {
@@ -203,5 +219,17 @@ mod tests {
             Some((100, 40))
         );
         assert_eq!(parse_resize("echo hi"), None);
+    }
+
+    #[test]
+    fn shell_bin_exists() {
+        let bin = shell_bin();
+        assert!(
+            Path::new(bin).is_file() || bin == "/bin/sh",
+            "shell binary missing: {bin}"
+        );
+        if Path::new("/bin/zsh").is_file() {
+            assert_eq!(bin, "/bin/zsh");
+        }
     }
 }

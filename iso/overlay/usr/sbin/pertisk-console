@@ -19,4 +19,17 @@ echo
 if [[ -x /usr/sbin/pertisk-net ]]; then
   /usr/sbin/pertisk-net >/tmp/pertisk-net.log 2>&1 &
 fi
+
+# HDMI/serial cannot render Nerd Fonts. Force a plain zsh prompt (see ~/.zshrc).
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export PERTISK_CONSOLE=1
+export POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true
+export POWERLEVEL9K_INSTANT_PROMPT=off
+stty sane 2>/dev/null || true
+
+if [[ -x /bin/zsh ]]; then
+  export SHELL=/bin/zsh
+  exec /bin/zsh -l
+fi
 exec /bin/bash --login

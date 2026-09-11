@@ -19,6 +19,10 @@ command -v qm >/dev/null || die "qm not found (run on Proxmox)"
 [[ -b "$ZVOL" ]] || die "disk not found: $ZVOL (adjust VMID or storage pool name)"
 
 cd "$ROOT"
+if command -v npm >/dev/null 2>&1; then
+  echo "building web ui"
+  (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
+fi
 echo "building release binaries"
 cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
 
@@ -68,6 +72,28 @@ done
 if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-console" ]]; then
   install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-console" "$MNT/usr/sbin/pertisk-console"
 fi
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-zsh-setup" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-zsh-setup" "$MNT/usr/sbin/pertisk-zsh-setup"
+fi
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-fix-hosts" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-fix-hosts" "$MNT/usr/sbin/pertisk-fix-hosts"
+fi
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-apt-bootstrap" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-apt-bootstrap" "$MNT/usr/sbin/pertisk-apt-bootstrap"
+fi
+if [[ -f "$ROOT/iso/overlay/etc/hostname" ]]; then
+  install -m 644 "$ROOT/iso/overlay/etc/hostname" "$MNT/etc/hostname"
+fi
+"$MNT/usr/sbin/pertisk-fix-hosts" "$MNT" 2>/dev/null \
+  || /bin/bash "$ROOT/iso/overlay/usr/sbin/pertisk-fix-hosts" "$MNT" \
+  || echo "deploy-appliance: hosts fix skipped" >&2
+mkdir -p "$MNT/etc/skel" "$MNT/root"
+for dots in .zshrc .p10k.zsh; do
+  if [[ -f "$ROOT/iso/overlay/etc/skel/$dots" ]]; then
+    install -m 644 "$ROOT/iso/overlay/etc/skel/$dots" "$MNT/etc/skel/$dots"
+    install -m 644 "$ROOT/iso/overlay/etc/skel/$dots" "$MNT/root/$dots"
+  fi
+done
 for unit in getty@tty1.service.d serial-getty@ttyS0.service.d serial-getty@ttyS2.service.d serial-getty@ttyAMA0.service.d; do
   src="$ROOT/iso/overlay/etc/systemd/system/$unit/autologin.conf"
   if [[ -f "$src" ]]; then
@@ -164,13 +190,50 @@ Console TUI:      pertisk-tui
 UI:               https://<this-host>:7443/  user admin  password in /etc/pertisk/admin
 EOF
 
-# Operator SSH keys injected into cloud clones (authorized_keys of this build host).
-mkdir -p "$MNT/etc/pertisk/ssh"
+# Operator SSH keys: clones + this appliance's own root login.
+mkdir -p "$MNT/etc/pertisk/ssh" "$MNT/root/.ssh"
+chmod 700 "$MNT/root/.ssh"
 if [[ -f /root/.ssh/authorized_keys ]]; then
   grep -E '^(ssh-|ecdsa-|sk-ssh-|sk-ecdsa-)' /root/.ssh/authorized_keys \
-    >"$MNT/etc/pertisk/ssh/authorized_keys" || true
-  chmod 600 "$MNT/etc/pertisk/ssh/authorized_keys"
-  echo "installed operator SSH keys into /etc/pertisk/ssh/authorized_keys"
+    | tee "$MNT/etc/pertisk/ssh/authorized_keys" >"$MNT/root/.ssh/authorized_keys" || true
+  chmod 600 "$MNT/etc/pertisk/ssh/authorized_keys" "$MNT/root/.ssh/authorized_keys"
+  echo "installed operator SSH keys into /root/.ssh/authorized_keys"
+fi
+
+mkdir -p "$MNT/etc/apt/sources.list.d"
+if [[ -f "$ROOT/iso/overlay/etc/apt/sources.list.d/debian.sources" ]]; then
+  install -m 644 "$ROOT/iso/overlay/etc/apt/sources.list.d/debian.sources" \
+    "$MNT/etc/apt/sources.list.d/debian.sources"
+fi
+
+# chroot: real DNS (guest resolv.conf is often 127.0.0.53), then apt, then zsh.
+need_chroot=0
+[[ -x "$MNT/usr/sbin/pertisk-apt-bootstrap" || -x "$MNT/usr/sbin/pertisk-zsh-setup" ]] && need_chroot=1
+if [[ "$need_chroot" -eq 1 ]]; then
+  for d in proc sys dev; do
+    mkdir -p "$MNT/$d"
+    mount --bind "/$d" "$MNT/$d" 2>/dev/null || true
+  done
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$MNT/etc/resolv.conf.pertisk-deploy"
+  if [[ -e "$MNT/etc/resolv.conf" || -L "$MNT/etc/resolv.conf" ]]; then
+    mount --bind "$MNT/etc/resolv.conf.pertisk-deploy" "$MNT/etc/resolv.conf" 2>/dev/null || true
+  else
+    cp "$MNT/etc/resolv.conf.pertisk-deploy" "$MNT/etc/resolv.conf"
+  fi
+  run_chroot() {
+    local bin="$1"
+    [[ -x "$MNT$bin" ]] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 300 chroot "$MNT" "$bin" || echo "deploy-appliance: $bin skipped" >&2
+    else
+      chroot "$MNT" "$bin" || echo "deploy-appliance: $bin skipped" >&2
+    fi
+  }
+  run_chroot /usr/sbin/pertisk-apt-bootstrap
+  run_chroot /usr/sbin/pertisk-zsh-setup
+  umount "$MNT/etc/resolv.conf" 2>/dev/null || true
+  umount "$MNT/dev" "$MNT/sys" "$MNT/proc" 2>/dev/null || true
+  rm -f "$MNT/etc/resolv.conf.pertisk-deploy"
 fi
 
 umount "$MNT"

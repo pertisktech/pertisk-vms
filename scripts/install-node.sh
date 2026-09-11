@@ -41,10 +41,12 @@ cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
 if command -v apt-get >/dev/null 2>&1; then
   case "$(uname -m)" in
     aarch64|arm64)
-      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-arm qemu-efi-aarch64 ipxe-qemu qemu-utils || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-arm qemu-efi-aarch64 ipxe-qemu qemu-utils \
+        zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline || true
       ;;
     *)
-      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 ovmf qemu-utils \
+        zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline || true
       ;;
   esac
 fi
@@ -77,7 +79,8 @@ fi
 chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot \
   /usr/sbin/pertisk-install /usr/sbin/pertisk-host-bridge /usr/sbin/pertisk-bootfix \
   /usr/sbin/pertisk-esp-boot /usr/sbin/pertisk-net \
-  /usr/sbin/pertisk-console /usr/sbin/pertisk-fix-nvme-boot /usr/sbin/pertisk-uefi-register
+  /usr/sbin/pertisk-console /usr/sbin/pertisk-fix-nvme-boot /usr/sbin/pertisk-uefi-register \
+  /usr/sbin/pertisk-zsh-setup /usr/sbin/pertisk-fix-hosts /usr/sbin/pertisk-apt-bootstrap
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 
@@ -91,6 +94,16 @@ if [[ -f /etc/pertisk/daemon.env ]]; then
   else
     printf 'PERTISK_DRIVER=qemu\n' >>/etc/pertisk/daemon.env
   fi
+fi
+
+if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
+  /usr/sbin/pertisk-fix-hosts || echo "install-node: hosts fix skipped" >&2
+fi
+if [[ -x /usr/sbin/pertisk-zsh-setup ]]; then
+  /usr/sbin/pertisk-zsh-setup || echo "install-node: zsh setup skipped" >&2
+fi
+if [[ -x /usr/sbin/pertisk-apt-bootstrap && ! -x /usr/bin/apt-get ]]; then
+  /usr/sbin/pertisk-apt-bootstrap || echo "install-node: apt bootstrap skipped" >&2
 fi
 
 systemctl daemon-reload

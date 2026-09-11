@@ -112,8 +112,10 @@ KbdInteractiveAuthentication yes
 UsePAM yes
 EOF
   echo "root:pertisk" | chpasswd 2>/dev/null || true
+  local login_shell=/bin/bash
+  [[ -x /bin/zsh ]] && login_shell=/bin/zsh
   if ! id -u admin >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G sudo admin 2>/dev/null || true
+    useradd -m -s "$login_shell" -G sudo admin 2>/dev/null || true
   fi
   if id -u admin >/dev/null 2>&1; then
     echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
@@ -124,7 +126,9 @@ EOF
 
 ensure_ssh_login
 
-if ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then
+if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
+  /usr/sbin/pertisk-fix-hosts || echo "pertisk-firstboot: hosts fix skipped" >&2
+elif ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then
   echo "127.0.1.1 pertisk" >>/etc/hosts
 fi
 
@@ -216,6 +220,12 @@ EOF
 }
 
 seed_lan_network
+
+# Image build already clones Oh My Zsh. Retry on disk installs only — live USB
+# must reach the HDMI console quickly for pertisk-install.
+if ! is_installer_media && [[ -x /usr/sbin/pertisk-zsh-setup ]]; then
+  /usr/sbin/pertisk-zsh-setup || echo "pertisk-firstboot: zsh setup skipped" >&2
+fi
 
 if [[ "$kvm_ok" -eq 0 ]]; then
   cat >"$ISSUE" <<'EOF'

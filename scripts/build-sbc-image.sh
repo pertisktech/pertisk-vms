@@ -230,7 +230,10 @@ chmod 755 "$ROOTMNT/usr/sbin/pertisk-kvm-check" \
   "$ROOTMNT/usr/sbin/pertisk-net" \
   "$ROOTMNT/usr/sbin/pertisk-console" \
   "$ROOTMNT/usr/sbin/pertisk-fix-nvme-boot" \
-  "$ROOTMNT/usr/sbin/pertisk-uefi-register"
+  "$ROOTMNT/usr/sbin/pertisk-uefi-register" \
+  "$ROOTMNT/usr/sbin/pertisk-zsh-setup" \
+  "$ROOTMNT/usr/sbin/pertisk-fix-hosts" \
+  "$ROOTMNT/usr/sbin/pertisk-apt-bootstrap"
 mkdir -p "$ROOTMNT/etc/pertisk" "$ROOTMNT/var/lib/pertisk"
 printf '%s\n' "$BOARD" >"$ROOTMNT/etc/pertisk/board"
 printf '%s\n' "$FAMILY" >"$ROOTMNT/etc/pertisk/family"
@@ -294,6 +297,12 @@ systemctl enable ssh.service 2>/dev/null || systemctl enable sshd.service 2>/dev
 systemctl disable systemd-networkd.service systemd-networkd-wait-online.service 2>/dev/null || true
 systemctl disable orangepi-firstlogin.service armbian-firstrun.service 2>/dev/null || true
 systemctl enable serial-getty@${SERIAL}.service 2>/dev/null || true
+if [[ -x /usr/sbin/pertisk-zsh-setup ]]; then
+  /usr/sbin/pertisk-zsh-setup || true
+fi
+if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
+  /usr/sbin/pertisk-fix-hosts || true
+fi
 REMOTE
 
 if [[ -n "$QEMU_STATIC" ]]; then

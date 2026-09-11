@@ -2,6 +2,7 @@
 export const DC_TABS = ['summary', 'storage', 'templates', 'networks', 'cluster', 'tasks', 'users']
 export const NODE_TABS = ['summary', 'guests', 'updates', 'repositories', 'shell', 'tasks']
 export const VM_TABS = ['summary', 'console', 'hardware', 'options']
+export const TEMPLATE_TABS = ['summary', 'hardware', 'options']
 
 export function parseResourceRoute(pathname) {
   const parts = pathname.split('/').filter(Boolean)
@@ -22,7 +23,7 @@ function pickTab(requested, allowed, fallback = 'summary') {
 }
 
 /** Build a sidebar link, keeping the current tab when switching within the same resource type. */
-export function resourceLink(type, id, currentRoute) {
+export function resourceLink(type, id, currentRoute, opts = {}) {
   if (type === 'dc') {
     const tab = currentRoute.type === 'dc' ? currentRoute.tab : 'summary'
     return `/dc/${pickTab(tab, DC_TABS)}`
@@ -37,8 +38,9 @@ export function resourceLink(type, id, currentRoute) {
     return `/node/${id}/${pickTab(tab, NODE_TABS)}`
   }
   if (type === 'vm') {
+    const allowed = opts.template ? TEMPLATE_TABS : VM_TABS
     const tab = currentRoute.type === 'vm' ? currentRoute.tab : 'summary'
-    return `/vm/${id}/${pickTab(tab, VM_TABS)}`
+    return `/vm/${id}/${pickTab(tab, allowed)}`
   }
   return '/dc/summary'
 }

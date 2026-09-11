@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { asList, isTemplate } from '../api'
+import { asList, isTemplate, vmCaption } from '../api'
 import { Icon } from './Icons'
 import { parseResourceRoute, resourceLink } from '../resourceRoutes'
 
@@ -29,12 +29,31 @@ function guestStatus(vm) {
   return 'stopped'
 }
 
-function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf }) {
+function compareVmId(left, right) {
+  const a = Number(left.id)
+  const b = Number(right.id)
+  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a - b
+  return String(left.id).localeCompare(String(right.id), undefined, { numeric: true })
+}
+
+function GuestLabel({ vm }) {
+  const { id, name } = vmCaption(vm)
+  return (
+    <>
+      <span className="tree-vmid">{id}</span>
+      {name ? <span className="tree-vmname"> ({name})</span> : null}
+    </>
+  )
+}
+
+function Branch({ open, onToggle, icon, label, title, to, status, badge, depth, leaf }) {
+  const titleText = title || (typeof label === 'string' ? label : undefined)
   return (
     <NavLink
       to={to}
-      className={({ isActive }) => `tree-row${isActive ? ' active' : ''}`}
+      className={({ isActive }) => `tree-row${isActive ? ' active' : ''}${leaf ? ' leaf' : ''}`}
       style={{ paddingLeft: `${0.4 + depth * 0.85}rem` }}
+      title={titleText}
     >
       <span
         className="tree-twisty"
@@ -53,9 +72,7 @@ function Branch({ open, onToggle, icon, label, to, status, badge, depth, leaf })
         {!leaf && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
       </span>
       <Icon name={icon} size={14} className="tree-icon" />
-      <span className="tree-label" title={label}>
-        {label}
-      </span>
+      <span className="tree-label">{label}</span>
       {status && <span className={`tree-dot ${status}`} />}
       {badge != null && <span className="tree-badge">{badge}</span>}
     </NavLink>
@@ -85,7 +102,7 @@ export default function ResourceTree({ cluster, host, vms }) {
       guests.get(nodeId).push(vm)
     }
     for (const nodeGuests of guests.values()) {
-      nodeGuests.sort((left, right) => (left.spec?.name || '').localeCompare(right.spec?.name || ''))
+      nodeGuests.sort(compareVmId)
     }
     return guests
   }, [vms, nodes])
@@ -119,18 +136,22 @@ export default function ResourceTree({ cluster, host, vms }) {
                   status={node.online ? 'running' : 'failed'}
                 />
                 {isOpen(nodeKey) &&
-                  guests.map((vm) => (
-                    <Branch
-                      key={vm.id}
-                      depth={2}
-                      leaf
-                      icon={isTemplate(vm) ? 'template' : 'guests'}
-                      label={vm.spec?.name || vm.id}
-                      to={resourceLink('vm', vm.id, currentRoute)}
-                      status={guestStatus(vm)}
-                      badge={isTemplate(vm) ? 'tpl' : undefined}
-                    />
-                  ))}
+                  guests.map((vm) => {
+                    const caption = vmCaption(vm)
+                    return (
+                      <Branch
+                        key={vm.id}
+                        depth={2}
+                        leaf
+                        icon={isTemplate(vm) ? 'template' : 'guests'}
+                        label={<GuestLabel vm={vm} />}
+                        title={caption.title}
+                        to={resourceLink('vm', vm.id, currentRoute, { template: isTemplate(vm) })}
+                        status={guestStatus(vm)}
+                        badge={isTemplate(vm) ? 'tpl' : undefined}
+                      />
+                    )
+                  })}
               </div>
             )
           })}

@@ -175,6 +175,17 @@ fn apt_root() -> PathBuf {
 }
 
 fn find_apt() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        "/usr/bin/apt-get",
+        "/bin/apt-get",
+        "/usr/local/bin/apt-get",
+    ];
+    for path in CANDIDATES {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
     pertisk_types::find_in_path("apt-get")
 }
 
@@ -188,6 +199,10 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
     cmd.args(args);
     cmd.env("DEBIAN_FRONTEND", "noninteractive");
     cmd.env("LC_ALL", "C");
+    cmd.env(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
     let output = cmd.output().map_err(|err| format!("run apt-get: {err}"))?;
     let mut log = String::new();
     log.push_str(&String::from_utf8_lossy(&output.stdout));

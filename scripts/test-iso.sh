@@ -25,6 +25,9 @@ bash -n "$OVERLAY/usr/sbin/pertisk-bootfix"
 bash -n "$OVERLAY/usr/sbin/pertisk-esp-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-net"
 bash -n "$OVERLAY/usr/sbin/pertisk-console"
+bash -n "$OVERLAY/usr/sbin/pertisk-zsh-setup"
+bash -n "$OVERLAY/usr/sbin/pertisk-fix-hosts"
+bash -n "$OVERLAY/usr/sbin/pertisk-apt-bootstrap"
 bash -n "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-uefi-register"
 bash -n "$ROOT/scripts/build-iso.sh"
@@ -107,6 +110,24 @@ grep -q 'firmware-realtek' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL firmware-realtek (G11 2.5G NIC)"; fail=1; }
 grep -q 'non-free-firmware' "$ROOT/iso/mkosi.conf" \
   || { echo "FAIL debian non-free-firmware repo"; fail=1; }
+grep -q '^[[:space:]]*apt$' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL mkosi apt package (Updates tab)"; fail=1; }
+grep -q '^[[:space:]]*zsh$' "$ROOT/iso/mkosi.conf" \
+  || { echo "FAIL mkosi zsh package"; fail=1; }
+[[ -x "$OVERLAY/usr/sbin/pertisk-zsh-setup" ]] \
+  || { echo "FAIL pertisk-zsh-setup executable"; fail=1; }
+[[ -f "$OVERLAY/etc/skel/.zshrc" && -f "$OVERLAY/etc/skel/.p10k.zsh" ]] \
+  || { echo "FAIL skel zsh/p10k"; fail=1; }
+grep -q 'powerlevel10k/powerlevel10k' "$OVERLAY/etc/skel/.zshrc" \
+  || { echo "FAIL zsh Powerlevel10k theme"; fail=1; }
+grep -q 'exec /bin/zsh -l' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must exec zsh"; fail=1; }
+grep -q 'pertisk-zsh-setup' "$ROOT/iso/mkosi.finalize.chroot" \
+  || { echo "FAIL mkosi finalize must run zsh setup"; fail=1; }
+[[ -f "$OVERLAY/etc/hosts" ]] && grep -q '127.0.1.1' "$OVERLAY/etc/hosts" \
+  || { echo "FAIL overlay /etc/hosts must map pertisk"; fail=1; }
+grep -q 'pertisk-fix-hosts' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot must fix /etc/hosts"; fail=1; }
 grep -q -- '--any' "$OVERLAY/etc/systemd/system/systemd-networkd-wait-online.service.d/any.conf" \
   || { echo "FAIL wait-online --any (dual NIC)"; fail=1; }
 grep -q 'wipe_target_disk' "$OVERLAY/usr/sbin/pertisk-install" \

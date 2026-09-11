@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
-import { api, asList, isTemplate } from '../api'
+import { api, asList, isTemplate, vmCaption } from '../api'
 import { Btn } from '../components/Icons'
 import Modal from '../components/Modal'
 import ResourceView from '../components/ResourceView'
@@ -78,7 +78,7 @@ export default function GuestView() {
       <ResourceView
         icon={template ? 'template' : 'guests'}
         kind={template ? 'Template' : 'Guest'}
-        name={vm.spec?.name || vmId}
+        name={vmCaption(vm).title}
         status={
           <>
             {template ? (
@@ -92,10 +92,10 @@ export default function GuestView() {
         }
         tabs={[
           { to: 'summary', label: 'Summary', icon: 'summary' },
-          { to: 'console', label: 'Console', icon: 'terminal' },
+          !template && { to: 'console', label: 'Console', icon: 'terminal' },
           { to: 'hardware', label: 'Hardware', icon: 'hardware' },
           { to: 'options', label: 'Options', icon: 'options' },
-        ]}
+        ].filter(Boolean)}
         actions={
           canWrite && (
             <>

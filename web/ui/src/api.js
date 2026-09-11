@@ -81,6 +81,15 @@ export function isTemplate(vm) {
   return Boolean(vm?.template)
 }
 
+/** Sidebar / crumb caption: `100 (web-01)`. */
+export function vmCaption(vm) {
+  const id = String(vm?.id ?? '')
+  const name = String(vm?.spec?.name || '').trim()
+  if (!id) return { id: '', name, title: name }
+  if (!name || name === id) return { id, name: '', title: id }
+  return { id, name, title: `${id} (${name})` }
+}
+
 export function nextVmId(vms) {
   const used = new Set((vms || []).map((vm) => String(vm.id)).filter((id) => /^\d{3,10}$/.test(id)))
   for (let id = 100; id <= 9_999_999_999; id += 1) {

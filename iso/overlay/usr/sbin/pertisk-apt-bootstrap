@@ -1,0 +1,103 @@
+#!/bin/bash
+# Install apt/apt-get (and zsh tools) when the node image was built without apt.
+set -u
+export DEBIAN_FRONTEND=noninteractive
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+if [[ -x /usr/bin/apt-get || -x /bin/apt-get ]]; then
+  apt_ok=1
+else
+  apt_ok=0
+fi
+
+ensure_sources() {
+  mkdir -p /etc/apt/sources.list.d
+  if [[ -s /etc/apt/sources.list ]]; then
+    return 0
+  fi
+  if compgen -G '/etc/apt/sources.list.d/*.sources' >/dev/null \
+    || compgen -G '/etc/apt/sources.list.d/*.list' >/dev/null; then
+    return 0
+  fi
+  cat >/etc/apt/sources.list.d/debian.sources <<'EOF'
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+}
+
+if [[ "$apt_ok" -eq 0 ]]; then
+  have curl && have dpkg && have gzip || {
+    echo "pertisk-apt-bootstrap: need curl, dpkg, and gzip" >&2
+    exit 1
+  }
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  codename=trixie
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    codename="${VERSION_CODENAME:-trixie}"
+  fi
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  if ! curl -fsSL -o "$tmp/Packages.gz" \
+    "http://deb.debian.org/debian/dists/${codename}/main/binary-${arch}/Packages.gz"; then
+    echo "pertisk-apt-bootstrap: could not fetch Debian package index" >&2
+    exit 1
+  fi
+  gzip -dc "$tmp/Packages.gz" >"$tmp/Packages"
+
+  pkg_filename() {
+    awk -v pkg="$1" '
+      $1=="Package:" && $2==pkg { hit=1 }
+      hit && $1=="Filename:" { print $2; exit }
+      NF==0 { hit=0 }
+    ' "$tmp/Packages"
+  }
+
+  debs=()
+  for name in libapt-pkg7.0 sqv debian-archive-keyring apt; do
+    if dpkg -s "$name" >/dev/null 2>&1; then
+      continue
+    fi
+    fn="$(pkg_filename "$name")"
+    if [[ -z "$fn" ]]; then
+      echo "pertisk-apt-bootstrap: no Filename for $name" >&2
+      continue
+    fi
+    deb="$tmp/${name}.deb"
+    curl -fsSL -o "$deb" "http://deb.debian.org/debian/${fn}" || {
+      echo "pertisk-apt-bootstrap: download failed: $name" >&2
+      continue
+    }
+    debs+=("$deb")
+  done
+  if ((${#debs[@]})); then
+    dpkg -i "${debs[@]}" || dpkg --configure -a || true
+  fi
+  if [[ -x /usr/bin/apt-get || -x /bin/apt-get ]]; then
+    apt_ok=1
+  else
+    echo "pertisk-apt-bootstrap: apt-get still missing after dpkg -i" >&2
+    exit 1
+  fi
+fi
+
+ensure_sources
+if [[ "$apt_ok" -eq 1 ]]; then
+  apt-get update -y || true
+  apt-get install -y --no-install-recommends \
+    apt zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline \
+    || true
+fi
+[[ -x /usr/bin/apt-get || -x /bin/apt-get ]]

@@ -1,0 +1,93 @@
+#!/bin/bash
+# Idempotent Oh My Zsh + Powerlevel10k for the node host shell (UI, SSH, HDMI).
+# Does not fail the image or firstboot if GitHub is unreachable.
+set -u
+
+ZSH_DIR="${ZSH_DIR:-/usr/share/oh-my-zsh}"
+P10K_DIR="${ZSH_DIR}/custom/themes/powerlevel10k"
+SKEL=/etc/skel
+export DEBIAN_FRONTEND=noninteractive
+export GIT_TERMINAL_PROMPT=0
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+pkg_ok() { dpkg -s "$1" >/dev/null 2>&1; }
+
+install_pkg() {
+  local pkg="$1"
+  pkg_ok "$pkg" && return 0
+  have apt-get || return 1
+  apt-get install -y --no-install-recommends "$pkg"
+}
+
+if have apt-get; then
+  for pkg in zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline; do
+    install_pkg "$pkg" || echo "pertisk-zsh-setup: skipped package $pkg" >&2
+  done
+fi
+
+git_clone() {
+  local url="$1" dest="$2"
+  [[ -d "$dest/.git" ]] && return 0
+  have git || return 1
+  mkdir -p "$(dirname "$dest")"
+  if [[ -e "$dest" && ! -d "$dest/.git" ]]; then
+    rm -rf "$dest"
+  fi
+  if have timeout; then
+    timeout 90 git clone --depth=1 "$url" "$dest"
+  else
+    git clone --depth=1 "$url" "$dest"
+  fi
+}
+
+if ! git_clone https://github.com/ohmyzsh/ohmyzsh.git "$ZSH_DIR"; then
+  echo "pertisk-zsh-setup: oh-my-zsh not cloned (git missing or GitHub unreachable)" >&2
+fi
+if [[ -d "$ZSH_DIR" ]]; then
+  mkdir -p "$ZSH_DIR/custom/themes"
+  if ! git_clone https://github.com/romkatv/powerlevel10k.git "$P10K_DIR"; then
+    echo "pertisk-zsh-setup: powerlevel10k not cloned (git missing or GitHub unreachable)" >&2
+  fi
+fi
+
+copy_dot() {
+  local src="$1" dest="$2"
+  [[ -f "$src" ]] || return 0
+  [[ "$src" -ef "$dest" ]] && return 0
+  cp "$src" "$dest"
+}
+
+install_dots() {
+  local dest="$1"
+  [[ -d "$dest" ]] || return 0
+  # Always reuse the shipped wizard config (iso/overlay/etc/skel/.p10k.zsh).
+  copy_dot "$SKEL/.zshrc" "$dest/.zshrc"
+  copy_dot "$SKEL/.p10k.zsh" "$dest/.p10k.zsh"
+}
+
+install_dots /root
+install_dots /etc/skel
+if id -u admin >/dev/null 2>&1; then
+  admin_home="$(getent passwd admin | cut -d: -f6)"
+  install_dots "${admin_home:-/home/admin}"
+fi
+
+zsh_bin=""
+if [[ -x /bin/zsh ]]; then
+  zsh_bin=/bin/zsh
+elif [[ -x /usr/bin/zsh ]]; then
+  zsh_bin=/usr/bin/zsh
+fi
+
+if [[ -n "$zsh_bin" ]]; then
+  chsh -s "$zsh_bin" root >/dev/null 2>&1 || true
+  if id -u admin >/dev/null 2>&1; then
+    chsh -s "$zsh_bin" admin >/dev/null 2>&1 || true
+  fi
+  if [[ -f /etc/adduser.conf ]]; then
+    sed -i 's|^DSHELL=.*|DSHELL=/bin/zsh|' /etc/adduser.conf >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0
