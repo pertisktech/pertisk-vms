@@ -7,9 +7,10 @@ mkdir -p /efi /boot/efi
 # Presets are not enough: Debian does not enable systemd-networkd by default,
 # so USB live had no DHCP. Pin the units on.
 systemctl enable systemd-networkd.service systemd-networkd.socket \
-  systemd-networkd-wait-online.service ssh.service \
+  systemd-networkd-wait-online.service systemd-resolved.service ssh.service \
   pertisk-firstboot.service pertisk-net.service \
   pertisk-bootfix.service pertiskd.service || true
+ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf || true
 systemctl mask networking.service || true
 systemctl disable NetworkManager.service || true
 systemctl disable NetworkManager-wait-online.service || true
@@ -17,6 +18,10 @@ systemctl disable NetworkManager-wait-online.service || true
 /usr/sbin/pertisk-esp-boot /efi
 
 # Oh My Zsh + Powerlevel10k for Node → Shell, SSH, and HDMI.
+if [[ -x /usr/sbin/pertisk-apt-bootstrap ]]; then
+  /usr/sbin/pertisk-apt-bootstrap --sources-only \
+    || echo "mkosi.finalize: apt sources cleanup skipped" >&2
+fi
 if [[ -x /usr/sbin/pertisk-zsh-setup ]]; then
   /usr/sbin/pertisk-zsh-setup || echo "mkosi.finalize: zsh setup skipped" >&2
 fi

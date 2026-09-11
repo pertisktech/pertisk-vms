@@ -233,7 +233,8 @@ chmod 755 "$ROOTMNT/usr/sbin/pertisk-kvm-check" \
   "$ROOTMNT/usr/sbin/pertisk-uefi-register" \
   "$ROOTMNT/usr/sbin/pertisk-zsh-setup" \
   "$ROOTMNT/usr/sbin/pertisk-fix-hosts" \
-  "$ROOTMNT/usr/sbin/pertisk-apt-bootstrap"
+  "$ROOTMNT/usr/sbin/pertisk-apt-bootstrap" \
+  "$ROOTMNT/usr/sbin/pertisk-fix-dns"
 mkdir -p "$ROOTMNT/etc/pertisk" "$ROOTMNT/var/lib/pertisk"
 printf '%s\n' "$BOARD" >"$ROOTMNT/etc/pertisk/board"
 printf '%s\n' "$FAMILY" >"$ROOTMNT/etc/pertisk/family"

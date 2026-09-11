@@ -84,6 +84,9 @@ ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ 
 if [[ -n "$ips" ]]; then
   printf 'pertisk-vm  http://%s:7480/  user admin  password in /etc/pertisk/admin\n' "$ips" >"$ISSUE"
   echo "pertisk-net: $ips"
+  if [[ -x /usr/sbin/pertisk-fix-dns ]]; then
+    /usr/sbin/pertisk-fix-dns || true
+  fi
 else
   cat >"$ISSUE" <<'EOF'
 pertisk-vm  cable up but no DHCP. Check the switch/router.

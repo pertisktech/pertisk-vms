@@ -28,6 +28,13 @@ bash -n "$OVERLAY/usr/sbin/pertisk-console"
 bash -n "$OVERLAY/usr/sbin/pertisk-zsh-setup"
 bash -n "$OVERLAY/usr/sbin/pertisk-fix-hosts"
 bash -n "$OVERLAY/usr/sbin/pertisk-apt-bootstrap"
+bash -n "$OVERLAY/usr/sbin/pertisk-fix-dns"
+grep -q 'trixie.sources' "$OVERLAY/usr/sbin/pertisk-apt-bootstrap" \
+  || { echo "FAIL apt-bootstrap must drop mkosi trixie.sources"; fail=1; }
+grep -q -- '--sources-only' "$ROOT/iso/mkosi.finalize.chroot" \
+  || { echo "FAIL mkosi finalize must collapse apt sources"; fail=1; }
+grep -q -- '--sources-only' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot must collapse apt sources"; fail=1; }
 bash -n "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-uefi-register"
 bash -n "$ROOT/scripts/build-iso.sh"

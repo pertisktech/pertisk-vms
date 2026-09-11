@@ -131,6 +131,13 @@ if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
 elif ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then
   echo "127.0.1.1 pertisk" >>/etc/hosts
 fi
+if [[ -x /usr/sbin/pertisk-apt-bootstrap ]]; then
+  /usr/sbin/pertisk-apt-bootstrap --sources-only \
+    || echo "pertisk-firstboot: apt sources cleanup skipped" >&2
+fi
+if [[ -x /usr/sbin/pertisk-fix-dns ]]; then
+  /usr/sbin/pertisk-fix-dns || echo "pertisk-firstboot: dns fix skipped" >&2
+fi
 
 if [[ -n "${PERTISK_JOIN:-}" ]]; then
   if ! grep -q '^PERTISK_JOIN=' "$ENV_FILE" 2>/dev/null; then

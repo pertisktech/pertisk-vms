@@ -1,0 +1,49 @@
+#!/bin/bash
+# Make glibc/apt DNS work. systemd-networkd DHCP does not write /etc/resolv.conf
+# unless systemd-resolved is running, which is why Node → Updates → Refresh
+# fails with "Temporary failure resolving 'deb.debian.org'".
+set -u
+
+dns_ok() {
+  getent hosts deb.debian.org >/dev/null 2>&1 \
+    || getent hosts one.one.one.one >/dev/null 2>&1
+}
+
+dns_ok && exit 0
+
+systemctl start systemd-resolved.service >/dev/null 2>&1 || true
+if [[ -x /usr/lib/systemd/systemd-resolved ]] || systemctl is-active systemd-resolved.service >/dev/null 2>&1; then
+  if [[ ! -e /etc/resolv.conf || -L /etc/resolv.conf ]]; then
+    ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf 2>/dev/null || true
+  fi
+  sleep 0.3
+  dns_ok && exit 0
+fi
+
+ns=""
+if compgen -G '/run/systemd/netif/leases/*' >/dev/null 2>&1; then
+  ns="$(grep -h '^DNS=' /run/systemd/netif/leases/* 2>/dev/null \
+    | tr ' =' '\n' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+    | awk '!seen[$0]++' \
+    | tr '\n' ' ')"
+fi
+if [[ -z "${ns// }" ]]; then
+  ns="$(networkctl status 2>/dev/null \
+    | awk '/DNS:/{for (i=2;i<=NF;i++) if ($i ~ /^[0-9]+\./) print $i}' \
+    | awk '!seen[$0]++' \
+    | tr '\n' ' ')"
+fi
+[[ -n "${ns// }" ]] || ns="1.1.1.1 8.8.8.8"
+
+# Replace a broken stub symlink so apt uses these nameservers.
+if [[ -L /etc/resolv.conf ]]; then
+  rm -f /etc/resolv.conf
+fi
+{
+  echo "# written by pertisk-fix-dns"
+  for ip in $ns; do
+    echo "nameserver $ip"
+  done
+} >/etc/resolv.conf
+exit 0

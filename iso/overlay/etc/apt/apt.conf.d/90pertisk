@@ -1,4 +1,11 @@
 APT::Get::Assume-Yes "true";
+APT::Color "0";
+Acquire::ForceIPv4 "true";
+Acquire::Languages "none";
+Acquire::Retries "2";
+Acquire::http::Timeout "20";
+Acquire::https::Timeout "20";
+Acquire::PDiffs "false";
 DPkg::Options {
   "--force-confold";
   "--force-confdef";

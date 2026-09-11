@@ -81,6 +81,9 @@ fi
 if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-apt-bootstrap" ]]; then
   install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-apt-bootstrap" "$MNT/usr/sbin/pertisk-apt-bootstrap"
 fi
+if [[ -f "$ROOT/iso/overlay/usr/sbin/pertisk-fix-dns" ]]; then
+  install -m 755 "$ROOT/iso/overlay/usr/sbin/pertisk-fix-dns" "$MNT/usr/sbin/pertisk-fix-dns"
+fi
 if [[ -f "$ROOT/iso/overlay/etc/hostname" ]]; then
   install -m 644 "$ROOT/iso/overlay/etc/hostname" "$MNT/etc/hostname"
 fi

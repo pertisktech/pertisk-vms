@@ -194,27 +194,54 @@ fn reboot_required() -> bool {
 }
 
 fn run_apt(args: &[&str]) -> Result<String, String> {
+    ensure_apt_dns();
     let bin = find_apt().ok_or_else(|| "apt-get not found on this node".to_string())?;
-    let mut cmd = Command::new(bin);
+    let mut cmd = if Path::new("/usr/bin/timeout").is_file() {
+        let mut wrapped = Command::new("/usr/bin/timeout");
+        wrapped.args(["-k", "10", "120"]);
+        wrapped.arg(&bin);
+        wrapped
+    } else {
+        Command::new(&bin)
+    };
+    cmd.args([
+        "-o",
+        "Acquire::ForceIPv4=true",
+        "-o",
+        "Acquire::Retries=1",
+        "-o",
+        "Acquire::http::Timeout=20",
+        "-o",
+        "Acquire::https::Timeout=20",
+        "-o",
+        "Acquire::Languages=none",
+        "-o",
+        "Acquire::PDiffs=false",
+        "-o",
+        "APT::Color=0",
+    ]);
     cmd.args(args);
     cmd.env("DEBIAN_FRONTEND", "noninteractive");
     cmd.env("LC_ALL", "C");
+    cmd.env("TERM", "dumb");
     cmd.env(
         "PATH",
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     );
     let output = cmd.output().map_err(|err| format!("run apt-get: {err}"))?;
-    let mut log = String::new();
-    log.push_str(&String::from_utf8_lossy(&output.stdout));
-    if !output.stderr.is_empty() {
-        if !log.is_empty() && !log.ends_with('\n') {
-            log.push('\n');
-        }
-        log.push_str(&String::from_utf8_lossy(&output.stderr));
-    }
+    let mut log = tidy_apt_log(&output.stdout, &output.stderr);
     if log.len() > 64 * 1024 {
         let keep = 64 * 1024;
         log = format!("…\n{}", &log[log.len() - keep..]);
+    }
+    if output.status.code() == Some(124) {
+        return Err("apt-get timed out after 120s (mirror or DNS too slow)".into());
+    }
+    if apt_dns_failed(&log) {
+        return Err(
+            "No DNS: cannot reach deb.debian.org. Plug the LAN in, wait for DHCP, then Refresh again."
+                .into(),
+        );
     }
     if !output.status.success() {
         return Err(if log.trim().is_empty() {
@@ -223,7 +250,66 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
             log
         });
     }
+    if args.iter().any(|a| *a == "update") && !log.contains("Finished.") {
+        if !log.is_empty() && !log.ends_with('\n') {
+            log.push('\n');
+        }
+        log.push_str("Finished.\n");
+    }
     Ok(log)
+}
+
+fn tidy_apt_log(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut raw = String::from_utf8_lossy(stdout).into_owned();
+    if !stderr.is_empty() {
+        if !raw.is_empty() && !raw.ends_with('\n') {
+            raw.push('\n');
+        }
+        raw.push_str(&String::from_utf8_lossy(stderr));
+    }
+    raw.replace('\r', "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn apt_dns_failed(log: &str) -> bool {
+    log.contains("Temporary failure resolving")
+        || log.contains("Could not resolve '")
+        || log.contains("Failed to resolve")
+}
+
+fn host_resolves(name: &str) -> bool {
+    Command::new("getent")
+        .args(["hosts", name])
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+fn ensure_apt_dns() {
+    if host_resolves("deb.debian.org") {
+        return;
+    }
+    let _ = Command::new("/usr/sbin/pertisk-fix-dns").status();
+    if host_resolves("deb.debian.org") {
+        return;
+    }
+    let path = Path::new("/etc/resolv.conf");
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let stub = text.contains("127.0.0.53") || path.is_symlink() || !text.contains("nameserver");
+    if stub {
+        if path.is_symlink() {
+            let _ = fs::remove_file(path);
+        }
+        let _ = fs::write(path, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
+    }
 }
 
 pub(crate) fn parse_inst_lines(text: &str) -> Vec<UpdatePackage> {
@@ -532,6 +618,26 @@ Conf linux-image-amd64 (6.12.22-1 Debian:13/stable [amd64])
         assert_eq!(pkgs[0].arch, "amd64");
         assert_eq!(pkgs[0].origin, "Debian:13/stable");
         assert_eq!(pkgs[1].name, "qemu-system-x86");
+    }
+
+    #[test]
+    fn detects_apt_dns_failure() {
+        let log = "\
+Ign:1 http://deb.debian.org/debian trixie InRelease
+Err:1 http://deb.debian.org/debian trixie InRelease
+  Temporary failure resolving 'deb.debian.org'
+W: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving 'deb.debian.org'
+";
+        assert!(apt_dns_failed(log));
+        assert!(!apt_dns_failed("Hit:1 http://deb.debian.org/debian trixie InRelease\n"));
+    }
+
+    #[test]
+    fn tidy_apt_progress_overwrites() {
+        let log = tidy_apt_log(b"Hit:1 http://deb.debian.org/debian trixie InRelease\n", b"Reading package lists...\rReading package lists... Done\n");
+        assert!(log.contains("Hit:1"));
+        assert!(log.contains("Reading package lists... Done"));
+        assert!(!log.contains('\r'));
     }
 
     #[test]

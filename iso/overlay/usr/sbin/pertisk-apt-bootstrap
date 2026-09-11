@@ -1,27 +1,28 @@
 #!/bin/bash
 # Install apt/apt-get (and zsh tools) when the node image was built without apt.
+# Also collapse duplicate Debian sources (mkosi trixie.sources + overlay debian.sources).
 set -u
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-if [[ -x /usr/bin/apt-get || -x /bin/apt-get ]]; then
-  apt_ok=1
-else
-  apt_ok=0
-fi
+sources_only=0
+[[ "${1:-}" == "--sources-only" ]] && sources_only=1
 
 ensure_sources() {
   mkdir -p /etc/apt/sources.list.d
-  if [[ -s /etc/apt/sources.list ]]; then
-    return 0
-  fi
-  if compgen -G '/etc/apt/sources.list.d/*.sources' >/dev/null \
-    || compgen -G '/etc/apt/sources.list.d/*.list' >/dev/null; then
-    return 0
-  fi
-  cat >/etc/apt/sources.list.d/debian.sources <<'EOF'
+  # mkosi writes trixie.sources (often including debian-debug). Overlay ships
+  # debian.sources. Keep one list so apt-get update is quiet.
+  rm -f /etc/apt/sources.list.d/trixie.sources \
+        /etc/apt/sources.list.d/debian-debug.sources
+  shopt -s nullglob
+  for f in /etc/apt/sources.list.d/*debug*.sources; do
+    rm -f "$f"
+  done
+  shopt -u nullglob
+  if [[ ! -s /etc/apt/sources.list.d/debian.sources ]]; then
+    cat >/etc/apt/sources.list.d/debian.sources <<'EOF'
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates
@@ -34,13 +35,56 @@ Suites: trixie-security
 Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
+  fi
 }
+
+dns_ok() {
+  getent hosts deb.debian.org >/dev/null 2>&1
+}
+
+dns_bind=0
+tmp=""
+cleanup() {
+  if [[ "$dns_bind" -eq 1 ]]; then
+    umount /etc/resolv.conf 2>/dev/null || true
+    dns_bind=0
+  fi
+  [[ -n "$tmp" && -d "$tmp" ]] && rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+# systemd-resolved stub (127.0.0.53) fails in early boot, chroot, and before DHCP.
+use_public_dns() {
+  dns_ok && return 0
+  ip -4 route show default 2>/dev/null | grep -q . || return 1
+  mkdir -p /run
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/run/pertisk-resolv.conf
+  mount --bind /run/pertisk-resolv.conf /etc/resolv.conf 2>/dev/null || return 1
+  dns_bind=1
+  dns_ok
+}
+
+ensure_sources
+if [[ "$sources_only" -eq 1 ]]; then
+  exit 0
+fi
+
+if [[ -x /usr/bin/apt-get || -x /bin/apt-get ]]; then
+  apt_ok=1
+else
+  apt_ok=0
+fi
 
 if [[ "$apt_ok" -eq 0 ]]; then
   have curl && have dpkg && have gzip || {
     echo "pertisk-apt-bootstrap: need curl, dpkg, and gzip" >&2
     exit 1
   }
+  if ! dns_ok && ! use_public_dns; then
+    echo "pertisk-apt-bootstrap: no DNS; cannot fetch apt (retry when the LAN is up)" >&2
+    exit 0
+  fi
+  use_public_dns || true
   arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
   codename=trixie
   if [[ -r /etc/os-release ]]; then
@@ -49,7 +93,6 @@ if [[ "$apt_ok" -eq 0 ]]; then
     codename="${VERSION_CODENAME:-trixie}"
   fi
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
   if ! curl -fsSL -o "$tmp/Packages.gz" \
     "http://deb.debian.org/debian/dists/${codename}/main/binary-${arch}/Packages.gz"; then
     echo "pertisk-apt-bootstrap: could not fetch Debian package index" >&2
@@ -93,11 +136,22 @@ if [[ "$apt_ok" -eq 0 ]]; then
   fi
 fi
 
-ensure_sources
+need_pkgs=0
 if [[ "$apt_ok" -eq 1 ]]; then
-  apt-get update -y || true
-  apt-get install -y --no-install-recommends \
-    apt zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline \
-    || true
+  for pkg in apt zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || need_pkgs=1
+  done
 fi
-[[ -x /usr/bin/apt-get || -x /bin/apt-get ]]
+
+if [[ "$apt_ok" -eq 1 && "$need_pkgs" -eq 1 ]]; then
+  if dns_ok || use_public_dns; then
+    apt-get update -y || true
+    apt-get install -y --no-install-recommends \
+      apt zsh git zsh-autosuggestions zsh-syntax-highlighting fonts-powerline \
+      || true
+  else
+    echo "pertisk-apt-bootstrap: no DNS; skipping apt-get update (packages already on the image stay)" >&2
+  fi
+fi
+[[ -x /usr/bin/apt-get || -x /bin/apt-get || "$need_pkgs" -eq 0 ]]
+exit 0

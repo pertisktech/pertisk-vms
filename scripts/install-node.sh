@@ -22,6 +22,14 @@ mkdir -p "$CACHE"
 # lib.sh expects CACHE and die
 source "$ROOT/scripts/lib.sh"
 
+# mkosi images ship trixie.sources; overlay also copies debian.sources.
+rm -f /etc/apt/sources.list.d/trixie.sources /etc/apt/sources.list.d/debian-debug.sources
+if [[ -f "$OVERLAY/etc/apt/sources.list.d/debian.sources" ]]; then
+  mkdir -p /etc/apt/sources.list.d
+  install -m 644 "$OVERLAY/etc/apt/sources.list.d/debian.sources" \
+    /etc/apt/sources.list.d/debian.sources
+fi
+
 SKIP_KVM="${PERTISK_SKIP_KVM:-0}"
 if [[ "$SKIP_KVM" != "1" ]]; then
   bash "$OVERLAY/usr/sbin/pertisk-kvm-check" || die "KVM not usable (set PERTISK_SKIP_KVM=1 to package only)"
@@ -80,7 +88,8 @@ chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot \
   /usr/sbin/pertisk-install /usr/sbin/pertisk-host-bridge /usr/sbin/pertisk-bootfix \
   /usr/sbin/pertisk-esp-boot /usr/sbin/pertisk-net \
   /usr/sbin/pertisk-console /usr/sbin/pertisk-fix-nvme-boot /usr/sbin/pertisk-uefi-register \
-  /usr/sbin/pertisk-zsh-setup /usr/sbin/pertisk-fix-hosts /usr/sbin/pertisk-apt-bootstrap
+  /usr/sbin/pertisk-zsh-setup /usr/sbin/pertisk-fix-hosts /usr/sbin/pertisk-apt-bootstrap \
+  /usr/sbin/pertisk-fix-dns
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 
@@ -99,10 +108,17 @@ fi
 if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
   /usr/sbin/pertisk-fix-hosts || echo "install-node: hosts fix skipped" >&2
 fi
+if [[ -x /usr/sbin/pertisk-apt-bootstrap ]]; then
+  /usr/sbin/pertisk-apt-bootstrap --sources-only \
+    || echo "install-node: apt sources cleanup skipped" >&2
+fi
+if [[ -x /usr/sbin/pertisk-fix-dns ]]; then
+  /usr/sbin/pertisk-fix-dns || echo "install-node: dns fix skipped" >&2
+fi
 if [[ -x /usr/sbin/pertisk-zsh-setup ]]; then
   /usr/sbin/pertisk-zsh-setup || echo "install-node: zsh setup skipped" >&2
 fi
-if [[ -x /usr/sbin/pertisk-apt-bootstrap && ! -x /usr/bin/apt-get ]]; then
+if [[ -x /usr/sbin/pertisk-apt-bootstrap && ! -x /usr/bin/apt-get && ! -x /bin/apt-get ]]; then
   /usr/sbin/pertisk-apt-bootstrap || echo "install-node: apt bootstrap skipped" >&2
 fi
 
