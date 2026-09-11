@@ -26,6 +26,7 @@ bash -n "$OVERLAY/usr/sbin/pertisk-esp-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-net"
 bash -n "$OVERLAY/usr/sbin/pertisk-console"
 bash -n "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot"
+bash -n "$OVERLAY/usr/sbin/pertisk-uefi-register"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
@@ -54,8 +55,13 @@ grep -q 'pertisk-bootfix.service' "$OVERLAY/usr/lib/systemd/system-preset/50-per
 grep -q 'install_rockchip' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rockchip"; fail=1; }
 grep -q 'install_rpi' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install rpi"; fail=1; }
 grep -q 'pertisk-esp-boot' "$OVERLAY/usr/sbin/pertisk-install" || { echo "FAIL install esp-boot"; fail=1; }
-grep -q '/boot/efi/vmlinuz' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
-  || { echo "FAIL esp-boot finds kernel on ESP"; fail=1; }
+grep -q '/boot/efi/vmlinuz\|/efi/vmlinuz\|/usr/lib/modules' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
+  || { echo "FAIL esp-boot finds kernel on ESP or modules"; fail=1; }
+grep -q 'copy_kernel_to_target_boot\|/efi/' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must copy kernel from live /efi ESP"; fail=1; }
+grep -q '/boot/vmlinuz' "$ROOT/iso/mkosi.finalize.chroot" \
+  || { echo "FAIL finalize must stage kernel on ext4 /boot"; fail=1; }
+
 grep -q 'root=UUID\|root=LABEL' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
   || { echo "FAIL esp-boot must set root=UUID/LABEL"; fail=1; }
 grep -q 'rootdelay=15' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
@@ -107,10 +113,22 @@ grep -q 'wipe_target_disk' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install must wipe leftover NVMe"; fail=1; }
 grep -q 'register_uefi_boot' "$OVERLAY/usr/sbin/pertisk-install" \
   || { echo "FAIL install registers NVMe in EFI NVRAM"; fail=1; }
+grep -q 'pertisk-uefi-register' "$OVERLAY/usr/sbin/pertisk-install" \
+  || { echo "FAIL install must call pertisk-uefi-register"; fail=1; }
 grep -q 'bootmgfw.efi' "$OVERLAY/usr/sbin/pertisk-esp-boot" \
   || { echo "FAIL Microsoft boot path for AMI BIOS drop"; fail=1; }
-grep -q 'Windows Boot Manager' "$OVERLAY/usr/sbin/pertisk-install" \
+grep -q 'Windows Boot Manager' "$OVERLAY/usr/sbin/pertisk-uefi-register" \
   || { echo "FAIL NVRAM Windows Boot Manager for AMI"; fail=1; }
+# BootOrder must be NVMe-only (do not append old USB/stale order).
+if grep -E 'efibootmgr -o.*"\$\{?order\},\$\{?rest\}|"\$order,\$rest' \
+  "$OVERLAY/usr/sbin/pertisk-uefi-register" "$OVERLAY/usr/sbin/pertisk-install"; then
+  echo "FAIL BootOrder must not append old entries (USB stays first → BIOS)"
+  fail=1
+fi
+grep -q 'efibootmgr -o "\$order"' "$OVERLAY/usr/sbin/pertisk-uefi-register" \
+  || { echo "FAIL uefi-register must set BootOrder to NVMe entries only"; fail=1; }
+grep -q 'pertisk-uefi-register' "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot" \
+  || { echo "FAIL nvme boot repair must call uefi-register"; fail=1; }
 grep -q 'EFI/Microsoft/Boot' "$OVERLAY/usr/sbin/pertisk-fix-nvme-boot" \
   || { echo "FAIL nvme boot repair script"; fail=1; }
 grep -q 'enable pertisk-net.service' "$OVERLAY/usr/lib/systemd/system-preset/50-pertisk.preset" \

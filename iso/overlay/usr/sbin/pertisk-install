@@ -272,53 +272,86 @@ patch_boot_root() {
 }
 
 register_uefi_boot() {
-  local disk="$1" part="${2:-1}" loader num order win
-  [[ -d /sys/firmware/efi ]] || return 0
-  command -v efibootmgr >/dev/null || return 0
-  # Drop stale "pertisk" / leftover GRUB / WBM entries from failed installs.
-  while read -r num; do
-    [[ -n "$num" ]] || continue
-    efibootmgr -b "$num" -B >/dev/null 2>&1 || true
-  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|GRUB\|Windows Boot Manager\).*/\1/pi')
-  loader='\EFI\BOOT\BOOTX64.EFI'
-  case "$(uname -m)" in
-    aarch64|arm64) loader='\EFI\BOOT\BOOTAA64.EFI' ;;
+  local disk="$1" part="${2:-1}"
+  if [[ -x /usr/sbin/pertisk-uefi-register ]]; then
+    /usr/sbin/pertisk-uefi-register "$disk" "$part"
+    return $?
+  fi
+  echo "pertisk-install: pertisk-uefi-register missing; skipping NVRAM setup" >&2
+  return 0
+}
+
+# Live USB kernel lives on the ESP. systemd-gpt-auto usually mounts it at /efi
+# (because /efi exists), not /boot/efi. Also check modules tree + /boot.
+find_live_boot_file() {
+  local name="$1" f
+  for f in \
+    "/boot/${name}" \
+    "/boot/${name}-"* \
+    "/boot/efi/${name}" \
+    "/boot/efi/EFI/BOOT/${name}" \
+    "/efi/${name}" \
+    "/efi/EFI/BOOT/${name}"; do
+    # shellcheck disable=SC2086
+    for hit in $f; do
+      if [[ -s "$hit" ]]; then
+        printf '%s\n' "$hit"
+        return 0
+      fi
+    done
+  done
+  if [[ "$name" == vmlinuz ]]; then
+    f="$(ls -1 /usr/lib/modules/*/vmlinuz 2>/dev/null | sort -V | tail -n1 || true)"
+    if [[ -s "$f" ]]; then
+      printf '%s\n' "$f"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_live_esp_mounted() {
+  findmnt -n /efi >/dev/null 2>&1 && return 0
+  findmnt -n /boot/efi >/dev/null 2>&1 && return 0
+  local disk p1
+  disk="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
+  [[ -n "$disk" ]] || return 1
+  disk="/dev/${disk}"
+  if [[ "$disk" == *[0-9] ]]; then
+    p1="${disk}p1"
+  else
+    p1="${disk}1"
+  fi
+  [[ -b "$p1" ]] || return 1
+  mkdir -p /efi
+  mount "$p1" /efi 2>/dev/null || return 1
+  echo "pertisk-install: mounted live ESP $p1 at /efi"
+}
+
+copy_kernel_to_target_boot() {
+  local mnt="$1" k i kver
+  mkdir -p "$mnt/boot"
+  ensure_live_esp_mounted || true
+  k="$(find_live_boot_file vmlinuz || true)"
+  i="$(find_live_boot_file initrd.img || true)"
+  [[ -n "$k" && -s "$k" ]] || {
+    echo "pertisk-install: cannot find live kernel (checked /boot /efi /boot/efi /usr/lib/modules)" >&2
+    ls -la /boot /efi /boot/efi /usr/lib/modules 2>/dev/null >&2 || true
+    die "no kernel to install — remount ESP or reflash USB"
+  }
+  kver=""
+  case "$k" in
+    */usr/lib/modules/*/vmlinuz) kver="$(basename "$(dirname "$k")")" ;;
+    */vmlinuz-*) kver="${k##*/vmlinuz-}" ;;
+    *) kver="$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1 || true)" ;;
   esac
-  # AMI Aptio on mini PCs often only auto-discovers "Windows Boot Manager"
-  # on internal NVMe — create that first and put it first in BootOrder.
-  if efibootmgr -c -d "$disk" -p "$part" -l '\EFI\Microsoft\Boot\bootmgfw.efi' \
-    -L 'Windows Boot Manager' >/dev/null 2>&1; then
-    win="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*Windows Boot Manager.*/\1/pi' | tail -n1)"
+  cp -fL "$k" "$mnt/boot/vmlinuz"
+  [[ -n "$kver" ]] && cp -fL "$k" "$mnt/boot/vmlinuz-${kver}"
+  if [[ -n "$i" && -s "$i" ]]; then
+    cp -fL "$i" "$mnt/boot/initrd.img"
+    [[ -n "$kver" ]] && cp -fL "$i" "$mnt/boot/initrd.img-${kver}"
   fi
-  if ! efibootmgr -c -d "$disk" -p "$part" -l "$loader" -L pertisk; then
-    echo "pertisk-install: efibootmgr could not create pertisk entry (WBM path may still work)" >&2
-  fi
-  num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
-  order=""
-  if [[ -n "${win:-}" ]]; then
-    order="$win"
-  fi
-  if [[ -n "${num:-}" ]]; then
-    order="${order:+$order,}$num"
-  fi
-  if [[ -n "$order" ]]; then
-    # Prefer Windows Boot Manager, then pertisk, then whatever else remains.
-    local rest
-    rest="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
-    if [[ -n "$rest" ]]; then
-      efibootmgr -o "${order},${rest}" >/dev/null 2>&1 || efibootmgr -o "$order" >/dev/null 2>&1 || true
-    else
-      efibootmgr -o "$order" >/dev/null 2>&1 || true
-    fi
-    # Next boot: Windows Boot Manager (AMI-friendly) if we have it.
-    if [[ -n "${win:-}" ]]; then
-      efibootmgr -n "$win" >/dev/null 2>&1 || true
-    elif [[ -n "${num:-}" ]]; then
-      efibootmgr -n "$num" >/dev/null 2>&1 || true
-    fi
-    echo "pertisk-install: UEFI BootOrder prefers Windows Boot Manager / pertisk on $disk p$part"
-  fi
-  efibootmgr -v 2>/dev/null | head -n 20 || true
+  echo "pertisk-install: kernel from $k → $mnt/boot/"
 }
 
 wipe_target_disk() {
@@ -371,21 +404,22 @@ install_uefi() {
 UUID=$uuid_root / ext4 defaults 0 1
 UUID=$uuid_esp /boot/efi vfat umask=0077 0 2
 EOF
-  # Kernel lives on the live USB ESP (/boot/efi). rsync --one-file-system skips it.
-  mkdir -p "$mnt/boot"
-  for f in vmlinuz initrd.img; do
-    if [[ -f "/boot/efi/${f}" ]]; then
-      cp -f "/boot/efi/${f}" "$mnt/boot/${f}"
-    elif [[ -f "/boot/efi/EFI/BOOT/${f}" ]]; then
-      cp -f "/boot/efi/EFI/BOOT/${f}" "$mnt/boot/${f}"
-    fi
-  done
+  # Kernel is on live ESP (/efi via gpt-auto) or /usr/lib/modules — not empty /boot.
+  copy_kernel_to_target_boot "$mnt"
   # Rebuild initrd inside the target so NVMe/SATA modules are present (live USB
   # MODULES=dep may have omitted them — boots then die with "can't lookup blockdev").
   if [[ -x "$mnt/usr/sbin/update-initramfs" ]] || chroot "$mnt" command -v update-initramfs >/dev/null 2>&1; then
     echo "pertisk-install: rebuilding initramfs for NVMe/SATA boot"
     chroot "$mnt" update-initramfs -u -k all || chroot "$mnt" update-initramfs -c -k all || true
   fi
+  # If update-initramfs created initrd but copy lacked one, pull it now.
+  if [[ ! -s "$mnt/boot/initrd.img" ]]; then
+    local gen
+    gen="$(ls -1 "$mnt/boot"/initrd.img-* 2>/dev/null | sort -V | tail -n1 || true)"
+    [[ -n "$gen" ]] && cp -f "$gen" "$mnt/boot/initrd.img"
+  fi
+  [[ -s "$mnt/boot/vmlinuz" ]] || die "target /boot/vmlinuz still missing after copy"
+  [[ -s "$mnt/boot/initrd.img" ]] || die "target /boot/initrd.img still missing — update-initramfs failed"
   chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
   # Hard-verify removable + AMI paths before we claim success.
   local bootname=BOOTX64.EFI
@@ -402,13 +436,19 @@ EOF
     fi
   done
   sync
+  # Force ESP type before NVRAM registration.
+  if command -v sgdisk >/dev/null; then
+    sgdisk -t 1:ef00 "$DISK" >/dev/null 2>&1 || true
+  fi
+  parted -s "$DISK" set 1 esp on >/dev/null 2>&1 || true
   register_uefi_boot "$DISK" 1
   rm -f "$mnt/var/lib/pertisk/.firstboot-done"
   touch "$mnt/var/lib/pertisk/.installed-to-disk"
   umount "$mnt/dev/pts" "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/boot/efi" "$mnt"
   echo "pertisk-install: UEFI install done on $DISK"
-  echo "pertisk-install: UNPLUG the USB stick, then boot:"
-  echo "  BIOS → Boot → Windows Boot Manager   (or pertisk)"
+  echo "pertisk-install: POWER OFF → UNPLUG USB → power on"
+  echo "pertisk-install: BIOS Boot → Windows Boot Manager (not the USB entry)"
+  echo "pertisk-install: if still BIOS only:  pertisk-fix-nvme-boot $DISK"
 }
 
 install_rockchip() {
@@ -522,8 +562,8 @@ if [[ "$family" == rockchip ]]; then
   echo "Power off, remove the SD card, then boot from $DISK (SPI + NVMe)."
   echo "If it does not start, put the SD back in."
 else
-  echo "UNPLUG USB, then reboot."
-  echo "BIOS Boot → Windows Boot Manager  (or pertisk)."
-  echo "If BIOS finds nothing:  pertisk-fix-nvme-boot ${DISK}"
+  echo "POWER OFF → UNPLUG USB → power on."
+  echo "BIOS Boot → Windows Boot Manager (not USB)."
+  echo "If still BIOS only:  pertisk-fix-nvme-boot ${DISK}"
 fi
 echo "UI: http://<host>:7480/  (admin password in /etc/pertisk/admin)"

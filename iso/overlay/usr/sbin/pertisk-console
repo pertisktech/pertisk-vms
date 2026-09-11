@@ -11,6 +11,7 @@ echo "  Install to NVMe (wipes disk):"
 echo "    pertisk-install --auto"
 echo "  If BIOS finds no boot entry after install:"
 echo "    pertisk-fix-nvme-boot /dev/nvme0n1"
+echo "  Then power OFF, UNPLUG USB, BIOS → Windows Boot Manager"
 echo
 ip -br a 2>/dev/null || ip -br link 2>/dev/null || true
 echo

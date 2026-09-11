@@ -1,0 +1,130 @@
+#!/bin/bash
+# Register NVMe/SATA ESP in EFI NVRAM so AMI Aptio actually boots it.
+# Usage: pertisk-uefi-register /dev/nvme0n1 [partnum]
+# Assumes ESP already has EFI/BOOT/BOOTX64.EFI and EFI/Microsoft/Boot/bootmgfw.efi.
+set -euo pipefail
+
+die() { echo "pertisk-uefi-register: $*" >&2; exit 1; }
+
+DISK="${1:-}"
+PART="${2:-1}"
+[[ -n "$DISK" && -b "$DISK" ]] || die "usage: pertisk-uefi-register /dev/nvme0n1 [1]"
+[[ -d /sys/firmware/efi ]] || die "not in UEFI mode (legacy/CSM?) — enable UEFI boot"
+
+DISK="$(readlink -f "$DISK")"
+case "$DISK" in
+  *[0-9]) P1="${DISK}p${PART}"; P2="${DISK}p2" ;;
+  *) P1="${DISK}${PART}"; P2="${DISK}2" ;;
+esac
+[[ -b "$P1" ]] || die "ESP partition missing: $P1"
+
+# Force GPT type + flags AMI expects for an EFI System Partition.
+if command -v sgdisk >/dev/null; then
+  sgdisk -t "${PART}:ef00" "$DISK" >/dev/null 2>&1 || true
+fi
+if command -v parted >/dev/null; then
+  parted -s "$DISK" set "$PART" esp on >/dev/null 2>&1 || true
+  parted -s "$DISK" set "$PART" boot on >/dev/null 2>&1 || true
+fi
+partprobe "$DISK" >/dev/null 2>&1 || true
+udevadm settle --timeout=5 >/dev/null 2>&1 || true
+
+esp_mnt="$(mktemp -d /tmp/pertisk-esp.XXXXXX)"
+cleanup() { umount "$esp_mnt" >/dev/null 2>&1 || true; rmdir "$esp_mnt" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+mount "$P1" "$esp_mnt"
+
+bootname=BOOTX64.EFI
+case "$(uname -m)" in aarch64|arm64) bootname=BOOTAA64.EFI ;; esac
+
+# Ensure removable + AMI Windows paths exist (copy from whichever efi we have).
+mkdir -p "$esp_mnt/EFI/BOOT" "$esp_mnt/EFI/Microsoft/Boot" "$esp_mnt/EFI/pertisk"
+efi=""
+for f in \
+  "$esp_mnt/EFI/BOOT/$bootname" \
+  "$esp_mnt/EFI/BOOT/grubx64.efi" \
+  "$esp_mnt/EFI/Microsoft/Boot/bootmgfw.efi" \
+  "$esp_mnt/EFI/pertisk/$bootname" \
+  "$esp_mnt/EFI/debian/grubx64.efi"; do
+  if [[ -s "$f" ]]; then
+    efi="$f"
+    break
+  fi
+done
+[[ -n "$efi" ]] || die "no .EFI on $P1 — run pertisk-install or pertisk-esp-boot first"
+cp -f "$efi" "$esp_mnt/EFI/BOOT/$bootname"
+cp -f "$efi" "$esp_mnt/EFI/BOOT/bootx64.efi" 2>/dev/null || true
+cp -f "$efi" "$esp_mnt/EFI/Microsoft/Boot/bootmgfw.efi"
+cp -f "$efi" "$esp_mnt/EFI/Microsoft/Boot/$bootname"
+cp -f "$efi" "$esp_mnt/EFI/Microsoft/Boot/bootx64.efi" 2>/dev/null || true
+cp -f "$efi" "$esp_mnt/EFI/pertisk/$bootname"
+# Kernel/initrd must sit beside BOOTX64 for the embedded grub.cfg.
+for need in vmlinuz initrd.img; do
+  if [[ ! -s "$esp_mnt/EFI/BOOT/$need" ]]; then
+    if [[ -s "$esp_mnt/$need" ]]; then
+      cp -f "$esp_mnt/$need" "$esp_mnt/EFI/BOOT/$need"
+    elif [[ -s "/boot/$need" ]]; then
+      cp -f "/boot/$need" "$esp_mnt/EFI/BOOT/$need"
+    fi
+  fi
+done
+sync
+for need in \
+  "$esp_mnt/EFI/BOOT/$bootname" \
+  "$esp_mnt/EFI/Microsoft/Boot/bootmgfw.efi"; do
+  [[ -s "$need" ]] || die "missing $need after copy"
+done
+umount "$esp_mnt"
+trap - EXIT
+rmdir "$esp_mnt" >/dev/null 2>&1 || true
+
+part_uuid="$(blkid -s PARTUUID -o value "$P1" 2>/dev/null || true)"
+echo "pertisk-uefi-register: ESP $P1 PARTUUID=${part_uuid:-unknown}"
+
+if [[ -r /sys/firmware/efi/efivars ]]; then
+  if command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'; then
+    echo "pertisk-uefi-register: WARNING Secure Boot is ON — disable it in BIOS or boot will fail" >&2
+  fi
+fi
+
+command -v efibootmgr >/dev/null || die "efibootmgr missing"
+# Drop every Boot#### we manage (and USB leftovers named similarly).
+while read -r num; do
+  [[ -n "$num" ]] || continue
+  efibootmgr -b "$num" -B >/dev/null 2>&1 || true
+done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|GRUB\|Windows Boot Manager\|UEFI OS\).*/\1/pi')
+
+loader_boot="\\EFI\\BOOT\\${bootname}"
+loader_wbm='\\EFI\\Microsoft\\Boot\\bootmgfw.efi'
+
+# Create Windows Boot Manager first — many AMI boards only auto-list this name.
+efibootmgr -c -d "$DISK" -p "$PART" -l "$loader_wbm" -L 'Windows Boot Manager' \
+  || die "efibootmgr failed to create Windows Boot Manager on $DISK p$PART"
+efibootmgr -c -d "$DISK" -p "$PART" -l "$loader_boot" -L pertisk \
+  || echo "pertisk-uefi-register: pertisk entry failed (WBM may still boot)" >&2
+
+win="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*Windows Boot Manager.*/\1/pi' | tail -n1)"
+num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
+
+# CRITICAL: BootOrder must NOT keep USB/stale entries ahead of NVMe.
+# Appending old BootOrder is why unplugging USB drops straight into BIOS setup.
+order=""
+[[ -n "${win:-}" ]] && order="$win"
+[[ -n "${num:-}" ]] && order="${order:+$order,}$num"
+[[ -n "$order" ]] || die "no boot entries created"
+efibootmgr -o "$order" >/dev/null 2>&1 || die "failed to set BootOrder=$order"
+if [[ -n "${win:-}" ]]; then
+  efibootmgr -n "$win" >/dev/null 2>&1 || true
+elif [[ -n "${num:-}" ]]; then
+  efibootmgr -n "$num" >/dev/null 2>&1 || true
+fi
+
+echo "pertisk-uefi-register: BootOrder=$order (NVMe only)"
+efibootmgr -v 2>/dev/null || efibootmgr
+if [[ -n "$part_uuid" ]]; then
+  if ! efibootmgr -v 2>/dev/null | grep -qi "$part_uuid"; then
+    echo "pertisk-uefi-register: WARNING Boot entries may not reference ESP PARTUUID $part_uuid" >&2
+  fi
+fi
+echo "pertisk-uefi-register: done — power off, UNPLUG USB, boot Windows Boot Manager"
+exit 0

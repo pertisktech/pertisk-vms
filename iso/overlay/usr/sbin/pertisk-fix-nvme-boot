@@ -1,12 +1,11 @@
 #!/bin/bash
-# Repair NVMe UEFI boot from a live USB. AMI mini PCs ignore an ESP that
-# only has EFI/debian and NVRAM still pointing at the USB.
+# Repair NVMe UEFI boot from a live USB.
 # Usage: pertisk-fix-nvme-boot [/dev/nvme0n1]
 set -euo pipefail
 
 die() { echo "pertisk-fix-nvme-boot: $*" >&2; exit 1; }
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
-[[ -d /sys/firmware/efi ]] || die "boot this USB in UEFI mode (not legacy)"
+[[ -d /sys/firmware/efi ]] || die "boot this USB in UEFI mode (not legacy/CSM)"
 
 live="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -n1 || true)"
 DISK="${1:-}"
@@ -20,8 +19,7 @@ if [[ -z "$DISK" ]]; then
   DISK="$(lsblk -dpn -o NAME,TRAN | awk '$2!="usb" && $2!="mmc" && $1 ~ /nvme|sd/ {print $1; exit}')"
 fi
 [[ -n "$DISK" && -b "$DISK" ]] || die "no NVMe found (pass /dev/nvme0n1)"
-DISK="${DISK#/dev/}"
-DISK="/dev/${DISK}"
+DISK="$(readlink -f "/dev/${DISK#/dev/}")"
 [[ "$(basename "$DISK")" != "$live" ]] || die "$DISK is the USB; pass the NVMe"
 
 if [[ "$DISK" == *[0-9] ]]; then
@@ -31,7 +29,16 @@ else
   p1="${DISK}1"
   p2="${DISK}2"
 fi
-[[ -b "$p1" && -b "$p2" ]] || die "expected $p1 (ESP) and $p2 (root)"
+[[ -b "$p1" && -b "$p2" ]] || die "expected $p1 (ESP) and $p2 (root) — run pertisk-install --auto first"
+
+# Force ESP GPT type before mounting.
+if command -v sgdisk >/dev/null; then
+  sgdisk -t 1:ef00 "$DISK" >/dev/null 2>&1 || true
+fi
+parted -s "$DISK" set 1 esp on >/dev/null 2>&1 || true
+parted -s "$DISK" set 1 boot on >/dev/null 2>&1 || true
+partprobe "$DISK" >/dev/null 2>&1 || true
+udevadm settle --timeout=5 >/dev/null 2>&1 || true
 
 mnt=/mnt/pertisk-fix-nvme
 mkdir -p "$mnt"
@@ -51,7 +58,6 @@ trap cleanup EXIT
 
 echo "pertisk-fix-nvme-boot: ESP $p1  root $p2"
 
-# Ensure fstab uses UUID=/ so GRUB embeds root=UUID=… (avoids USB+NVMe LABEL clash).
 root_uuid="$(blkid -s UUID -o value "$p2" || true)"
 esp_uuid="$(blkid -s UUID -o value "$p1" || true)"
 if [[ -n "$root_uuid" ]]; then
@@ -61,77 +67,104 @@ ${esp_uuid:+UUID=$esp_uuid /boot/efi vfat umask=0077 0 2}
 EOF
 fi
 
-# Force storage modules into the installed system if an older image lacked them.
-mkdir -p "$mnt/etc/initramfs-tools" "$mnt/etc/initramfs-tools/conf.d"
-if [[ -f /etc/initramfs-tools/modules ]]; then
-  cp -f /etc/initramfs-tools/modules "$mnt/etc/initramfs-tools/modules"
-fi
-if [[ -f /etc/initramfs-tools/conf.d/pertisk-storage.conf ]]; then
+mkdir -p "$mnt/etc/initramfs-tools" "$mnt/etc/initramfs-tools/conf.d" "$mnt/usr/sbin"
+for f in modules; do
+  [[ -f /etc/initramfs-tools/$f ]] && cp -f "/etc/initramfs-tools/$f" "$mnt/etc/initramfs-tools/$f"
+done
+[[ -f /etc/initramfs-tools/conf.d/pertisk-storage.conf ]] && \
   cp -f /etc/initramfs-tools/conf.d/pertisk-storage.conf \
     "$mnt/etc/initramfs-tools/conf.d/pertisk-storage.conf"
-fi
-if [[ -x /usr/sbin/pertisk-esp-boot ]]; then
-  cp -f /usr/sbin/pertisk-esp-boot "$mnt/usr/sbin/pertisk-esp-boot"
-fi
-
-echo "pertisk-fix-nvme-boot: rebuilding initramfs"
-chroot "$mnt" update-initramfs -u -k all || chroot "$mnt" update-initramfs -c -k all || true
-
-if [[ -x "$mnt/usr/sbin/pertisk-esp-boot" ]]; then
-  chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
-elif command -v grub-install >/dev/null; then
-  chroot "$mnt" grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-    --bootloader-id=BOOT --removable --no-nvram --recheck || \
-    grub-install --target=x86_64-efi --efi-directory="$mnt/boot/efi" \
-      --boot-directory="$mnt/boot" --bootloader-id=BOOT --removable --no-nvram --recheck "$DISK"
-else
-  die "no pertisk-esp-boot or grub-install on $p2"
-fi
-
-esp="$mnt/boot/efi"
-mkdir -p "$esp/EFI/BOOT" "$esp/EFI/Microsoft/Boot"
-efi=""
-for f in "$esp/EFI/BOOT/BOOTX64.EFI" "$esp/EFI/BOOT/grubx64.efi" \
-         "$esp/EFI/debian/grubx64.efi" "$esp/EFI/pertisk/BOOTX64.EFI"; do
-  if [[ -f "$f" ]]; then
-    efi="$f"
-    break
-  fi
+for f in pertisk-esp-boot pertisk-uefi-register; do
+  [[ -x /usr/sbin/$f ]] && cp -f "/usr/sbin/$f" "$mnt/usr/sbin/$f" && chmod 755 "$mnt/usr/sbin/$f"
 done
-[[ -n "$efi" ]] || die "no .EFI on $p1 after install"
-cp -f "$efi" "$esp/EFI/BOOT/BOOTX64.EFI"
-cp -f "$efi" "$esp/EFI/Microsoft/Boot/bootmgfw.efi"
-cp -f "$efi" "$esp/EFI/Microsoft/Boot/BOOTX64.EFI"
-sync
-ls -la "$esp/EFI/BOOT" "$esp/EFI/Microsoft/Boot"
 
-if command -v efibootmgr >/dev/null; then
-  while read -r num; do
-    [[ -n "$num" ]] || continue
-    efibootmgr -b "$num" -B >/dev/null 2>&1 || true
-  done < <(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*\(pertisk\|debian\|ubuntu\|grub\|Windows Boot Manager\).*/\1/pi')
-  # AMI: Windows Boot Manager first, then pertisk.
-  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\Microsoft\Boot\bootmgfw.efi' -L 'Windows Boot Manager' || true
-  efibootmgr -c -d "$DISK" -p 1 -l '\EFI\BOOT\BOOTX64.EFI' -L pertisk || true
-  win="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*Windows Boot Manager.*/\1/pi' | tail -n1)"
-  num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*pertisk.*/\1/p' | tail -n1)"
-  order=""
-  [[ -n "${win:-}" ]] && order="$win"
-  [[ -n "${num:-}" ]] && order="${order:+$order,}$num"
-  if [[ -n "$order" ]]; then
-    rest="$(efibootmgr 2>/dev/null | awk -F': *' '/BootOrder/ {print $2}')"
-    efibootmgr -o "${order}${rest:+,$rest}" >/dev/null 2>&1 || efibootmgr -o "$order" >/dev/null 2>&1 || true
-    if [[ -n "${win:-}" ]]; then
-      efibootmgr -n "$win" >/dev/null 2>&1 || true
-    elif [[ -n "${num:-}" ]]; then
-      efibootmgr -n "$num" >/dev/null 2>&1 || true
+# Prefer live USB kernel/initrd onto target /boot if missing (old installs).
+# Live ESP is usually at /efi (gpt-auto), not /boot/efi.
+mkdir -p "$mnt/boot"
+if ! findmnt -n /efi >/dev/null 2>&1 && ! findmnt -n /boot/efi >/dev/null 2>&1; then
+  live_disk="/dev/${live}"
+  if [[ -n "$live" && -b "$live_disk" ]]; then
+    if [[ "$live_disk" == *[0-9] ]]; then live_esp="${live_disk}p1"; else live_esp="${live_disk}1"; fi
+    if [[ -b "$live_esp" ]]; then
+      mkdir -p /efi
+      mount "$live_esp" /efi 2>/dev/null || true
     fi
   fi
-  efibootmgr -v || true
+fi
+for f in vmlinuz initrd.img; do
+  if [[ -s "$mnt/boot/$f" ]]; then
+    continue
+  fi
+  for src in \
+    "/boot/$f" \
+    "/efi/$f" \
+    "/efi/EFI/BOOT/$f" \
+    "/boot/efi/$f" \
+    "/boot/efi/EFI/BOOT/$f"; do
+    if [[ -s "$src" ]]; then
+      cp -fL "$src" "$mnt/boot/$f"
+      break
+    fi
+  done
+done
+if [[ ! -s "$mnt/boot/vmlinuz" ]]; then
+  k="$(ls -1 /usr/lib/modules/*/vmlinuz 2>/dev/null | sort -V | tail -n1 || true)"
+  [[ -s "$k" ]] || die "no live kernel in /boot /efi /usr/lib/modules"
+  kver="$(basename "$(dirname "$k")")"
+  cp -fL "$k" "$mnt/boot/vmlinuz"
+  cp -fL "$k" "$mnt/boot/vmlinuz-${kver}"
+fi
+if [[ ! -s "$mnt/boot/initrd.img" ]]; then
+  # Will try update-initramfs below; still stage versioned if present on live.
+  for src in /boot/initrd.img-* /efi/initrd.img /efi/EFI/BOOT/initrd.img; do
+    if [[ -s "$src" ]]; then
+      cp -fL "$src" "$mnt/boot/initrd.img"
+      break
+    fi
+  done
 fi
 
-echo "pertisk-fix-nvme-boot: done."
-echo "  1) Power off and UNPLUG USB"
-echo "  2) BIOS Boot → Windows Boot Manager  (or pertisk)"
-echo "If BIOS still says no device: disable Secure Boot / CSM legacy, then retry."
+echo "pertisk-fix-nvme-boot: rebuilding initramfs + ESP bootloader"
+chroot "$mnt" update-initramfs -u -k all || chroot "$mnt" update-initramfs -c -k all || true
+if [[ ! -s "$mnt/boot/initrd.img" ]]; then
+  gen="$(ls -1 "$mnt/boot"/initrd.img-* 2>/dev/null | sort -V | tail -n1 || true)"
+  [[ -n "$gen" ]] && cp -f "$gen" "$mnt/boot/initrd.img"
+fi
+[[ -s "$mnt/boot/vmlinuz" ]] || die "target /boot/vmlinuz missing"
+[[ -s "$mnt/boot/initrd.img" ]] || die "target /boot/initrd.img missing after update-initramfs"
+if [[ -x "$mnt/usr/sbin/pertisk-esp-boot" ]]; then
+  chroot "$mnt" /usr/sbin/pertisk-esp-boot /boot/efi
+else
+  die "no pertisk-esp-boot on $p2"
+fi
+
+# Verify ESP contents before NVRAM.
+for need in \
+  "$mnt/boot/efi/EFI/BOOT/BOOTX64.EFI" \
+  "$mnt/boot/efi/EFI/BOOT/vmlinuz" \
+  "$mnt/boot/efi/EFI/BOOT/initrd.img" \
+  "$mnt/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi"; do
+  [[ -s "$need" ]] || die "missing $need after esp-boot"
+done
+sync
+ls -la "$mnt/boot/efi/EFI/BOOT" "$mnt/boot/efi/EFI/Microsoft/Boot"
+
+# Unmount before register remounts ESP.
+cleanup
+trap - EXIT
+
+if [[ -x /usr/sbin/pertisk-uefi-register ]]; then
+  /usr/sbin/pertisk-uefi-register "$DISK" 1
+else
+  die "pertisk-uefi-register missing"
+fi
+
+echo
+echo "════════════════════════════════════════════════════"
+echo "  Boot repair finished for $DISK"
+echo "  1) Power OFF (not reboot)"
+echo "  2) UNPLUG this USB stick"
+echo "  3) Power ON → BIOS Boot → Windows Boot Manager"
+echo "  Disable Secure Boot / CSM Legacy if still stuck"
+echo "════════════════════════════════════════════════════"
 exit 0

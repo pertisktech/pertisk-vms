@@ -76,7 +76,8 @@ else
 fi
 chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot \
   /usr/sbin/pertisk-install /usr/sbin/pertisk-host-bridge /usr/sbin/pertisk-bootfix \
-  /usr/sbin/pertisk-esp-boot /usr/sbin/pertisk-net
+  /usr/sbin/pertisk-esp-boot /usr/sbin/pertisk-net \
+  /usr/sbin/pertisk-console /usr/sbin/pertisk-fix-nvme-boot /usr/sbin/pertisk-uefi-register
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 

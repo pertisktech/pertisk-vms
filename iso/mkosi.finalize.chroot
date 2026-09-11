@@ -15,5 +15,30 @@ systemctl disable NetworkManager.service || true
 systemctl disable NetworkManager-wait-online.service || true
 
 /usr/sbin/pertisk-esp-boot /efi
+
+# Keep kernel+initrd on ext4 /boot. mkosi CopyFiles moves /efi → ESP only;
+# systemd-gpt-auto then mounts that ESP at /efi (not /boot/efi). Without
+# these files, pertisk-install chroot → "no kernel in /boot or ESP".
+mkdir -p /boot
+kver="$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1 || true)"
+if [[ -n "$kver" ]]; then
+  if [[ -s /efi/vmlinuz ]]; then
+    cp -f /efi/vmlinuz "/boot/vmlinuz-${kver}"
+    cp -f /efi/vmlinuz /boot/vmlinuz
+  elif [[ -s "/usr/lib/modules/${kver}/vmlinuz" ]]; then
+    cp -f "/usr/lib/modules/${kver}/vmlinuz" "/boot/vmlinuz-${kver}"
+    cp -f "/usr/lib/modules/${kver}/vmlinuz" /boot/vmlinuz
+  fi
+  if [[ -s /efi/initrd.img ]]; then
+    cp -f /efi/initrd.img "/boot/initrd.img-${kver}"
+    cp -f /efi/initrd.img /boot/initrd.img
+  fi
+  ln -sfn "vmlinuz-${kver}" /vmlinuz
+  ln -sfn "initrd.img-${kver}" /initrd.img 2>/dev/null || true
+fi
+[[ -s /boot/vmlinuz ]] || { echo "mkosi.finalize: /boot/vmlinuz missing after esp-boot" >&2; ls -la /boot /efi >&2; exit 1; }
+[[ -s /boot/initrd.img ]] || { echo "mkosi.finalize: /boot/initrd.img missing after esp-boot" >&2; exit 1; }
+
+mkdir -p /boot/efi
 cp -a /efi/. /boot/efi/ || true
 exit 0

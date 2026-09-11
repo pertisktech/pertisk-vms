@@ -25,19 +25,41 @@ fi
 if [[ -z "$k" || ! -f "$k" ]]; then
   k="$(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v '\.old$' | sort -V | tail -n1 || true)"
 fi
-# mkosi keeps vmlinuz on the FAT ESP, not ext4 /boot.
+# Live USB: systemd-gpt-auto mounts ESP at /efi (dir exists) more often than /boot/efi.
 if [[ -z "$k" || ! -f "$k" ]]; then
-  for cand in /boot/efi/vmlinuz /boot/efi/EFI/BOOT/vmlinuz /efi/vmlinuz /efi/EFI/BOOT/vmlinuz; do
+  for cand in \
+    /boot/efi/vmlinuz /boot/efi/EFI/BOOT/vmlinuz \
+    /efi/vmlinuz /efi/EFI/BOOT/vmlinuz \
+    /efi/EFI/BOOT/VMLINUZ; do
     if [[ -f "$cand" ]]; then
       k="$cand"
       break
     fi
   done
 fi
-[[ -n "$k" && -f "$k" ]] || { echo "pertisk-esp-boot: no kernel in /boot or ESP" >&2; ls -la /boot /boot/efi /efi 2>/dev/null >&2 || true; exit 1; }
+# Debian Trixie+: linux-image ships the kernel under /usr/lib/modules/<ver>/vmlinuz.
+if [[ -z "$k" || ! -f "$k" ]]; then
+  k="$(ls -1 /usr/lib/modules/*/vmlinuz 2>/dev/null | sort -V | tail -n1 || true)"
+fi
+[[ -n "$k" && -f "$k" ]] || {
+  echo "pertisk-esp-boot: no kernel in /boot or ESP" >&2
+  ls -la /boot /boot/efi /efi /usr/lib/modules 2>/dev/null >&2 || true
+  exit 1
+}
 
-kver="${k##*/}"
-kver="${kver#vmlinuz-}"
+kver=""
+case "$k" in
+  */usr/lib/modules/*/vmlinuz)
+    kver="$(basename "$(dirname "$k")")"
+    ;;
+  *)
+    kver="${k##*/}"
+    kver="${kver#vmlinuz-}"
+    if [[ "$kver" == "vmlinuz" || -z "$kver" ]]; then
+      kver="$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1 || true)"
+    fi
+    ;;
+esac
 
 i=""
 find_initrd() {
@@ -53,7 +75,9 @@ find_initrd() {
     i="/boot/initrd.img-${kver}"
   fi
   if [[ -z "$i" || ! -f "$i" ]]; then
-    for cand in /boot/efi/initrd.img /boot/efi/EFI/BOOT/initrd.img /efi/initrd.img /efi/EFI/BOOT/initrd.img; do
+    for cand in \
+      /boot/efi/initrd.img /boot/efi/EFI/BOOT/initrd.img \
+      /efi/initrd.img /efi/EFI/BOOT/initrd.img; do
       if [[ -f "$cand" ]]; then
         i="$cand"
         break
