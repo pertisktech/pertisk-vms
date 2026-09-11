@@ -666,6 +666,11 @@ impl Service {
                 let user_i = user.clone();
                 let password_i = ci.password.clone();
                 let keys_i = ci.ssh_authorized_keys.clone();
+                let net = self.cloudinit_network_for(new_id);
+                let mac_i = net.as_ref().and_then(|n| n.mac.clone());
+                let ipv4_i = net.as_ref().and_then(|n| n.ipv4.clone());
+                let gw_i = net.as_ref().and_then(|n| n.gateway.clone());
+                let prefix_i = net.as_ref().and_then(|n| n.prefix);
                 tokio::task::spawn_blocking(move || {
                     pertisk_storage::inject_guest_identity(
                         &path,
@@ -677,6 +682,10 @@ impl Service {
                                 .map(str::trim)
                                 .filter(|s| !s.is_empty()),
                             ssh_authorized_keys: &keys_i,
+                            mac: mac_i.as_deref(),
+                            ipv4: ipv4_i.as_deref(),
+                            gateway: gw_i.as_deref(),
+                            prefix: prefix_i,
                         },
                     )
                 })
@@ -1448,12 +1457,17 @@ impl Service {
     pub fn attach_nic(&self, vm_id: VmId, req: AttachNicRequest) -> Result<VmRecord, DaemonError> {
         let mut vm = self.store.get(vm_id)?;
         self.require_stopped(&vm, "attach nic")?;
-        let used_ips: Vec<String> = self
-            .store
-            .list()?
-            .into_iter()
-            .flat_map(|guest| guest.spec.nets)
-            .filter_map(|nic| nic.ip)
+        let guests = self.store.list()?;
+        let used_ips: Vec<String> = guests
+            .iter()
+            .flat_map(|guest| guest.spec.nets.iter())
+            .filter_map(|nic| nic.ip.clone())
+            .collect();
+        let used_macs: Vec<String> = guests
+            .iter()
+            .filter(|guest| guest.id != vm_id)
+            .flat_map(|guest| guest.spec.nets.iter())
+            .filter_map(|nic| nic.mac.clone())
             .collect();
         let nic_index = u8::try_from(vm.spec.nets.len()).unwrap_or(0);
         let nic = self.networks.allocate_nic(
@@ -1462,6 +1476,7 @@ impl Service {
             nic_index,
             req.ip.as_deref(),
             &used_ips,
+            &used_macs,
         )?;
         vm.spec.nets.push(nic);
         self.store.upsert(vm.clone())?;

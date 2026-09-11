@@ -643,7 +643,7 @@ pub struct CloudInitIsoRequest {
     /// Raw `#cloud-config` body. When set, hostname/user/password/keys are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub userdata: Option<String>,
-    /// Guest NIC for cloud-init `network-config` (IPv4 DHCP/static + IPv6 SLAAC/DHCPv6).
+    /// Guest NIC for cloud-init `network-config` (IPv4 DHCP/static + IPv6 SLAAC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<CloudInitNetwork>,
 }

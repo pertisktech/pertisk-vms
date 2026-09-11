@@ -185,6 +185,7 @@ impl NetworkPool {
         nic_index: u8,
         requested_ip: Option<&str>,
         used_ips: &[String],
+        used_macs: &[String],
     ) -> Result<NetSpec> {
         let network = self.get(network_id)?;
         let tap = tap_name(vm_id, nic_index);
@@ -228,7 +229,7 @@ impl NetworkPool {
         let spec = NetSpec {
             network_id: Some(network_id),
             tap: Some(tap),
-            mac: Some(guest_mac(vm_id, nic_index)),
+            mac: Some(unique_guest_mac(vm_id, nic_index, used_macs)),
             ip,
             ipv6: None,
         };
@@ -334,6 +335,43 @@ pub fn guest_mac(vm_id: VmId, nic_index: u8) -> String {
     )
 }
 
+/// Skip MACs already on other guests. Same VM ID (or 24-bit wrap) would otherwise
+/// share a DHCP lease and the same SLAAC address, and DAD would drop SSH.
+fn unique_guest_mac(vm_id: VmId, nic_index: u8, used_macs: &[String]) -> String {
+    let used: std::collections::HashSet<String> = used_macs
+        .iter()
+        .filter_map(|mac| host::normalize_mac(mac))
+        .collect();
+    let mut mac = guest_mac(vm_id, nic_index);
+    for _ in 0..(1 << 20) {
+        let key = host::normalize_mac(&mac).unwrap_or_else(|| mac.clone());
+        if !used.contains(&key) {
+            return mac;
+        }
+        mac = bump_qemu_mac(&mac);
+    }
+    mac
+}
+
+fn bump_qemu_mac(mac: &str) -> String {
+    let hex: String = mac.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let mut bytes = [0u8; 6];
+    for (i, chunk) in hex.as_bytes().chunks(2).take(6).enumerate() {
+        bytes[i] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or("00"), 16).unwrap_or(0);
+    }
+    bytes[0] = 0x52;
+    bytes[1] = 0x54;
+    bytes[2] = 0x00;
+    let mut tail = u32::from(bytes[3]) << 16 | u32::from(bytes[4]) << 8 | u32::from(bytes[5]);
+    tail = (tail + 1) & 0x00ff_ffff;
+    format!(
+        "52:54:00:{:02x}:{:02x}:{:02x}",
+        (tail >> 16) & 0xff,
+        (tail >> 8) & 0xff,
+        tail & 0xff
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,11 +402,18 @@ mod tests {
             })
             .unwrap();
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[]).unwrap();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[]).unwrap();
         assert!(nic.tap.unwrap().starts_with('p'));
         assert_eq!(nic.ip.as_deref(), Some("10.88.0.2"));
         let nic2 = pool
-            .allocate_nic(net.id, vm, 1, None, &[nic.ip.clone().unwrap()])
+            .allocate_nic(
+                net.id,
+                vm,
+                1,
+                None,
+                &[nic.ip.clone().unwrap()],
+                &[nic.mac.clone().unwrap()],
+            )
             .unwrap();
         assert_eq!(nic2.ip.as_deref(), Some("10.88.0.3"));
     }
@@ -391,7 +436,36 @@ mod tests {
         assert_eq!(net.mode, pertisk_types::NetworkMode::Bridge);
         assert_eq!(net.bridge, "br0");
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[]).unwrap();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[]).unwrap();
         assert!(nic.ip.is_none());
+    }
+
+    #[test]
+    fn mac_avoids_duplicate_when_vm_id_wraps_24bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = NetworkPool::open(dir.path(), false).unwrap();
+        let net = pool
+            .create(CreateNetworkRequest {
+                name: "lan".into(),
+                cidr: "10.1.1.0/24".into(),
+                gateway: None,
+                bridge: Some("br0".into()),
+                dhcp: false,
+                isolate: false,
+                mode: pertisk_types::NetworkMode::Bridge,
+            })
+            .unwrap();
+        let a: VmId = "101".parse().unwrap();
+        let b: VmId = "16777317".parse().unwrap();
+        assert_eq!(guest_mac(a, 0), guest_mac(b, 0));
+        let nic_a = pool.allocate_nic(net.id, a, 0, None, &[], &[]).unwrap();
+        let nic_b = pool
+            .allocate_nic(net.id, b, 0, None, &[], &[nic_a.mac.clone().unwrap()])
+            .unwrap();
+        assert_eq!(nic_a.mac.as_deref(), Some("52:54:00:00:00:65"));
+        assert_ne!(
+            nic_a.mac, nic_b.mac,
+            "duplicate MAC would share DHCP + SLAAC"
+        );
     }
 }

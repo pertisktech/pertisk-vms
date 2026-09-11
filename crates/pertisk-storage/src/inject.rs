@@ -13,6 +13,10 @@ pub struct GuestIdentity<'a> {
     pub user: &'a str,
     pub password: Option<&'a str>,
     pub ssh_authorized_keys: &'a [String],
+    pub mac: Option<&'a str>,
+    pub ipv4: Option<&'a str>,
+    pub gateway: Option<&'a str>,
+    pub prefix: Option<u8>,
 }
 
 /// No-op for tiny test images. On a real cloud disk, mounts the root FS and
@@ -34,6 +38,10 @@ pub fn inject_guest_identity(disk: &Path, id: &GuestIdentity<'_>) -> Result<()> 
         user: id.user,
         password: id.password,
         ssh_authorized_keys: &keys,
+        mac: id.mac,
+        ipv4: id.ipv4,
+        gateway: id.gateway,
+        prefix: id.prefix,
     };
     let loopdev = losetup(disk)?;
     let result = inject_on_loop(&loopdev, &id);
@@ -204,9 +212,14 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
             user: &user,
             password: id.password,
             ssh_authorized_keys: id.ssh_authorized_keys,
+            mac: id.mac,
+            ipv4: id.ipv4,
+            gateway: id.gateway,
+            prefix: id.prefix,
         },
         &hostname,
     )?;
+    write_guest_network(root, id)?;
     if let Some(password) = id.password.filter(|p| !p.is_empty()) {
         let hash = hash_password(password)?;
         set_shadow_hash(root, &user, &hash)?;
@@ -474,8 +487,161 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
     let _ = fs::create_dir_all(&cfg);
     let _ = fs::write(
         cfg.join("99-pertisk.cfg"),
-        "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\n",
+        "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nnetwork: {config: disabled}\n",
     );
+    Ok(())
+}
+
+/// Let the guest OS own the NIC (same as an ISO install). Cloud-init network
+/// + the image's NetworkManager profile assigns two IPv6 addresses; DAD drops SSH.
+fn write_guest_network(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
+    write_ipv6_sysctl(root);
+    if root.join("etc/netplan").is_dir() {
+        write_netplan(root, id)?;
+    } else if root.join("etc/NetworkManager").is_dir()
+        || root
+            .join("usr/lib/systemd/system/NetworkManager.service")
+            .is_file()
+    {
+        write_nm_connection(root, id)?;
+    } else if root.join("etc/systemd/network").is_dir() {
+        write_networkd(root, id)?;
+    }
+    Ok(())
+}
+
+fn write_ipv6_sysctl(root: &Path) {
+    let dir = root.join("etc/sysctl.d");
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(
+        dir.join("99-pertisk-ipv6.conf"),
+        "net.ipv6.conf.all.disable_ipv6 = 0\nnet.ipv6.conf.default.disable_ipv6 = 0\nnet.ipv6.conf.all.accept_ra = 1\nnet.ipv6.conf.default.accept_ra = 1\n",
+    );
+}
+
+fn write_nm_connection(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
+    let conf = root.join("etc/NetworkManager/conf.d");
+    fs::create_dir_all(&conf)?;
+    fs::write(conf.join("99-pertisk.conf"), "[main]\nno-auto-default=*\n")?;
+    let dir = root.join("etc/NetworkManager/system-connections");
+    fs::create_dir_all(&dir)?;
+    let mut body = String::from(
+        "[connection]\nid=pertisk\nuuid=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\ntype=ethernet\nautoconnect=true\nautoconnect-priority=100\n\n[ethernet]\n",
+    );
+    if let Some(mac) = id.mac.map(str::trim).filter(|s| !s.is_empty()) {
+        body.push_str("mac-address=");
+        body.push_str(&mac.to_ascii_lowercase());
+        body.push('\n');
+    }
+    body.push('\n');
+    body.push_str(&nm_ipv4(id));
+    body.push_str("[ipv6]\nmethod=auto\naddr-gen-mode=eui64\nip6-privacy=0\nmay-fail=true\n");
+    let path = dir.join("pertisk.nmconnection");
+    fs::write(&path, body)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn nm_ipv4(id: &GuestIdentity<'_>) -> String {
+    if let Some(ip) = id.ipv4.map(str::trim).filter(|s| !s.is_empty()) {
+        let prefix = id.prefix.filter(|p| *p > 0 && *p <= 32).unwrap_or(24);
+        let addr = if ip.contains('/') {
+            ip.to_string()
+        } else {
+            format!("{ip}/{prefix}")
+        };
+        let mut out = format!("[ipv4]\nmethod=manual\naddress1={addr}");
+        if let Some(gw) = id.gateway.map(str::trim).filter(|s| !s.is_empty()) {
+            out.push(',');
+            out.push_str(gw);
+        }
+        out.push_str("\ndns=1.1.1.1;8.8.8.8;\n\n");
+        out
+    } else {
+        "[ipv4]\nmethod=auto\n\n".into()
+    }
+}
+
+fn write_netplan(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
+    let dir = root.join("etc/netplan");
+    for stale in ["50-cloud-init.yaml", "50-cloud-init.yml"] {
+        let _ = fs::remove_file(dir.join(stale));
+    }
+    let mut yaml = String::from("network:\n  version: 2\n  ethernets:\n    id0:\n");
+    if let Some(mac) = id.mac.map(str::trim).filter(|s| !s.is_empty()) {
+        yaml.push_str("      match:\n        macaddress: \"");
+        yaml.push_str(&mac.to_ascii_lowercase());
+        yaml.push_str("\"\n");
+    } else {
+        yaml.push_str("      match:\n        name: en* eth*\n");
+    }
+    yaml.push_str(
+        "      dhcp6: false\n      accept-ra: true\n      ipv6-address-generation: eui64\n",
+    );
+    if let Some(ip) = id.ipv4.map(str::trim).filter(|s| !s.is_empty()) {
+        let prefix = id.prefix.filter(|p| *p > 0 && *p <= 32).unwrap_or(24);
+        let addr = if ip.contains('/') {
+            ip.to_string()
+        } else {
+            format!("{ip}/{prefix}")
+        };
+        yaml.push_str("      dhcp4: false\n      addresses:\n        - ");
+        yaml.push_str(&addr);
+        yaml.push('\n');
+        if let Some(gw) = id.gateway.map(str::trim).filter(|s| !s.is_empty()) {
+            yaml.push_str("      routes:\n        - to: default\n          via: ");
+            yaml.push_str(gw);
+            yaml.push('\n');
+        }
+        yaml.push_str("      nameservers:\n        addresses: [1.1.1.1, 8.8.8.8]\n");
+    } else {
+        yaml.push_str("      dhcp4: true\n");
+    }
+    let path = dir.join("99-pertisk.yaml");
+    fs::write(&path, yaml)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn write_networkd(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
+    let dir = root.join("etc/systemd/network");
+    fs::create_dir_all(&dir)?;
+    let mut body = String::from("[Match]\n");
+    if let Some(mac) = id.mac.map(str::trim).filter(|s| !s.is_empty()) {
+        body.push_str("MACAddress=");
+        body.push_str(&mac.to_ascii_lowercase());
+        body.push('\n');
+    } else {
+        body.push_str("Name=en* eth*\n");
+    }
+    body.push('\n');
+    if let Some(ip) = id.ipv4.map(str::trim).filter(|s| !s.is_empty()) {
+        let prefix = id.prefix.filter(|p| *p > 0 && *p <= 32).unwrap_or(24);
+        let addr = if ip.contains('/') {
+            ip.to_string()
+        } else {
+            format!("{ip}/{prefix}")
+        };
+        body.push_str("[Network]\nDHCP=no\nIPv6AcceptRA=yes\nAddress=");
+        body.push_str(&addr);
+        body.push('\n');
+        if let Some(gw) = id.gateway.map(str::trim).filter(|s| !s.is_empty()) {
+            body.push_str("Gateway=");
+            body.push_str(gw);
+            body.push('\n');
+        }
+    } else {
+        body.push_str("[Network]\nDHCP=ipv4\nIPv6AcceptRA=yes\nLinkLocalAddressing=ipv6\n");
+    }
+    fs::write(dir.join("15-pertisk.network"), body)?;
     Ok(())
 }
 
@@ -648,6 +814,10 @@ mod tests {
                 user: "almalinux",
                 password: None,
                 ssh_authorized_keys: &[],
+                mac: Some("52:54:00:00:00:65"),
+                ipv4: None,
+                gateway: None,
+                prefix: None,
             },
         )
         .unwrap();
@@ -675,6 +845,41 @@ mod tests {
         let group = fs::read_to_string(root.join("etc/group")).unwrap();
         assert!(group.contains("wheel:x:10:almalinux"), "{group}");
         assert!(root.join("home/almalinux").is_dir());
+        let cfg = fs::read_to_string(root.join("etc/cloud/cloud.cfg.d/99-pertisk.cfg")).unwrap();
+        assert!(cfg.contains("network: {config: disabled}"), "{cfg}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn injects_single_nm_profile_with_slaac() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join("etc/NetworkManager")).unwrap();
+        apply_identity(
+            &root,
+            &GuestIdentity {
+                hostname: "alma-1",
+                user: "almalinux",
+                password: None,
+                ssh_authorized_keys: &[],
+                mac: Some("52:54:00:00:00:65"),
+                ipv4: None,
+                gateway: None,
+                prefix: None,
+            },
+        )
+        .unwrap();
+        let nm = fs::read_to_string(
+            root.join("etc/NetworkManager/system-connections/pertisk.nmconnection"),
+        )
+        .unwrap();
+        assert!(nm.contains("[ipv4]\nmethod=auto"), "{nm}");
+        assert!(nm.contains("[ipv6]\nmethod=auto"), "{nm}");
+        assert!(nm.contains("addr-gen-mode=eui64"), "{nm}");
+        assert!(nm.contains("ip6-privacy=0"), "{nm}");
+        assert!(nm.contains("mac-address=52:54:00:00:00:65"), "{nm}");
+        let conf =
+            fs::read_to_string(root.join("etc/NetworkManager/conf.d/99-pertisk.conf")).unwrap();
+        assert!(conf.contains("no-auto-default=*"), "{conf}");
         let _ = fs::remove_dir_all(&root);
     }
 

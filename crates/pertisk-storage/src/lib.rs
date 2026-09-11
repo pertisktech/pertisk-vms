@@ -561,14 +561,14 @@ impl VolumePool {
         let user_data = cloudinit_user_data(&req);
         let meta_data = cloudinit_meta_data(&req);
         let meta_json = cloudinit_meta_json(&req);
-        let network_config = cloudinit_network_config(&req);
+        // ConfigDrive network only (no NoCloud network-config). Shipping both
+        // makes NetworkManager apply SLAAC twice; DAD then drops SSH.
         let network_data = cloudinit_network_data(&req);
         std::fs::create_dir_all(self.root.join("iso"))?;
         let dest = self.root.join("iso").join(&name);
         let files = [
             ("user-data", user_data.as_bytes()),
             ("meta-data", meta_data.as_bytes()),
-            ("network-config", network_config.as_bytes()),
             ("openstack/latest/user_data", user_data.as_bytes()),
             ("openstack/latest/meta_data.json", meta_json.as_bytes()),
             (
@@ -831,54 +831,6 @@ fn cloudinit_meta_json(req: &CloudInitIsoRequest) -> String {
     serde_json::to_string(&value)
         .unwrap_or_else(|_| format!(r#"{{"uuid":"iid-{hostname}","hostname":"{hostname}"}}"#))
         + "\n"
-}
-
-fn cloudinit_network_config(req: &CloudInitIsoRequest) -> String {
-    let net = req.network.as_ref();
-    let mac = net
-        .and_then(|n| n.mac.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_lowercase());
-    let ipv4 = net
-        .and_then(|n| n.ipv4.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let mut yaml = String::from("version: 2\nethernets:\n  id0:\n");
-    if let Some(mac) = &mac {
-        yaml.push_str("    match:\n      macaddress: \"");
-        yaml.push_str(mac);
-        yaml.push_str("\"\n");
-    }
-    // SLAAC only. dhcp6+SLAAC assigns two addresses and DAD can drop SSH.
-    yaml.push_str("    dhcp6: false\n    accept-ra: true\n");
-    if let Some(ip) = ipv4 {
-        let prefix = net
-            .and_then(|n| n.prefix)
-            .filter(|p| *p > 0 && *p <= 32)
-            .unwrap_or(24);
-        let addr = if ip.contains('/') {
-            ip.to_string()
-        } else {
-            format!("{ip}/{prefix}")
-        };
-        yaml.push_str("    dhcp4: false\n    addresses:\n      - ");
-        yaml.push_str(&addr);
-        yaml.push('\n');
-        if let Some(gw) = net
-            .and_then(|n| n.gateway.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            yaml.push_str("    routes:\n      - to: default\n        via: ");
-            yaml.push_str(gw);
-            yaml.push('\n');
-        }
-        yaml.push_str("    nameservers:\n      addresses: [1.1.1.1, 8.8.8.8]\n");
-    } else {
-        yaml.push_str("    dhcp4: true\n");
-    }
-    yaml
 }
 
 fn cloudinit_network_data(req: &CloudInitIsoRequest) -> String {
@@ -1246,11 +1198,10 @@ mod tests {
         assert!(text.contains("groups: [adm, wheel, sudo]"));
         assert!(text.contains("PasswordAuthentication yes"));
         assert!(text.contains("plain_text_passwd:"));
-        assert!(text.contains("dhcp6: false"), "{text}");
-        assert!(text.contains("accept-ra: true"), "{text}");
         assert!(text.contains("ipv6_slaac"), "{text}");
         assert!(!text.contains("ipv6_dhcp"), "{text}");
         assert!(!text.contains("dhcp6: true"), "{text}");
+        assert!(!text.contains("dhcp6: false"), "{text}");
         let again = pool
             .create_cloudinit_iso(CloudInitIsoRequest {
                 name: "web-1".into(),
