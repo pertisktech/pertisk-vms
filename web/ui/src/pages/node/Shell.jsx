@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
+import { PURPLE_XTERM_THEME } from '../../termTheme'
 import { useNode } from '../NodeView'
 
 function cellSize(term) {
@@ -71,11 +72,7 @@ export default function NodeShell() {
         '"MesloLGS NF", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
       lineHeight: 1,
-      theme: {
-        background: '#09090b',
-        foreground: '#e4e4e7',
-        cursor: '#a78bfa',
-      },
+      theme: PURPLE_XTERM_THEME,
       convertEol: false,
       allowProposedApi: true,
       scrollback: 1000,
@@ -209,6 +206,11 @@ export default function NodeShell() {
   return (
     <div className="pve-console-wrap">
       <div className="pve-console-bar">
+        <span className="console-traffic" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </span>
         <span className={`badge ${statusClass}`}>{statusLabel}</span>
         <span className="muted">
           {wsError || 'Root zsh on this hypervisor (Oh My Zsh + Powerlevel10k). Guests are not affected.'}

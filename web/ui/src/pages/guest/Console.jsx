@@ -5,6 +5,7 @@ import RFB from '@novnc/novnc'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
+import { PURPLE_XTERM_THEME } from '../../termTheme'
 import { useGuest } from '../GuestView'
 
 function scheduleFit(fit) {
@@ -68,11 +69,7 @@ export default function GuestConsole() {
       cursorBlink: true,
       fontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
-      theme: {
-        background: '#09090b',
-        foreground: '#e4e4e7',
-        cursor: '#a78bfa',
-      },
+      theme: PURPLE_XTERM_THEME,
       convertEol: true,
       disableStdin: false,
     })
@@ -329,6 +326,11 @@ export default function GuestConsole() {
   return (
     <div className="pve-console-wrap">
       <div className="pve-console-bar">
+        <span className="console-traffic" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </span>
         <div className="console-tabs">
           <button
             type="button"

@@ -1,7 +1,13 @@
 import { Link, useOutletContext } from 'react-router-dom'
-import { asList, disksOf, isTemplate } from '../api'
+import { asList, disksOf, formatBytes, isTemplate } from '../api'
+import MetricCard from '../components/MetricCard'
 import MetricsCharts from '../components/MetricsCharts'
 import { useMetrics } from '../useMetrics'
+
+function pctLabel(n) {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return `${n >= 10 ? n.toFixed(0) : n.toFixed(1)}%`
+}
 
 function stateClass(state) {
   if (state === 'running') return 'ready'
@@ -12,7 +18,7 @@ function stateClass(state) {
 
 export default function Overview() {
   const { inv } = useOutletContext()
-  const { host, cluster, vms, volumes, error, loading } = inv
+  const { host, cluster, vms, error, loading } = inv
   const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const online = members.filter((m) => m.online).length
@@ -24,32 +30,52 @@ export default function Overview() {
       {error && error !== 'unauthorized' && <div className="banner danger">{error}</div>}
 
       <div className="dash-stat-row">
-        <div className="stat">
-          <div className="label">Guests live</div>
-          <div className="value">
-            {running}
-            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {guests.length}
-            </span>
-          </div>
-        </div>
-        <div className="stat">
-          <div className="label">Nodes</div>
-          <div className="value">
-            {online}
-            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {members.length || 1}
-            </span>
-          </div>
-        </div>
-        <div className="stat">
-          <div className="label">Quorum</div>
-          <div className="value">{cluster?.quorum ? 'held' : 'lost'}</div>
-        </div>
-        <div className="stat">
-          <div className="label">Volumes</div>
-          <div className="value">{volumes.length}</div>
-        </div>
+        <MetricCard
+          label="CPU load"
+          value={pctLabel(Number(metrics.data?.live?.cpu_pct))}
+          hint={
+            Number.isFinite(Number(metrics.data?.live?.cpu_pct))
+              ? Number(metrics.data.live.cpu_pct) < 70
+                ? 'Normal'
+                : 'High'
+              : undefined
+          }
+          hintTone={Number(metrics.data?.live?.cpu_pct) < 70 ? 'ok' : undefined}
+          pct={Number(metrics.data?.live?.cpu_pct)}
+        />
+        <MetricCard
+          label="Memory"
+          value={pctLabel(
+            Number(metrics.data?.live?.mem_total_bytes) > 0
+              ? (Number(metrics.data.live.mem_used_bytes) / Number(metrics.data.live.mem_total_bytes)) * 100
+              : null,
+          )}
+          hint={
+            Number(metrics.data?.live?.mem_total_bytes) > 0
+              ? `${formatBytes(metrics.data.live.mem_used_bytes)} / ${formatBytes(metrics.data.live.mem_total_bytes)}`
+              : undefined
+          }
+          pct={
+            Number(metrics.data?.live?.mem_total_bytes) > 0
+              ? (Number(metrics.data.live.mem_used_bytes) / Number(metrics.data.live.mem_total_bytes)) * 100
+              : null
+          }
+        />
+        <MetricCard
+          label="Virtual machines"
+          value={`${running} / ${guests.length}`}
+          hint={`${running} running`}
+          hintTone="ok"
+          pct={guests.length ? (running / guests.length) * 100 : 0}
+          barTone="ok"
+        />
+        <MetricCard
+          label="Nodes"
+          value={`${online} / ${members.length || 1}`}
+          hint={cluster?.quorum ? 'Quorum held' : 'No quorum'}
+          hintTone={cluster?.quorum ? 'ok' : undefined}
+          pct={(online / (members.length || 1)) * 100}
+        />
       </div>
 
       <MetricsCharts

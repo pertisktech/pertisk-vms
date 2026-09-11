@@ -1,4 +1,5 @@
 import { formatBytes, publicIpv6 } from '../../api'
+import MetricCard from '../../components/MetricCard'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useNode } from '../NodeView'
@@ -40,37 +41,31 @@ export default function NodeSummary() {
   return (
     <div className="pve-stack">
       <div className="dash-stat-row">
-        <div className="stat">
-          <div className="label">Status</div>
-          <div className="value">{node?.online === false ? 'offline' : 'online'}</div>
-        </div>
-        <div className="stat">
-          <div className="label">Guests</div>
-          <div className="value">
-            {metrics.data?.running_vms ?? running.length}
-            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {guests.length}
-            </span>
-          </div>
-        </div>
-        <div className="stat">
-          <div className="label">Allocated vCPU</div>
-          <div className="value">
-            {metrics.data?.allocated_vcpus ?? usedCpu}
-            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {totalCpu || '—'}
-            </span>
-          </div>
-        </div>
-        <div className="stat">
-          <div className="label">Allocated memory</div>
-          <div className="value">
-            {metrics.data?.allocated_memory_mib ?? usedMem} MiB
-            <span className="muted" style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
-              / {allocMemTotal || '—'}
-            </span>
-          </div>
-        </div>
+        <MetricCard
+          label="Status"
+          value={node?.online === false ? 'offline' : 'online'}
+          hint={node?.online === false ? 'Down' : 'Live'}
+          hintTone={node?.online === false ? undefined : 'ok'}
+        />
+        <MetricCard
+          label="Guests"
+          value={`${metrics.data?.running_vms ?? running.length} / ${guests.length}`}
+          hint={`${metrics.data?.running_vms ?? running.length} running`}
+          hintTone="ok"
+          pct={guests.length ? ((metrics.data?.running_vms ?? running.length) / guests.length) * 100 : 0}
+          barTone="ok"
+        />
+        <MetricCard
+          label="Allocated vCPU"
+          value={`${metrics.data?.allocated_vcpus ?? usedCpu} / ${totalCpu || '—'}`}
+          pct={totalCpu ? ((metrics.data?.allocated_vcpus ?? usedCpu) / totalCpu) * 100 : null}
+        />
+        <MetricCard
+          label="Allocated memory"
+          value={`${metrics.data?.allocated_memory_mib ?? usedMem} MiB`}
+          hint={allocMemTotal ? `/ ${allocMemTotal} MiB` : undefined}
+          pct={allocMemTotal ? ((metrics.data?.allocated_memory_mib ?? usedMem) / allocMemTotal) * 100 : null}
+        />
       </div>
 
       <div className="node-addrs">
