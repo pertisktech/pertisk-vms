@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api, asList, formatBytes } from '../api'
+import { api, asList, formatBytes, publicIpv6 } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
 import { useConfirm } from '../components/Confirm'
@@ -89,6 +89,7 @@ export default function Cluster() {
         {members.map((m) => {
           const cpuPct = m.cpus ? Math.round((m.used_vcpus / m.cpus) * 100) : 0
           const memPct = m.memory_mib ? Math.round((m.used_memory_mib / m.memory_mib) * 100) : 0
+          const v6 = publicIpv6(m.ipv6)
           return (
             <article key={m.id} className="guest-card">
               <div className="guest-card-top">
@@ -103,10 +104,10 @@ export default function Cluster() {
               <div className="guest-meta">
                 <span className="mono-inline">{m.peer_url}</span>
               </div>
-              {(m.ipv4?.length || m.ipv6?.length) ? (
+              {(m.ipv4?.length || v6.length) ? (
                 <div className="guest-meta">
                   {m.ipv4?.length > 0 && <span className="mono-inline">{m.ipv4.join(', ')}</span>}
-                  {m.ipv6?.length > 0 && <span className="mono-inline">{m.ipv6.join(', ')}</span>}
+                  {v6.length > 0 && <span className="mono-inline">{v6.join(', ')}</span>}
                 </div>
               ) : null}
               <div className="metric-tile-track" style={{ marginTop: '0.75rem' }}>

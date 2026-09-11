@@ -577,10 +577,18 @@ async fn run() -> Result<()> {
                 );
                 println!(
                     "ipv6               {}",
-                    if info.ipv6.is_empty() {
-                        "—".into()
-                    } else {
-                        info.ipv6.join(", ")
+                    {
+                        let ipv6: Vec<_> = info
+                            .ipv6
+                            .iter()
+                            .filter(|ip| !ip.to_ascii_lowercase().starts_with("fe80:"))
+                            .cloned()
+                            .collect();
+                        if ipv6.is_empty() {
+                            "—".into()
+                        } else {
+                            ipv6.join(", ")
+                        }
                     }
                 );
                 println!("data_dir           {}", info.data_dir.display());
@@ -765,8 +773,15 @@ async fn run() -> Result<()> {
                     );
                     if !member.ipv4.is_empty() || !member.ipv6.is_empty() {
                         let mut addrs = member.ipv4;
-                        addrs.extend(member.ipv6);
-                        println!("  {}", addrs.join(", "));
+                        addrs.extend(
+                            member
+                                .ipv6
+                                .into_iter()
+                                .filter(|ip| !ip.to_ascii_lowercase().starts_with("fe80:")),
+                        );
+                        if !addrs.is_empty() {
+                            println!("  {}", addrs.join(", "));
+                        }
                     }
                 }
             }

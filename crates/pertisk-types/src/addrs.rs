@@ -20,7 +20,7 @@ pub fn probe_host_addrs() -> HostAddrs {
             _ => {}
         }
     }
-    ipv6.sort_by_key(|s| ipv6_rank(s));
+    ipv6.sort_by_key(|s| s.parse::<Ipv6Addr>().map(ipv6_rank).unwrap_or(2));
     HostAddrs { ipv4, ipv6 }
 }
 
@@ -65,13 +65,37 @@ fn usable_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn usable_ipv6(ip: Ipv6Addr) -> bool {
-    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()
+    !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !ip.is_multicast()
+        && !ip.is_unicast_link_local()
 }
 
-fn ipv6_rank(s: &str) -> u8 {
-    s.parse::<Ipv6Addr>()
-        .map(|ip| if ip.is_unicast_link_local() { 1 } else { 0 })
-        .unwrap_or(2)
+fn ipv6_rank(ip: Ipv6Addr) -> u8 {
+    if ip.is_unique_local() { 1 } else { 0 }
+}
+
+/// Prefer a public IPv6 over unique-local (`fd00::/8`) when several exist.
+pub fn prefer_ipv6<I, S>(addrs: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut best: Option<(u8, String)> = None;
+    for value in addrs {
+        let raw = value.as_ref().trim();
+        let Ok(ip) = raw.parse::<Ipv6Addr>() else {
+            continue;
+        };
+        if !usable_ipv6(ip) {
+            continue;
+        }
+        let rank = ipv6_rank(ip);
+        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+            best = Some((rank, raw.to_string()));
+        }
+    }
+    best.map(|(_, s)| s)
 }
 
 fn egress_ip(bind: &str, target: &str) -> Option<IpAddr> {
@@ -151,12 +175,22 @@ mod tests {
                     _ => {}
                 }
             }
-            ipv6.sort_by_key(|s| ipv6_rank(s));
+            ipv6.sort_by_key(|s| s.parse::<Ipv6Addr>().map(ipv6_rank).unwrap_or(2));
             HostAddrs { ipv4, ipv6 }
         };
         assert_eq!(addrs.ipv4, vec!["10.0.0.5"]);
-        assert_eq!(addrs.ipv6[0], "2001:db8::10");
-        assert!(addrs.ipv6.contains(&"fe80::1".into()));
+        assert_eq!(addrs.ipv6, vec!["2001:db8::10"]);
+        assert!(!addrs.ipv6.iter().any(|ip| ip.starts_with("fe80:")));
+    }
+
+    #[test]
+    fn prefer_ipv6_picks_public_over_ula() {
+        assert_eq!(
+            prefer_ipv6(["fd00:1::254", "2405:9800:b901:194c:5054:ff:fe00:65"]),
+            Some("2405:9800:b901:194c:5054:ff:fe00:65".into())
+        );
+        assert_eq!(prefer_ipv6(["fe80::1", "fd00:1::254"]), Some("fd00:1::254".into()));
+        assert_eq!(prefer_ipv6(["fe80::1"]), None);
     }
 
     #[test]

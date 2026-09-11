@@ -111,7 +111,7 @@ export default function GuestView() {
               )}
               {!template && running && (
                 <>
-                  <Btn icon="stop" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
+                  <Btn icon="power" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
                     Shutdown
                   </Btn>
                   <Btn icon="refresh" variant="secondary" onClick={() => act('restart')} title="Hard reset">

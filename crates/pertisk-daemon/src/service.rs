@@ -2681,16 +2681,30 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                 changed = true;
             }
         }
-        let observed_v6 = want
-            .as_ref()
-            .and_then(|want| {
-                qga_ips
-                    .ipv6
-                    .iter()
-                    .find(|(m, _)| m == want)
-                    .map(|(_, ip)| ip.clone())
-            })
-            .or_else(|| pertisk_net::ipv6_for_mac(mac));
+        let observed_v6 = {
+            let mut candidates: Vec<String> = want
+                .as_ref()
+                .map(|want| {
+                    qga_ips
+                        .ipv6
+                        .iter()
+                        .filter(|(m, _)| m == want)
+                        .map(|(_, ip)| ip.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let has_public = candidates.iter().any(|ip| {
+                ip.parse::<std::net::Ipv6Addr>()
+                    .ok()
+                    .is_some_and(|addr| !addr.is_unique_local())
+            });
+            if !has_public {
+                if let Some(ip) = pertisk_net::ipv6_for_mac(mac) {
+                    candidates.push(ip);
+                }
+            }
+            pertisk_types::prefer_ipv6(candidates)
+        };
         if let Some(ip) = observed_v6 {
             if nic.ipv6.as_deref() != Some(ip.as_str()) {
                 nic.ipv6 = Some(ip);

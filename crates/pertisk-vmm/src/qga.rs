@@ -59,6 +59,11 @@ fn parse_guest_addrs(raw: &Value) -> GuestAddrs {
             }
         }
     }
+    out.ipv6.sort_by_key(|(_, ip)| {
+        ip.parse::<Ipv6Addr>()
+            .map(|addr| if addr.is_unique_local() { 1 } else { 0 })
+            .unwrap_or(2)
+    });
     out
 }
 
@@ -200,7 +205,8 @@ mod tests {
                 "ip-addresses": [
                     { "ip-address-type": "ipv4", "ip-address": "10.88.0.12" },
                     { "ip-address-type": "ipv6", "ip-address": "fe80::1" },
-                    { "ip-address-type": "ipv6", "ip-address": "fd00:3::10" }
+                    { "ip-address-type": "ipv6", "ip-address": "fd00:1::254" },
+                    { "ip-address-type": "ipv6", "ip-address": "2405:9800:b901:194c:5054:ff:fe00:65" }
                 ]
             }
         ]);
@@ -211,7 +217,13 @@ mod tests {
         );
         assert_eq!(
             addrs.ipv6,
-            vec![("52:54:00:12:34:56".into(), "fd00:3::10".into())]
+            vec![
+                (
+                    "52:54:00:12:34:56".into(),
+                    "2405:9800:b901:194c:5054:ff:fe00:65".into()
+                ),
+                ("52:54:00:12:34:56".into(), "fd00:1::254".into())
+            ]
         );
     }
 }

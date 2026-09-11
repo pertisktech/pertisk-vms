@@ -68,13 +68,13 @@ export default function NodeShell() {
     term = new Terminal({
       cursorBlink: true,
       fontFamily:
-        '"MesloLGS NF", "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        '"MesloLGS NF", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
       lineHeight: 1,
       theme: {
-        background: '#0b0d12',
-        foreground: '#c8c9de',
-        cursor: '#c8c9de',
+        background: '#09090b',
+        foreground: '#e4e4e7',
+        cursor: '#a78bfa',
       },
       convertEol: false,
       allowProposedApi: true,

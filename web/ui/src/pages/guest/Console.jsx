@@ -66,12 +66,12 @@ export default function GuestConsole() {
 
     term = new Terminal({
       cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: '#0b0d12',
-        foreground: '#c8c9de',
-        cursor: '#c8c9de',
+        background: '#09090b',
+        foreground: '#e4e4e7',
+        cursor: '#a78bfa',
       },
       convertEol: true,
       disableStdin: false,

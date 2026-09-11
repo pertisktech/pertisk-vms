@@ -88,7 +88,7 @@ export default function NodeView() {
         self && (
           <>
             <Btn
-              icon="stop"
+              icon="power"
               variant="secondary"
               disabled={!!busy}
               onClick={() => power('shutdown')}

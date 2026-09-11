@@ -130,8 +130,29 @@ export function netsOf(vm) {
   return asList(vm?.spec?.nets)
 }
 
+/** Public IPv6 — hide fe80:: link-local; prefer GUA over unique-local fd00::/8. */
+export function publicIpv6(value) {
+  const list = Array.isArray(value)
+    ? value
+    : value
+      ? String(value).split(',')
+      : []
+  const addrs = list
+    .map((ip) => String(ip || '').trim())
+    .filter((s) => {
+      const t = s.toLowerCase()
+      return t && !t.startsWith('fe80:') && t !== '::1'
+    })
+  const gua = addrs.filter((s) => {
+    const t = s.toLowerCase()
+    return !t.startsWith('fc') && !t.startsWith('fd')
+  })
+  return gua.length ? gua : addrs
+}
+
 export function nicAddrs(nic) {
-  return [nic?.ip, nic?.ipv6].filter(Boolean)
+  const v6 = publicIpv6(nic?.ipv6)
+  return [nic?.ip, ...v6].filter(Boolean)
 }
 
 export function replicasOf(vol) {
@@ -162,6 +183,19 @@ export function formatBytes(n) {
     i += 1
   } while (x >= 1024 && i < units.length - 1)
   return `${x >= 10 ? x.toFixed(0) : x.toFixed(1)} ${units[i]}`
+}
+
+/** Compact disk size for tables: 20GB, 50GB */
+export function formatDiskGb(n) {
+  const v = Number(n) || 0
+  const gib = v / 1024 ** 3
+  if (gib >= 1) {
+    const rounded = gib >= 10 || Math.abs(gib - Math.round(gib)) < 0.05 ? Math.round(gib) : Math.round(gib * 10) / 10
+    return `${rounded}GB`
+  }
+  const mib = v / 1024 ** 2
+  if (mib >= 1) return `${Math.round(mib)}MB`
+  return formatBytes(v)
 }
 
 export function formatUnix(sec) {

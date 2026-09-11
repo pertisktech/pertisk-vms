@@ -1,4 +1,4 @@
-import { formatBytes } from '../../api'
+import { formatBytes, publicIpv6 } from '../../api'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useNode } from '../NodeView'
@@ -7,6 +7,10 @@ function formatAddrs(value) {
   if (Array.isArray(value) && value.length) return value.join(', ')
   if (typeof value === 'string' && value) return value
   return '—'
+}
+
+function formatIpv6(value) {
+  return formatAddrs(publicIpv6(value))
 }
 
 function pickAddrs(nodeAddrs, hostAddrs, self) {
@@ -31,7 +35,7 @@ export default function NodeSummary() {
       ? Math.round(metrics.data.live.mem_total_bytes / (1024 * 1024))
       : 0)
   const ipv4 = formatAddrs(pickAddrs(node?.ipv4, host?.ipv4, self))
-  const ipv6 = formatAddrs(pickAddrs(node?.ipv6, host?.ipv6, self))
+  const ipv6 = formatIpv6(pickAddrs(node?.ipv6, host?.ipv6, self))
 
   return (
     <div className="pve-stack">

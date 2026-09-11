@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { api, disksOf, isTemplate, netsOf, nicAddrs } from '../../api'
+import { api, disksOf, formatDiskGb, isCloudInitIso, isTemplate, netsOf, nicAddrs } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useConfirm } from '../../components/Confirm'
 import { useNode } from '../NodeView'
@@ -14,6 +14,17 @@ function stateClass(state) {
 function guestIps(vm) {
   const ips = netsOf(vm).flatMap((n) => nicAddrs(n))
   return ips.length ? ips.join(', ') : '—'
+}
+
+function guestDisks(vm, volumes) {
+  const sizes = disksOf(vm)
+    .filter((d) => !d.cdrom && !isCloudInitIso(d.iso_name))
+    .map((d) => {
+      const vol = (volumes || []).find((v) => v.id === d.volume_id)
+      return vol?.size_bytes ? formatDiskGb(vol.size_bytes) : null
+    })
+    .filter(Boolean)
+  return sizes.length ? sizes.join(', ') : '—'
 }
 
 export default function NodeGuests() {
@@ -60,7 +71,7 @@ export default function NodeGuests() {
               <th>NICs</th>
               <th>HA</th>
               <th>Boot</th>
-              <th />
+              <th className="col-actions" />
             </tr>
           </thead>
           <tbody>
@@ -78,33 +89,35 @@ export default function NodeGuests() {
                 <td className="mono-inline">{guestIps(vm)}</td>
                 <td>{vm.spec?.vcpus || 1}</td>
                 <td>{vm.spec?.memory_mib || 0} MiB</td>
-                <td>{disksOf(vm).length}</td>
+                <td>{guestDisks(vm, inv.volumes)}</td>
                 <td>{netsOf(vm).length}</td>
                 <td>{vm.spec?.ha !== false ? 'yes' : 'no'}</td>
                 <td>{vm.spec?.autostart ? 'yes' : 'no'}</td>
-                <td className="row-actions">
-                  {canWrite && vm.state !== 'running' && (
-                    <Btn icon="play" variant="secondary" onClick={() => act('start', vm)}>
-                      Start
-                    </Btn>
-                  )}
-                  {canWrite && vm.state === 'running' && (
-                    <>
-                      <Btn icon="stop" variant="secondary" onClick={() => act('shutdown', vm)} title="ACPI shutdown">
-                        Shutdown
+                <td className="col-actions">
+                  <div className="row-actions">
+                    {canWrite && vm.state !== 'running' && (
+                      <Btn icon="play" variant="secondary" onClick={() => act('start', vm)}>
+                        Start
                       </Btn>
-                      <Btn icon="refresh" variant="secondary" onClick={() => act('restart', vm)} title="Hard reset">
-                        Restart
-                      </Btn>
-                      <Btn icon="stop" variant="secondary" onClick={() => act('stop', vm)} title="Force off">
-                        Stop
-                      </Btn>
-                    </>
-                  )}
-                  <Link to={`/vm/${vm.id}/console`} className="btn-icon secondary">
-                    <Icon name="terminal" size={16} />
-                    <span>Console</span>
-                  </Link>
+                    )}
+                    {canWrite && vm.state === 'running' && (
+                      <>
+                        <Btn icon="power" variant="secondary" onClick={() => act('shutdown', vm)} title="ACPI shutdown">
+                          Shutdown
+                        </Btn>
+                        <Btn icon="refresh" variant="secondary" onClick={() => act('restart', vm)} title="Hard reset">
+                          Restart
+                        </Btn>
+                        <Btn icon="stop" variant="secondary" onClick={() => act('stop', vm)} title="Force off">
+                          Stop
+                        </Btn>
+                      </>
+                    )}
+                    <Link to={`/vm/${vm.id}/console`} className="btn-icon secondary">
+                      <Icon name="console" size={16} />
+                      <span>Console</span>
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}

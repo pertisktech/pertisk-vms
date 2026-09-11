@@ -292,7 +292,7 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let mut link_local = None;
+    let mut candidates = Vec::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<_> = line.split_whitespace().collect();
         if fields.len() < 5 {
@@ -302,7 +302,11 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
         let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() else {
             continue;
         };
-        if addr.is_loopback() || addr.is_unspecified() || addr.is_multicast() {
+        if addr.is_loopback()
+            || addr.is_unspecified()
+            || addr.is_multicast()
+            || addr.is_unicast_link_local()
+        {
             continue;
         }
         let Some(ll) = fields.iter().position(|f| *f == "lladdr") else {
@@ -318,15 +322,9 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
         if state == "FAILED" || state == "INCOMPLETE" {
             continue;
         }
-        if addr.is_unicast_link_local() {
-            if link_local.is_none() {
-                link_local = Some(ip.to_string());
-            }
-            continue;
-        }
-        return Some(ip.to_string());
+        candidates.push(ip.to_string());
     }
-    link_local
+    pertisk_types::prefer_ipv6(candidates)
 }
 
 #[cfg(target_os = "linux")]
