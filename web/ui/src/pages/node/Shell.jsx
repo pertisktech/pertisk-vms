@@ -6,17 +6,31 @@ import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useNode } from '../NodeView'
 
-function scheduleFit(fit, term, socket) {
-  const run = () => {
-    try {
-      fit.fit()
-      if (socket?.readyState === 1 && term) {
-        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+function cellSize(term) {
+  return term?._core?._renderService?.dimensions?.css?.cell || null
+}
+
+function fitFill(fit, term, host, socket) {
+  try {
+    fit.fit()
+    const cell = cellSize(term)
+    if (host && cell?.width > 0 && cell?.height > 0) {
+      const cols = Math.max(2, Math.floor(host.clientWidth / cell.width))
+      const rows = Math.max(1, Math.ceil(host.clientHeight / cell.height - 1e-6))
+      if (term.cols !== cols || term.rows !== rows) {
+        term.resize(cols, rows)
       }
-    } catch {
-      /* host may be hidden briefly */
     }
+    if (socket?.readyState === 1 && term) {
+      socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    }
+  } catch {
+    /* host may be hidden briefly */
   }
+}
+
+function scheduleFit(fit, term, host, socket) {
+  const run = () => fitFill(fit, term, host, socket)
   requestAnimationFrame(() => {
     run()
     requestAnimationFrame(run)
@@ -89,15 +103,21 @@ export default function NodeShell() {
     )
     socket.binaryType = 'arraybuffer'
     wsRef.current = socket
+    const timers = [
+      window.setTimeout(() => {
+        if (!cancelled) scheduleFit(fit, term, host, socket)
+      }, 50),
+      window.setTimeout(() => {
+        if (!cancelled) scheduleFit(fit, term, host, socket)
+      }, 200),
+    ]
     socket.onopen = () => {
       if (!cancelled) {
         everConnectedRef.current = true
         setConnected(true)
         setConnecting(false)
         setWsError('')
-        scheduleFit(fit, term, socket)
-        window.setTimeout(() => scheduleFit(fit, term, socket), 50)
-        window.setTimeout(() => scheduleFit(fit, term, socket), 200)
+        scheduleFit(fit, term, host, socket)
         focusTerm()
       }
     }
@@ -136,20 +156,23 @@ export default function NodeShell() {
       }
     })
 
-    const onResize = () => scheduleFit(fit, term, socket)
+    const onResize = () => scheduleFit(fit, term, host, socket)
     window.addEventListener('resize', onResize)
     if (typeof ResizeObserver !== 'undefined') {
       ro = new ResizeObserver(onResize)
       ro.observe(host)
+      const stack = host.parentElement
+      if (stack) ro.observe(stack)
     }
     if (document.fonts?.ready) {
       document.fonts.ready.then(() => {
-        if (!cancelled) scheduleFit(fit, term, socket)
+        if (!cancelled) scheduleFit(fit, term, host, socket)
       })
     }
 
     return () => {
       cancelled = true
+      timers.forEach((id) => window.clearTimeout(id))
       host.removeEventListener('mousedown', focusTerm)
       window.removeEventListener('resize', onResize)
       ro?.disconnect()

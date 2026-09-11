@@ -1396,7 +1396,7 @@ a.guest-card:hover { color: inherit; }
 }
 .pve-tabbody:has(.pve-console-wrap) {
   overflow: hidden;
-  padding: 0.55rem 0.75rem 0.65rem;
+  padding: 0.45rem 0.55rem 0;
   gap: 0;
 }
 .pve-tabbody:has(.pve-console-wrap) > .pve-console-wrap {
@@ -1556,6 +1556,11 @@ a.guest-card:hover { color: inherit; }
   overflow: hidden;
   background: #0b0d12;
 }
+.pve-tabbody:has(.pve-console-wrap) .console-pane-stack {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: 0;
+}
 .console-pane-hidden {
   visibility: hidden;
   pointer-events: none;
@@ -1613,19 +1618,11 @@ a.guest-card:hover { color: inherit; }
   width: 100% !important;
   height: 100% !important;
   padding: 0;
-}
-.console-xterm .xterm-viewport,
-.console-xterm .xterm-screen {
-  width: 100% !important;
-  height: 100% !important;
-}
-.console-xterm .xterm-screen canvas {
-  width: 100% !important;
-  height: 100% !important;
+  background: #0b0d12;
 }
 .console-xterm .xterm-viewport {
-  overflow-y: auto !important;
-  background-color: #0b0d12;
+  background-color: #0b0d12 !important;
+  overflow-y: hidden !important;
 }
 .console-vnc { position: absolute; min-height: 0; background: #000; padding: 0; overflow: hidden; }
 .console-vnc > canvas,
