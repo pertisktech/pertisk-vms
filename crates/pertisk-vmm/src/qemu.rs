@@ -100,7 +100,10 @@ impl QemuDriver {
             .arg("-serial")
             .arg(format!("unix:{},server,nowait", serial_socket.display()))
             .arg("-vnc")
-            .arg(format!("unix:{},share=force-shared", graphics_socket.display()))
+            .arg(format!(
+                "unix:{},share=force-shared",
+                graphics_socket.display()
+            ))
             .arg("-chardev")
             .arg(format!(
                 "socket,path={},server=on,wait=off,id=qga0",

@@ -195,6 +195,7 @@ export default function GuestView() {
           source={vm}
           vms={inv.vms}
           networks={inv.networks}
+          cluster={inv.cluster}
           onClose={() => setCloneOpen(false)}
           onCreated={inv.refresh}
         />

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -327,7 +327,7 @@ impl Service {
         if spec.serial_log.is_none() {
             spec.serial_log = Some(self.config.vmm.run_dir.join(format!("{id}.serial")));
         }
-        let dest = self.pick_node(&spec, None)?;
+        let dest = self.pick_node_define(&spec, None)?;
         let serial_log = spec.serial_log.clone();
         let record = VmRecord {
             id,
@@ -391,11 +391,7 @@ impl Service {
     }
 
     pub fn list_templates(&self) -> Result<Vec<VmRecord>, DaemonError> {
-        Ok(self
-            .list()?
-            .into_iter()
-            .filter(|vm| vm.template)
-            .collect())
+        Ok(self.list()?.into_iter().filter(|vm| vm.template).collect())
     }
 
     pub async fn convert_to_template(&self, id: VmId) -> Result<VmRecord, DaemonError> {
@@ -492,23 +488,36 @@ impl Service {
         if let Some(memory_mib) = req.memory_mib {
             spec.memory_mib = memory_mib;
         }
+        if req.start {
+            if let Some(budget) = self.start_memory_budget_mib() {
+                if spec.memory_mib > budget && budget >= 64 {
+                    spec.memory_mib = budget;
+                }
+            }
+        }
         spec.validate()?;
 
         let created = match self.create(new_id, spec).await {
             Ok(record) => record,
             Err(err) => return Err(err),
         };
-        if let Err(err) = self
-            .finish_clone(&source, created.id, &name, &req)
-            .await
-        {
+        if let Err(err) = self.finish_clone(&source, created.id, &name, &req).await {
             let _ = self.destroy(created.id).await;
             return Err(err);
         }
         self.cluster.bump()?;
         self.replicate().await;
         if req.start {
-            self.start(created.id).await
+            match self.start(created.id).await {
+                Ok(started) => Ok(started),
+                Err(err @ (DaemonError::Capacity(_) | DaemonError::Unschedulable(_))) => {
+                    let mut record = self.get(created.id)?;
+                    record.last_error = Some(err.to_string());
+                    self.store.upsert(record.clone())?;
+                    Ok(record)
+                }
+                Err(err) => Err(err),
+            }
         } else {
             self.get(created.id)
         }
@@ -577,13 +586,9 @@ impl Service {
             })?;
             self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
         }
-        let network_id = req.network_id.or_else(|| {
-            source
-                .spec
-                .nets
-                .first()
-                .and_then(|nic| nic.network_id)
-        });
+        let network_id = req
+            .network_id
+            .or_else(|| source.spec.nets.first().and_then(|nic| nic.network_id));
         if let Some(network_id) = network_id {
             self.attach_nic(
                 new_id,
@@ -1098,10 +1103,7 @@ impl Service {
         Ok(self.volumes.import_iso(&req.path, req.name)?)
     }
 
-    pub fn create_cloudinit_iso(
-        &self,
-        req: CloudInitIsoRequest,
-    ) -> Result<IsoRecord, DaemonError> {
+    pub fn create_cloudinit_iso(&self, req: CloudInitIsoRequest) -> Result<IsoRecord, DaemonError> {
         Ok(self.volumes.create_cloudinit_iso(req)?)
     }
 
@@ -1577,12 +1579,12 @@ impl Service {
             .map(|vm| u64::from(vm.spec.memory_mib))
             .sum();
         if let Some(host_mib) = host_memory_mib() {
-            // Keep ~1.5 GiB for the host daemon / nested KVM.
-            let reserve = 1536u64;
+            let host_u32 = u32::try_from(host_mib.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+            let reserve = u64::from(cluster::host_memory_reserve_mib(host_u32));
             let free_for_guests = host_mib.saturating_sub(reserve);
-            if running_mem.saturating_add(need) > free_for_guests {
+            if !cluster::guest_start_fits(host_mib, running_mem, need) {
                 return Err(DaemonError::Capacity(format!(
-                    "guest needs {need} MiB; already running {running_mem} MiB of guests on a {host_mib} MiB host (reserve {reserve} MiB)"
+                    "guest needs {need} MiB; already running {running_mem} MiB of guests on a {host_mib} MiB host ({free_for_guests} MiB available after {reserve} MiB host reserve)"
                 )));
             }
         }
@@ -1632,6 +1634,27 @@ impl Service {
             .collect())
     }
 
+    fn start_memory_budget_mib(&self) -> Option<u32> {
+        let host = host_memory_mib()?;
+        let host_u32 = u32::try_from(host.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+        let self_id = self.cluster.self_id();
+        let running: u32 = self
+            .store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|vm| vm.state == VmState::Running && vm.node_id == Some(self_id))
+            .map(|vm| vm.spec.memory_mib)
+            .sum();
+        Some(cluster::guest_memory_budget_mib(host_u32).saturating_sub(running))
+    }
+
+    pub fn upload_tmp_path(&self, prefix: &str, ext: &str) -> Result<PathBuf, DaemonError> {
+        let dir = self.config.storage.root.join("tmp");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir.join(format!("{prefix}-{}.{ext}", uuid::Uuid::new_v4())))
+    }
+
     fn pick_node(
         &self,
         spec: &VmSpec,
@@ -1640,23 +1663,43 @@ impl Service {
         self.cluster.touch_self();
         let loads = self.loads()?;
         let affinity = self.volume_affinity(spec);
-        cluster::schedule_storage(&loads, spec, prefer, &affinity).ok_or_else(|| {
-            let detail = if loads.is_empty() {
-                "no members".into()
-            } else {
-                loads
-                    .iter()
-                    .map(|n| {
-                        format!(
-                            "{} online={} vcpu {}/{} mem {}/{} MiB",
-                            n.id, n.online, n.used_vcpus, n.cpus, n.used_memory_mib, n.memory_mib
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            };
-            DaemonError::Unschedulable(detail)
-        })
+        cluster::schedule_storage(&loads, spec, prefer, &affinity)
+            .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
+    }
+
+    /// Place a defined guest (create / template import). RAM is checked on start.
+    fn pick_node_define(
+        &self,
+        spec: &VmSpec,
+        prefer: Option<pertisk_types::NodeId>,
+    ) -> Result<pertisk_types::NodeId, DaemonError> {
+        self.cluster.touch_self();
+        let loads = self.loads()?;
+        let affinity = self.volume_affinity(spec);
+        cluster::schedule_define(&loads, prefer, &affinity)
+            .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
+    }
+
+    fn unschedulable_detail(&self, loads: &[NodeLoad]) -> String {
+        if loads.is_empty() {
+            return "no members".into();
+        }
+        loads
+            .iter()
+            .map(|n| {
+                format!(
+                    "{} online={} vcpu {}/{} mem {}/{} MiB guest ({} MiB host)",
+                    n.id,
+                    n.online,
+                    n.used_vcpus,
+                    n.cpus,
+                    n.used_memory_mib,
+                    cluster::guest_memory_budget_mib(n.memory_mib),
+                    n.memory_mib
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 
     fn volume_affinity(&self, spec: &VmSpec) -> Vec<pertisk_types::NodeId> {
@@ -2565,6 +2608,50 @@ mod tests {
         assert_eq!(vm.state, VmState::Stopped);
         svc.destroy(vm.id).await.unwrap();
         assert!(svc.get(vm.id).is_err());
+    }
+
+    #[tokio::test]
+    async fn define_template_ignores_host_ram() {
+        let (svc, _dir) = service();
+        let mut spec = spec("cloud-tpl");
+        spec.memory_mib = 4096;
+        let vm = svc.create(vm_id(100), spec).await.unwrap();
+        assert_eq!(vm.spec.memory_mib, 4096);
+        assert_eq!(vm.state, VmState::Created);
+        let tpl = svc.convert_to_template(vm.id).await.unwrap();
+        assert!(tpl.template);
+    }
+
+    #[tokio::test]
+    async fn clone_defines_when_memory_exceeds_host() {
+        let (svc, _dir) = service();
+        let mut spec = spec("cloud-tpl");
+        spec.memory_mib = 4096;
+        let tpl = svc.create(vm_id(100), spec).await.unwrap();
+        let tpl = svc.convert_to_template(tpl.id).await.unwrap();
+        let guest = svc
+            .clone_vm(
+                tpl.id,
+                CloneVmRequest {
+                    id: Some(vm_id(101)),
+                    name: "web-1".into(),
+                    linked: false,
+                    vcpus: None,
+                    memory_mib: Some(4096),
+                    ha: Some(false),
+                    autostart: Some(false),
+                    network_id: None,
+                    ip: None,
+                    cloud_init: None,
+                    start: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(guest.spec.name, "web-1");
+        assert_eq!(guest.spec.memory_mib, 4096);
+        assert_ne!(guest.state, VmState::Running);
+        assert!(!guest.template);
     }
 
     #[tokio::test]

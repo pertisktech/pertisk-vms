@@ -7,6 +7,7 @@ mod rbd;
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -235,6 +236,7 @@ impl VolumePool {
                 source.display()
             )));
         }
+        let format = sniff_disk_image(source)?.unwrap_or(format);
         {
             let inner = self.inner.lock().expect("storage lock");
             if inner.volumes.values().any(|vol| vol.name == name) {
@@ -567,6 +569,26 @@ impl VolumePool {
     }
 }
 
+/// Detect qcow2 / compressed uploads. `None` means keep the caller-supplied format.
+fn sniff_disk_image(path: &Path) -> Result<Option<VolumeFormat>> {
+    let mut hdr = [0u8; 6];
+    let n = File::open(path)?.read(&mut hdr)?;
+    if n >= 6 && hdr.starts_with(b"\xfd7zXZ") {
+        return Err(StorageError::Message(
+            "image is xz-compressed; decompress it (xz -d) before import".into(),
+        ));
+    }
+    if n >= 2 && hdr[0] == 0x1f && hdr[1] == 0x8b {
+        return Err(StorageError::Message(
+            "image is gzip-compressed; decompress it before import".into(),
+        ));
+    }
+    if n >= 4 && hdr.starts_with(b"QFI\xfb") {
+        return Ok(Some(VolumeFormat::Qcow2));
+    }
+    Ok(None)
+}
+
 fn create_raw(path: &Path, size: u64) -> Result<()> {
     let file = File::create(path)?;
     file.set_len(size)?;
@@ -761,6 +783,30 @@ mod tests {
             .import_volume(&src, "kos-cloud-amd64".into(), VolumeFormat::Raw)
             .unwrap_err();
         assert!(matches!(err, StorageError::NameTaken(_)));
+    }
+
+    #[test]
+    fn import_volume_sniffs_qcow2_and_rejects_xz() {
+        let (pool, dir) = pool();
+        let qcow = dir.path().join("cloud.img");
+        let mut bytes = b"QFI\xfb".to_vec();
+        bytes.resize(1024, 0);
+        std::fs::write(&qcow, &bytes).unwrap();
+        let vol = pool
+            .import_volume(&qcow, "sniffed".into(), VolumeFormat::Raw)
+            .unwrap();
+        assert_eq!(vol.format, VolumeFormat::Qcow2);
+        assert!(vol.path.extension().unwrap() == "qcow2");
+
+        let xz = dir.path().join("cloud.img.xz");
+        std::fs::write(&xz, b"\xfd7zXZ\x00payload").unwrap();
+        let err = pool
+            .import_volume(&xz, "xz-cloud".into(), VolumeFormat::Qcow2)
+            .unwrap_err();
+        assert!(
+            matches!(err, StorageError::Message(ref msg) if msg.contains("xz-compressed")),
+            "{err}"
+        );
     }
 
     #[test]

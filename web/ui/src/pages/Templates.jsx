@@ -15,7 +15,7 @@ function imageFormat(name) {
 
 export default function Templates() {
   const { canWrite } = useOutletContext()
-  const { vms, volumes, networks, error, setError, mutate, refresh } = useInventory()
+  const { vms, volumes, networks, cluster, error, setError, mutate, refresh } = useInventory()
   const confirm = useConfirm()
   const templates = vms.filter(isTemplate)
   const freeVolumes = volumes.filter((vol) => {
@@ -257,10 +257,11 @@ export default function Templates() {
                   id="tpl-mem"
                   type="number"
                   min="64"
-                  step="256"
+                  step="64"
                   value={form.memory_mib}
                   onChange={(e) => setForm({ ...form, memory_mib: e.target.value })}
                 />
+                <p className="field-hint">Used when you clone and start a guest. Import does not consume this RAM.</p>
               </div>
             </div>
           </form>
@@ -325,10 +326,11 @@ export default function Templates() {
                   id="tpl-vol-mem"
                   type="number"
                   min="64"
-                  step="256"
+                  step="64"
                   value={volForm.memory_mib}
                   onChange={(e) => setVolForm({ ...volForm, memory_mib: e.target.value })}
                 />
+                <p className="field-hint">Used when you clone and start a guest. Import does not consume this RAM.</p>
               </div>
             </div>
           </form>
@@ -340,6 +342,7 @@ export default function Templates() {
           source={cloneOf}
           vms={vms}
           networks={networks}
+          cluster={cluster}
           onClose={() => setCloneOf(null)}
           onCreated={refresh}
         />

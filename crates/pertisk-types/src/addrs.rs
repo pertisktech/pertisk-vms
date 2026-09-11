@@ -31,10 +31,7 @@ pub fn local_host_ips() -> Vec<IpAddr> {
         IpAddr::V6(Ipv6Addr::LOCALHOST),
     ];
     push_ip(&mut ips, egress_ip("0.0.0.0:0", "1.1.1.1:443"));
-    push_ip(
-        &mut ips,
-        egress_ip("[::]:0", "[2001:4860:4860::8888]:443"),
-    );
+    push_ip(&mut ips, egress_ip("[::]:0", "[2001:4860:4860::8888]:443"));
     for ip in hostname_ips() {
         push_ip(&mut ips, Some(ip));
     }
@@ -139,7 +136,10 @@ mod tests {
     #[test]
     fn hostname_tokens_keep_ipv6() {
         let ips = parse_hostname_ips("10.0.0.5 fe80::1 2001:db8::10 127.0.0.1");
-        assert!(ips.iter().any(|ip| matches!(ip, IpAddr::V4(v) if v.octets() == [10, 0, 0, 5])));
+        assert!(
+            ips.iter()
+                .any(|ip| matches!(ip, IpAddr::V4(v) if v.octets() == [10, 0, 0, 5]))
+        );
         assert!(ips.iter().any(|ip| ip.is_ipv6()));
         let addrs = {
             let mut ipv4 = Vec::new();

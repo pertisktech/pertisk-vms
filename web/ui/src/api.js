@@ -130,3 +130,19 @@ export function shortId(id) {
   const s = String(id || '')
   return s.length > 12 ? `${s.slice(0, 8)}…` : s
 }
+
+/** Host RAM kept for the daemon / OS. Matches daemon host_memory_reserve_mib. */
+export function hostMemoryReserveMib(hostMib) {
+  const host = Number(hostMib) || 0
+  return Math.min(1536, Math.max(64, Math.floor(host / 20)))
+}
+
+/** RAM a guest can be started with on this node. */
+export function guestMemoryBudgetMib(cluster) {
+  const members = cluster?.members || []
+  const node = members.find((m) => m.online) || members[0]
+  if (!node?.memory_mib) return null
+  const reserve = hostMemoryReserveMib(node.memory_mib)
+  const used = Number(node.used_memory_mib) || 0
+  return Math.max(0, Number(node.memory_mib) - reserve - used)
+}

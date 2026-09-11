@@ -1,24 +1,29 @@
 import { useState } from 'react'
-import { api, nextVmId } from '../api'
+import { api, guestMemoryBudgetMib, nextVmId } from '../api'
 import Modal from './Modal'
 
-export default function CloneWizard({ source, vms, networks, onClose, onCreated }) {
-  const [form, setForm] = useState(() => ({
-    id: nextVmId(vms),
-    name: source?.spec?.name ? `${source.spec.name}-1` : '',
-    vcpus: source?.spec?.vcpus || 1,
-    memory_mib: source?.spec?.memory_mib || 1024,
-    ha: true,
-    autostart: false,
-    linked: true,
-    networkId: source?.spec?.nets?.[0]?.network_id || networks[0]?.id || '',
-    nicIp: '',
-    cloudInit: true,
-    ciUser: 'ubuntu',
-    ciPassword: '',
-    ciSshKey: '',
-    start: true,
-  }))
+export default function CloneWizard({ source, vms, networks, cluster, onClose, onCreated }) {
+  const budget = guestMemoryBudgetMib(cluster)
+  const [form, setForm] = useState(() => {
+    const wanted = Number(source?.spec?.memory_mib) || 1024
+    const memory = budget && budget >= 64 ? Math.min(wanted, budget) : wanted
+    return {
+      id: nextVmId(vms),
+      name: source?.spec?.name ? `${source.spec.name}-1` : '',
+      vcpus: source?.spec?.vcpus || 1,
+      memory_mib: memory,
+      ha: true,
+      autostart: false,
+      linked: true,
+      networkId: source?.spec?.nets?.[0]?.network_id || networks[0]?.id || '',
+      nicIp: '',
+      cloudInit: true,
+      ciUser: 'ubuntu',
+      ciPassword: '',
+      ciSshKey: '',
+      start: false,
+    }
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -128,10 +133,15 @@ export default function CloneWizard({ source, vms, networks, onClose, onCreated 
               id="clone-mem"
               type="number"
               min="64"
-              step="256"
+              step="64"
               value={form.memory_mib}
               onChange={(e) => set({ memory_mib: e.target.value })}
             />
+            {budget != null && (
+              <p className="field-hint">
+                This node can start guests up to {budget} MiB. Clone still works if you ask for more; start later after lowering memory.
+              </p>
+            )}
           </div>
         </div>
         <div className="field">
@@ -206,7 +216,7 @@ export default function CloneWizard({ source, vms, networks, onClose, onCreated 
             <span className="chk-box" />
             <span className="chk-label">
               Start after clone
-              <small>Boot the guest as soon as it is defined</small>
+              <small>Boot the guest as soon as it is defined. Needs {form.memory_mib} MiB free for guests.</small>
             </span>
           </label>
         </div>

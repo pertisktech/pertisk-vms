@@ -74,7 +74,10 @@ pub fn router(service: Service) -> Router {
         .route("/v1/volumes/{id}/resize", post(resize_volume))
         .route("/v1/volumes/{id}/clone", post(clone_volume))
         .route("/v1/volumes/{id}/snapshots", post(snapshot_volume))
-        .route("/v1/volumes/{id}/snapshots/{name}/restore", post(restore_volume))
+        .route(
+            "/v1/volumes/{id}/snapshots/{name}/restore",
+            post(restore_volume),
+        )
         .route("/v1/templates", get(list_templates).post(create_template))
         .route("/v1/isos", get(list_isos).post(import_iso))
         .route("/v1/isos/cloud-init", post(create_cloudinit_iso))
@@ -571,9 +574,7 @@ async fn clone_vm(
     let name = req.name.clone();
     Ok((
         StatusCode::CREATED,
-        Json(
-            tracked(&service, &user, "vm.clone", name, service.clone_vm(id, req)).await?,
-        ),
+        Json(tracked(&service, &user, "vm.clone", name, service.clone_vm(id, req)).await?),
     ))
 }
 
@@ -717,7 +718,7 @@ async fn upload_volume_import(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
     let ext = format.extension();
-    let tmp = std::env::temp_dir().join(format!("pertisk-vol-{}.{ext}", uuid::Uuid::new_v4()));
+    let tmp = service.upload_tmp_path("pertisk-vol", ext)?;
     let mut file = tokio::fs::File::create(&tmp)
         .await
         .map_err(pertisk_storage::StorageError::Io)?;
@@ -791,7 +792,7 @@ async fn import_template(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
     let ext = format.extension();
-    let tmp = std::env::temp_dir().join(format!("pertisk-tpl-{}.{ext}", uuid::Uuid::new_v4()));
+    let tmp = service.upload_tmp_path("pertisk-tpl", ext)?;
     let mut file = tokio::fs::File::create(&tmp)
         .await
         .map_err(pertisk_storage::StorageError::Io)?;
@@ -829,9 +830,7 @@ async fn import_template(
     }
     let vol_name = format!("{name}-disk");
     let result = tracked(&service, &user, "template.import", name.clone(), async {
-        let volume = service
-            .import_volume(vol_name, format, tmp.clone())
-            .await?;
+        let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
         match service
             .create_template(CreateTemplateRequest {
                 id: None,
@@ -905,7 +904,7 @@ async fn upload_iso(
     Query(q): Query<IsoUploadQuery>,
     body: Body,
 ) -> Result<impl IntoResponse, DaemonError> {
-    let tmp = std::env::temp_dir().join(format!("pertisk-iso-{}.iso", uuid::Uuid::new_v4()));
+    let tmp = service.upload_tmp_path("pertisk-iso", "iso")?;
     let mut file = tokio::fs::File::create(&tmp)
         .await
         .map_err(pertisk_storage::StorageError::Io)?;
@@ -1763,10 +1762,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{err}");
-        assert!(
-            err["error"].as_str().unwrap().contains("template"),
-            "{err}"
-        );
+        assert!(err["error"].as_str().unwrap().contains("template"), "{err}");
         let (status, guest) = send(
             &app,
             Method::POST,
@@ -1794,10 +1790,7 @@ mod tests {
             .find(|d| d["cdrom"] == true)
             .expect("cloud-init cdrom");
         assert!(
-            cdrom["iso_name"]
-                .as_str()
-                .unwrap()
-                .contains("cidata"),
+            cdrom["iso_name"].as_str().unwrap().contains("cidata"),
             "{cdrom}"
         );
         let (status, converted) = send(

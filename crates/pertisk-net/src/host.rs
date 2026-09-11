@@ -43,7 +43,9 @@ pub fn ensure_lan_bridge(bridge: &str) -> Result<()> {
         }
         let nic = default_uplink().or_else(|_| first_cabled_nic())?;
         if nic == bridge {
-            return Err(NetError::Host("LAN NIC and bridge name are the same".into()));
+            return Err(NetError::Host(
+                "LAN NIC and bridge name are the same".into(),
+            ));
         }
         let mac = std::fs::read_to_string(format!("/sys/class/net/{nic}/address"))
             .ok()
@@ -89,7 +91,8 @@ fn first_cabled_nic() -> Result<String> {
             return Ok(name);
         }
     }
-    fallback.ok_or_else(|| NetError::Host("no ethernet NIC found to attach to the LAN bridge".into()))
+    fallback
+        .ok_or_else(|| NetError::Host("no ethernet NIC found to attach to the LAN bridge".into()))
 }
 
 #[cfg(target_os = "linux")]
@@ -126,7 +129,10 @@ fn move_ipv4_to_bridge(nic: &str, bridge: &str) -> Result<()> {
         run_ip(&["addr", "flush", "dev", nic], true)?;
     }
     if let Some(gw) = gw {
-        let _ = run_ip(&["route", "replace", "default", "via", &gw, "dev", bridge], true);
+        let _ = run_ip(
+            &["route", "replace", "default", "via", &gw, "dev", bridge],
+            true,
+        );
     }
     Ok(())
 }

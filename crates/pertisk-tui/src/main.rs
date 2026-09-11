@@ -189,7 +189,9 @@ impl ConsoleQuiet {
         let printk = std::fs::read_to_string("/proc/sys/kernel/printk").ok();
         // console_loglevel=1 → emergencies only on the console
         let _ = std::fs::write("/proc/sys/kernel/printk", "1 4 1 7\n");
-        let _ = std::process::Command::new("dmesg").args(["-n", "1"]).status();
+        let _ = std::process::Command::new("dmesg")
+            .args(["-n", "1"])
+            .status();
         Self { printk }
     }
 }
@@ -199,7 +201,9 @@ impl Drop for ConsoleQuiet {
         if let Some(ref prev) = self.printk {
             let _ = std::fs::write("/proc/sys/kernel/printk", prev);
         }
-        let _ = std::process::Command::new("dmesg").args(["-n", "7"]).status();
+        let _ = std::process::Command::new("dmesg")
+            .args(["-n", "7"])
+            .status();
     }
 }
 
@@ -611,13 +615,7 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .find(|ip| ip.contains('.'))
         .cloned()
-        .unwrap_or_else(|| {
-            app.info
-                .ips
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "—".into())
-        });
+        .unwrap_or_else(|| app.info.ips.first().cloned().unwrap_or_else(|| "—".into()));
     let all_ips = if app.info.ips.is_empty() {
         "—".into()
     } else {
@@ -741,12 +739,10 @@ fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let mut spans = if app.pending_delete.is_some() {
-        vec![
-            Span::styled(
-                "CONFIRM DELETE: press d again  |  Esc cancel",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        ]
+        vec![Span::styled(
+            "CONFIRM DELETE: press d again  |  Esc cancel",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]
     } else {
         vec![
             Span::raw("j/k select  "),
@@ -758,7 +754,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" restart  "),
             Span::styled("x", Style::default().fg(Color::Red)),
             Span::raw(" stop  "),
-            Span::styled("d", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "d",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" delete  "),
             Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" refresh  q quit"),
@@ -805,7 +804,11 @@ mod tests {
         assert_eq!(format_used_total(0, 0), "—");
         assert_eq!(
             format_used_total(644_245_094, 32_212_254_720),
-            format!("{}/{}", format_bytes(644_245_094), format_bytes(32_212_254_720))
+            format!(
+                "{}/{}",
+                format_bytes(644_245_094),
+                format_bytes(32_212_254_720)
+            )
         );
     }
 }

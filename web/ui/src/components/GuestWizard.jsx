@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, nextVmId } from '../api'
+import { api, guestMemoryBudgetMib, nextVmId } from '../api'
 import Modal from './Modal'
 
 const STEPS = [
@@ -43,12 +43,13 @@ const EMPTY = {
 }
 
 export default function GuestWizard({ vms, volumes, isos, networks, host, cluster, onClose, onCreated }) {
+  const budget = guestMemoryBudgetMib(cluster)
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(() => ({
     ...EMPTY,
     id: nextVmId(vms),
     vcpus: defaultCpus(),
-    memory_mib: defaultMemory(),
+    memory_mib: budget && budget >= 64 ? Math.min(defaultMemory(), budget) : defaultMemory(),
     graphics: host?.driver === 'qemu',
     iso: isos[0]?.name || '',
     networkId: networks[0]?.id || '',
@@ -346,11 +347,17 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                   id="guest-mem"
                   type="number"
                   min="64"
-                  step="256"
+                  step="64"
                   value={form.memory_mib}
                   onChange={(e) => set({ memory_mib: e.target.value })}
                 />
-                <p className="field-hint">{Number(form.memory_mib) === 1024 ? '1 GiB' : `${form.memory_mib} MiB`}</p>
+                <p className="field-hint">
+                  {budget != null
+                    ? `This node can start guests up to ${budget} MiB`
+                    : Number(form.memory_mib) === 1024
+                      ? '1 GiB'
+                      : `${form.memory_mib} MiB`}
+                </p>
               </div>
             </div>
             <p className="wizard-section-title">Options</p>
@@ -460,11 +467,12 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                     value={form.templateId}
                     onChange={(e) => {
                       const tpl = vms.find((vm) => String(vm.id) === e.target.value)
+                      const wanted = Number(tpl?.spec?.memory_mib) || form.memory_mib
                       set({
                         templateId: e.target.value,
                         cloudInit: true,
                         vcpus: tpl?.spec?.vcpus || form.vcpus,
-                        memory_mib: tpl?.spec?.memory_mib || form.memory_mib,
+                        memory_mib: budget && budget >= 64 ? Math.min(wanted, budget) : wanted,
                       })
                     }}
                   >

@@ -35,9 +35,26 @@ fn cpu_capacity(n: &NodeLoad) -> u32 {
     n.cpus.saturating_mul(CPU_OVERCOMMIT).max(n.cpus)
 }
 
-/// Guest placement budget: leave ~25% of installed RAM for the host / nested HV.
+/// RAM kept for the host / VMM. Scales down on small appliances so a ~1 GiB
+/// node can still run a 1024 MiB cloud guest (832–1088 MiB class boxes).
+pub fn host_memory_reserve_mib(host_mib: u32) -> u32 {
+    (host_mib / 20).clamp(64, 1536)
+}
+
+/// Guest start/placement budget: installed RAM minus host reserve.
+pub fn guest_memory_budget_mib(host_mib: u32) -> u32 {
+    host_mib.saturating_sub(host_memory_reserve_mib(host_mib))
+}
+
+/// True when a guest of `need_mib` can start given host RAM and already-running guests.
+pub fn guest_start_fits(host_mib: u64, running_mib: u64, need_mib: u64) -> bool {
+    let host_u32 = u32::try_from(host_mib.min(u64::from(u32::MAX))).unwrap_or(u32::MAX);
+    let reserve = u64::from(host_memory_reserve_mib(host_u32));
+    running_mib.saturating_add(need_mib) <= host_mib.saturating_sub(reserve)
+}
+
 fn guest_memory_capacity(n: &NodeLoad) -> u32 {
-    n.memory_mib.saturating_mul(3) / 4
+    guest_memory_budget_mib(n.memory_mib)
 }
 
 fn node_fits(n: &NodeLoad, spec: &VmSpec) -> bool {
@@ -87,6 +104,31 @@ pub fn schedule_storage(
         return schedule(&local, spec, prefer);
     }
     schedule(nodes, spec, prefer)
+}
+
+/// Place a defined (not running) guest: any online node, prefer replica holders.
+pub fn schedule_define(
+    nodes: &[NodeLoad],
+    prefer: Option<NodeId>,
+    affinity: &[NodeId],
+) -> Option<NodeId> {
+    let online: Vec<_> = nodes.iter().filter(|n| n.online).cloned().collect();
+    if online.is_empty() {
+        return None;
+    }
+    let prefer_ok = |id: NodeId| online.iter().any(|n| n.id == id);
+    if let Some(id) = prefer
+        && prefer_ok(id)
+    {
+        return Some(id);
+    }
+    if let Some(id) = affinity.iter().copied().find(|id| prefer_ok(*id)) {
+        return Some(id);
+    }
+    online
+        .iter()
+        .min_by_key(|n| (n.used_memory_mib, n.used_vcpus, n.id))
+        .map(|n| n.id)
 }
 
 pub fn place_replicas(online: &[NodeId], count: u8, include: Option<NodeId>) -> Vec<NodeId> {
@@ -156,9 +198,9 @@ fn advertised_host_memory_mib() -> Option<u32> {
             continue;
         };
         let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-        // Advertise installed RAM for UI / inventory. Placement still reserves
-        // ~25% via guest_memory_capacity().
-        return Some((kb / 1024).max(1024) as u32);
+        // Advertise installed RAM for UI / inventory. Placement keeps a small
+        // host reserve via host_memory_reserve_mib().
+        return Some((kb / 1024) as u32);
     }
     None
 }
@@ -721,13 +763,83 @@ mod tests {
                 break;
             }
         }
-        let full = (total_kb / 1024).max(1024) as u32;
-        assert_eq!(advertised, full, "cluster must advertise installed RAM, not 3/4 headroom");
+        let full = (total_kb / 1024) as u32;
+        assert_eq!(
+            advertised, full,
+            "cluster must advertise installed RAM, not 3/4 headroom"
+        );
         assert_ne!(advertised, full.saturating_mul(3) / 4);
     }
 
     #[test]
-    fn guest_memory_capacity_reserves_quarter() {
+    fn guest_memory_capacity_fits_1024_on_1088() {
+        let n = NodeLoad {
+            id: NodeId::new(),
+            online: true,
+            cpus: 4,
+            memory_mib: 1088,
+            used_vcpus: 0,
+            used_memory_mib: 0,
+        };
+        assert_eq!(host_memory_reserve_mib(1088), 64);
+        assert_eq!(guest_memory_capacity(&n), 1024);
+        let spec = VmSpec {
+            name: "cloud".into(),
+            vcpus: 1,
+            memory_mib: 1024,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![],
+            nets: vec![],
+            serial_log: None,
+            console_type: Default::default(),
+            ha: false,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
+        };
+        assert!(node_fits(&n, &spec));
+        assert!(guest_start_fits(1088, 0, 1024));
+        assert!(!guest_start_fits(1088, 0, 1025));
+        assert!(!guest_start_fits(1088, 832, 1024));
+    }
+
+    #[test]
+    fn schedule_define_ignores_guest_ram() {
+        let n = NodeLoad {
+            id: NodeId::new(),
+            online: true,
+            cpus: 2,
+            memory_mib: 1088,
+            used_vcpus: 0,
+            used_memory_mib: 0,
+        };
+        let id = n.id;
+        let spec = VmSpec {
+            name: "cloud".into(),
+            vcpus: 1,
+            memory_mib: 4096,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![],
+            nets: vec![],
+            serial_log: None,
+            console_type: Default::default(),
+            ha: false,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
+        };
+        assert_eq!(schedule(&[n.clone()], &spec, None), None);
+        assert_eq!(schedule_define(&[n], None, &[]), Some(id));
+    }
+
+    #[test]
+    fn guest_memory_capacity_caps_reserve_on_large_hosts() {
         let n = NodeLoad {
             id: NodeId::new(),
             online: true,
@@ -736,7 +848,8 @@ mod tests {
             used_vcpus: 0,
             used_memory_mib: 0,
         };
-        assert_eq!(guest_memory_capacity(&n), 24_576);
+        assert_eq!(host_memory_reserve_mib(32_768), 1536);
+        assert_eq!(guest_memory_capacity(&n), 31_232);
     }
 
     #[test]
