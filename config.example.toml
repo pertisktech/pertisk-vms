@@ -8,6 +8,7 @@ listen = "127.0.0.1:7480"
 # tls_cert = "tls/cert.pem"
 # tls_key = "tls/key.pem"
 # Set tls_listen = "off" to disable HTTPS.
+# host_power_cmd = "skip"  # log only; default is systemctl poweroff|reboot
 
 [vmm]
 # mock | cloud-hypervisor | qemu

@@ -9,8 +9,8 @@ use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, ClusterMetrics,
     ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
-    DiskSpec, DriverKind, HostConfig, HostInfo, ImportIsoRequest, IsoRecord, NetworkId,
-    NetworkRecord, NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
+    DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
+    NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
     SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmId, VmMetrics, VmRecord,
     VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, probe_host,
 };
@@ -53,6 +53,8 @@ pub enum DaemonError {
     Peer(String),
     #[error("apt: {0}")]
     Apt(String),
+    #[error("host power: {0}")]
+    HostPower(String),
     #[error(transparent)]
     Control(#[from] ControlError),
     #[error(transparent)]
@@ -2003,6 +2005,80 @@ impl Service {
         }
     }
 
+    fn running_local_guest_count(&self) -> usize {
+        let Ok(vms) = self.store.list() else {
+            return 0;
+        };
+        let self_id = self.cluster.self_id();
+        vms.iter()
+            .filter(|vm| vm.state == VmState::Running && vm.node_id == Some(self_id))
+            .count()
+    }
+
+    /// ACPI-stop local guests, then schedule hypervisor poweroff/reboot.
+    pub fn begin_host_power(
+        &self,
+        user: &AuthUser,
+        action: HostPowerAction,
+    ) -> Result<HostPowerResult, DaemonError> {
+        let override_cmd = self.config.daemon.host_power_cmd.as_deref();
+        if override_cmd.is_none() && !cfg!(target_os = "linux") {
+            return Err(DaemonError::HostPower(
+                "hypervisor shutdown/reboot is only supported on Linux".into(),
+            ));
+        }
+        let guests = self.running_local_guest_count();
+        let kind = match action {
+            HostPowerAction::Shutdown => "host.shutdown",
+            HostPowerAction::Reboot => "host.reboot",
+        };
+        let task = self.begin_task(&user.username, kind, Some("host"))?;
+        let svc = self.clone();
+        let task_id = task.id.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                action = action.as_str(),
+                guests,
+                "host power: shutting down local guests"
+            );
+            svc.shutdown_all_local_vms().await;
+            let result = svc.execute_host_power(action).await;
+            let mapped = result.map_err(|err| err.to_string());
+            if let Err(err) = &mapped {
+                tracing::error!(action = action.as_str(), error = %err, "host power failed");
+            }
+            let _ = svc.finish_task(&task_id, mapped);
+        });
+        Ok(HostPowerResult {
+            ok: true,
+            action: action.as_str().into(),
+            guests,
+        })
+    }
+
+    async fn execute_host_power(&self, action: HostPowerAction) -> Result<(), DaemonError> {
+        tokio::time::sleep(host_power_delay()).await;
+        let Some(argv) = host_power_argv(self.config.daemon.host_power_cmd.as_deref(), action)
+        else {
+            tracing::info!(action = action.as_str(), "host power skipped");
+            return Ok(());
+        };
+        tracing::info!(command = ?argv, "host power");
+        let mut cmd = tokio::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        let status = cmd
+            .status()
+            .await
+            .map_err(|err| DaemonError::HostPower(format!("{}: {err}", argv[0])))?;
+        if !status.success() {
+            return Err(DaemonError::HostPower(format!(
+                "{} exited {status}",
+                argv.join(" ")
+            )));
+        }
+        Ok(())
+    }
+
     /// Poll the hypervisor until the guest exits, then mark the VM stopped.
     fn spawn_exit_watch(&self, record: &VmRecord) {
         if record.state != VmState::Running {
@@ -2627,6 +2703,62 @@ fn host_memory_mib() -> Option<u64> {
     None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostPowerAction {
+    Shutdown,
+    Reboot,
+}
+
+impl HostPowerAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shutdown => "shutdown",
+            Self::Reboot => "reboot",
+        }
+    }
+
+    fn systemd_unit(self) -> &'static str {
+        match self {
+            Self::Shutdown => "poweroff",
+            Self::Reboot => "reboot",
+        }
+    }
+}
+
+fn host_power_delay() -> std::time::Duration {
+    if cfg!(test) {
+        std::time::Duration::from_millis(50)
+    } else {
+        std::time::Duration::from_secs(1)
+    }
+}
+
+/// `None` means skip (tests, or an explicit `skip` override).
+///
+/// During `cargo test`, a missing override never runs `systemctl` — tests often
+/// run as root on a hypervisor.
+fn host_power_argv(override_cmd: Option<&str>, action: HostPowerAction) -> Option<Vec<String>> {
+    match override_cmd.map(str::trim) {
+        Some("") | Some("skip") | Some("none") | Some("off") => None,
+        Some(template) => {
+            let expanded = template.replace("{action}", action.systemd_unit());
+            let args: Vec<String> = expanded.split_whitespace().map(str::to_string).collect();
+            if args.is_empty() { None } else { Some(args) }
+        }
+        None => {
+            if cfg!(test) {
+                return None;
+            }
+            Some(vec![
+                "systemctl".into(),
+                "--no-block".into(),
+                "--no-wall".into(),
+                action.systemd_unit().into(),
+            ])
+        }
+    }
+}
+
 fn iso_is_cidata(disk: &DiskSpec) -> bool {
     disk.iso_name
         .as_deref()
@@ -2707,6 +2839,20 @@ mod tests {
 
     fn vm_id(id: u64) -> VmId {
         id.to_string().parse().unwrap()
+    }
+
+    #[test]
+    fn host_power_argv_skips_and_expands() {
+        assert_eq!(host_power_argv(Some("skip"), HostPowerAction::Reboot), None);
+        assert_eq!(
+            host_power_argv(Some("touch /tmp/host-{action}"), HostPowerAction::Shutdown),
+            Some(vec!["touch".into(), "/tmp/host-poweroff".into()])
+        );
+        assert_eq!(
+            host_power_argv(Some("touch /tmp/host-{action}"), HostPowerAction::Reboot),
+            Some(vec!["touch".into(), "/tmp/host-reboot".into()])
+        );
+        assert_eq!(host_power_argv(None, HostPowerAction::Reboot), None);
     }
 
     #[tokio::test]

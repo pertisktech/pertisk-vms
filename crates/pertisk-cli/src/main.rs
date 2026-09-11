@@ -11,8 +11,8 @@ use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
     ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
-    DEFAULT_LISTEN, DiskSpec, HostInfo, ImportIsoRequest, IsoRecord, JoinClusterRequest,
-    MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
+    DEFAULT_LISTEN, DiskSpec, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
+    JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
     SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId, VmRecord, VmSpec,
     VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
@@ -31,8 +31,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Show hypervisor host capabilities and daemon status.
-    Host,
+    /// Show hypervisor host capabilities, or power this node off/reboot.
+    Host {
+        #[command(subcommand)]
+        command: Option<HostCommand>,
+    },
     /// Sign in and store an API token.
     Login {
         #[arg(long, short)]
@@ -91,6 +94,16 @@ enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum HostCommand {
+    /// ACPI-stop guests, then power off this hypervisor.
+    Shutdown,
+    /// ACPI-stop guests, then reboot this hypervisor.
+    Reboot,
+    /// Alias of reboot.
+    Restart,
 }
 
 #[derive(Debug, Subcommand)]
@@ -509,94 +522,118 @@ async fn run() -> Result<()> {
         let _ = ensure_local_auth(&client, &cli.url).await;
     }
     match cli.command {
-        Command::Host => {
-            let info: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
-            println!("version            {}", info.version);
-            println!("os                 {}", info.os);
-            println!("arch               {}", info.arch);
-            println!("kvm                {}", info.kvm);
-            println!("driver             {}", info.driver);
-            println!(
-                "cloud-hypervisor   {}",
-                info.cloud_hypervisor
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "not found".into())
-            );
-            println!(
-                "firmware           {}",
-                info.firmware
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "not found (kernel boot only)".into())
-            );
-            println!("listen             {}", info.listen);
-            println!(
-                "tls                {}",
-                info.tls_listen.as_deref().unwrap_or("off")
-            );
-            println!(
-                "ipv4               {}",
-                if info.ipv4.is_empty() {
-                    "—".into()
-                } else {
-                    info.ipv4.join(", ")
-                }
-            );
-            println!(
-                "ipv6               {}",
-                if info.ipv6.is_empty() {
-                    "—".into()
-                } else {
-                    info.ipv6.join(", ")
-                }
-            );
-            println!("data_dir           {}", info.data_dir.display());
-            println!("storage            {}", info.storage_root.display());
-            println!(
-                "backend            {} replicas={} rbd={}",
-                info.storage_backend,
-                info.replica_count,
-                if info.rbd { "available" } else { "not found" }
-            );
-            println!(
-                "qemu-img           {}",
-                info.qemu_img
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "not found (raw volumes only)".into())
-            );
-            println!(
-                "host-links         {}",
-                if info.apply_host_links {
-                    "linux ip/tap"
-                } else {
-                    "inventory only"
-                }
-            );
-            println!(
-                "node               {}",
-                info.node_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "-".into())
-            );
-            println!("quorum             {}", info.quorum);
-            if let Ok(status) = get_json::<ClusterStatus>(&client, &cli.url, "/v1/cluster").await {
-                for member in &status.members {
-                    if info.node_id == Some(member.id) {
-                        println!(
-                            "capacity           vcpu {}/{} mem {}/{} MiB",
-                            member.used_vcpus,
-                            member.cpus,
-                            member.used_memory_mib,
-                            member.memory_mib
-                        );
+        Command::Host { command } => match command {
+            Some(HostCommand::Shutdown) => {
+                let result: HostPowerResult =
+                    post_empty(&client, &cli.url, "/v1/host/shutdown").await?;
+                println!(
+                    "shutdown scheduled ({} running guest{})",
+                    result.guests,
+                    if result.guests == 1 { "" } else { "s" }
+                );
+            }
+            Some(HostCommand::Reboot | HostCommand::Restart) => {
+                let result: HostPowerResult =
+                    post_empty(&client, &cli.url, "/v1/host/reboot").await?;
+                println!(
+                    "reboot scheduled ({} running guest{})",
+                    result.guests,
+                    if result.guests == 1 { "" } else { "s" }
+                );
+            }
+            None => {
+                let info: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
+                println!("version            {}", info.version);
+                println!("os                 {}", info.os);
+                println!("arch               {}", info.arch);
+                println!("kvm                {}", info.kvm);
+                println!("driver             {}", info.driver);
+                println!(
+                    "cloud-hypervisor   {}",
+                    info.cloud_hypervisor
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "not found".into())
+                );
+                println!(
+                    "firmware           {}",
+                    info.firmware
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "not found (kernel boot only)".into())
+                );
+                println!("listen             {}", info.listen);
+                println!(
+                    "tls                {}",
+                    info.tls_listen.as_deref().unwrap_or("off")
+                );
+                println!(
+                    "ipv4               {}",
+                    if info.ipv4.is_empty() {
+                        "—".into()
+                    } else {
+                        info.ipv4.join(", ")
+                    }
+                );
+                println!(
+                    "ipv6               {}",
+                    if info.ipv6.is_empty() {
+                        "—".into()
+                    } else {
+                        info.ipv6.join(", ")
+                    }
+                );
+                println!("data_dir           {}", info.data_dir.display());
+                println!("storage            {}", info.storage_root.display());
+                println!(
+                    "backend            {} replicas={} rbd={}",
+                    info.storage_backend,
+                    info.replica_count,
+                    if info.rbd { "available" } else { "not found" }
+                );
+                println!(
+                    "qemu-img           {}",
+                    info.qemu_img
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "not found (raw volumes only)".into())
+                );
+                println!(
+                    "host-links         {}",
+                    if info.apply_host_links {
+                        "linux ip/tap"
+                    } else {
+                        "inventory only"
+                    }
+                );
+                println!(
+                    "node               {}",
+                    info.node_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".into())
+                );
+                println!("quorum             {}", info.quorum);
+                if let Ok(status) =
+                    get_json::<ClusterStatus>(&client, &cli.url, "/v1/cluster").await
+                {
+                    for member in &status.members {
+                        if info.node_id == Some(member.id) {
+                            println!(
+                                "capacity           vcpu {}/{} mem {}/{} MiB",
+                                member.used_vcpus,
+                                member.cpus,
+                                member.used_memory_mib,
+                                member.memory_mib
+                            );
+                        }
                     }
                 }
+                if !info.kvm {
+                    eprintln!(
+                        "note: /dev/kvm is missing; this machine can run the mock driver only"
+                    );
+                }
             }
-            if !info.kvm {
-                eprintln!("note: /dev/kvm is missing; this machine can run the mock driver only");
-            }
-        }
+        },
         Command::Login { username, password } => {
             let out: TokenResponse = post_json(
                 &client,

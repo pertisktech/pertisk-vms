@@ -1031,6 +1031,10 @@ pub struct DaemonConfig {
     pub tls_cert: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<PathBuf>,
+    /// Override `systemctl poweroff|reboot`. `{action}` is replaced with `poweroff`
+    /// or `reboot`. Set to `skip` to log only (used by tests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_power_cmd: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -1044,6 +1048,7 @@ impl Default for DaemonConfig {
             tls_listen: None,
             tls_cert: None,
             tls_key: None,
+            host_power_cmd: None,
         }
     }
 }
@@ -1267,6 +1272,17 @@ pub struct AptActionResult {
     pub log: String,
     #[serde(default)]
     pub reboot_required: bool,
+}
+
+/// Result of scheduling hypervisor shutdown or reboot.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostPowerResult {
+    pub ok: bool,
+    /// `shutdown` or `reboot`.
+    pub action: String,
+    /// Running guests on this node when the request was accepted.
+    #[serde(default)]
+    pub guests: usize,
 }
 
 /// One apt source line/stanza (Proxmox-style Repositories view).

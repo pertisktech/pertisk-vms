@@ -175,11 +175,7 @@ fn apt_root() -> PathBuf {
 }
 
 fn find_apt() -> Option<PathBuf> {
-    const CANDIDATES: &[&str] = &[
-        "/usr/bin/apt-get",
-        "/bin/apt-get",
-        "/usr/local/bin/apt-get",
-    ];
+    const CANDIDATES: &[&str] = &["/usr/bin/apt-get", "/bin/apt-get", "/usr/local/bin/apt-get"];
     for path in CANDIDATES {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
@@ -629,12 +625,17 @@ Err:1 http://deb.debian.org/debian trixie InRelease
 W: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving 'deb.debian.org'
 ";
         assert!(apt_dns_failed(log));
-        assert!(!apt_dns_failed("Hit:1 http://deb.debian.org/debian trixie InRelease\n"));
+        assert!(!apt_dns_failed(
+            "Hit:1 http://deb.debian.org/debian trixie InRelease\n"
+        ));
     }
 
     #[test]
     fn tidy_apt_progress_overwrites() {
-        let log = tidy_apt_log(b"Hit:1 http://deb.debian.org/debian trixie InRelease\n", b"Reading package lists...\rReading package lists... Done\n");
+        let log = tidy_apt_log(
+            b"Hit:1 http://deb.debian.org/debian trixie InRelease\n",
+            b"Reading package lists...\rReading package lists... Done\n",
+        );
         assert!(log.contains("Hit:1"));
         assert!(log.contains("Reading package lists... Done"));
         assert!(!log.contains('\r'));

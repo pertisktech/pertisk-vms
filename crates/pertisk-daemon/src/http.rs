@@ -40,6 +40,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/session", get(session))
         .route("/v1/session/password", post(change_own_password))
         .route("/v1/host", get(host))
+        .route("/v1/host/shutdown", post(host_shutdown))
+        .route("/v1/host/reboot", post(host_reboot))
         .route("/v1/node/shell/ws", get(host_shell_ws))
         .route("/v1/updates", get(list_updates))
         .route("/v1/updates/refresh", post(refresh_updates))
@@ -284,6 +286,26 @@ async fn tracked<T>(
 
 async fn host(State(service): State<Service>) -> impl IntoResponse {
     Json(service.host_info())
+}
+
+async fn host_shutdown(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.begin_host_power(
+        &user,
+        crate::service::HostPowerAction::Shutdown,
+    )?))
+}
+
+async fn host_reboot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.begin_host_power(
+        &user,
+        crate::service::HostPowerAction::Reboot,
+    )?))
 }
 
 async fn host_shell_ws(
@@ -1527,7 +1549,7 @@ impl IntoResponse for DaemonError {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Self::Peer(_) => StatusCode::BAD_GATEWAY,
-            Self::Apt(_) => StatusCode::BAD_REQUEST,
+            Self::Apt(_) | Self::HostPower(_) => StatusCode::BAD_REQUEST,
             Self::Storage(err) => storage_status(err),
             Self::Net(err) => net_status(err),
             Self::Vmm(pertisk_vmm::VmmError::InvalidState { .. }) => StatusCode::CONFLICT,
@@ -2047,6 +2069,66 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = send(&app, Method::GET, "/v1/users", Some(token), None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(&app, Method::POST, "/v1/host/reboot", Some(token), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(&app, Method::POST, "/v1/host/shutdown", Some(token), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn host_power_runs_override_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.daemon.host_power_cmd =
+            Some(format!("touch {}/host-{{action}}", dir.path().display()));
+        let store = Store::open(dir.path().join("vms.json")).unwrap();
+        let volumes = VolumePool::open(dir.path().join("storage"), None).unwrap();
+        let networks = NetworkPool::open(dir.path().join("net"), false).unwrap();
+        let control = ControlStore::open(dir.path().join("control.db"), Some("admin")).unwrap();
+        let vmm =
+            VmmBackend::from_config(DriverKind::Mock, None, dir.path().join("run"), None).unwrap();
+        let svc = Service::new(
+            vmm,
+            store,
+            volumes,
+            networks,
+            control,
+            config,
+            dir.path().to_path_buf(),
+        );
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let (status, body) = send(&app, Method::POST, "/v1/host/reboot", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["action"], "reboot");
+        let marker = dir.path().join("host-reboot");
+        for _ in 0..40 {
+            if marker.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(marker.exists(), "expected {}", marker.display());
+        let (status, tasks) = send(&app, Method::GET, "/v1/tasks", Some(token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["kind"] == "host.reboot"),
+            "missing host.reboot task: {tasks}"
+        );
     }
 
     #[tokio::test]

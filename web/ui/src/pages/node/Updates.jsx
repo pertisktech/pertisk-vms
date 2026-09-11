@@ -61,6 +61,24 @@ export default function NodeUpdates() {
     }
   }
 
+  async function rebootHost() {
+    const ok = await confirm({
+      title: 'Restart this node',
+      message:
+        'Reboot this hypervisor to finish the kernel or firmware update? Running guests get an ACPI shutdown first. The UI disconnects until the node is back.',
+      confirmLabel: 'Restart',
+      tone: 'danger',
+    })
+    if (!ok) return
+    setBusy('reboot')
+    try {
+      await api('/v1/host/reboot', { method: 'POST' })
+    } catch (err) {
+      setError(err.message || String(err))
+      setBusy('')
+    }
+  }
+
   const packages = asList(status?.packages)
   const apt = status?.apt !== false
 
@@ -82,6 +100,11 @@ export default function NodeUpdates() {
             <Btn icon="updates" disabled={!!busy || !apt} onClick={upgrade}>
               {busy === 'upgrade' ? 'Upgrading…' : 'Upgrade'}
             </Btn>
+            {status?.reboot_required && (
+              <Btn icon="refresh" variant="secondary" disabled={!!busy} onClick={rebootHost}>
+                {busy === 'reboot' ? 'Restarting…' : 'Restart node'}
+              </Btn>
+            )}
           </div>
         )}
       </div>
