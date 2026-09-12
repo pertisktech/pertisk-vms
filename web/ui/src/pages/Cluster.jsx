@@ -1,41 +1,11 @@
-import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { api, asList, formatBytes, publicIpv6 } from '../api'
-import { Btn, Icon } from '../components/Icons'
-import Modal from '../components/Modal'
-import { useConfirm } from '../components/Confirm'
+import { asList, formatBytes, publicIpv6 } from '../api'
+import { Icon } from '../components/Icons'
 
 export default function Cluster() {
-  const { canWrite, inv } = useOutletContext()
-  const { cluster, error, setError, mutate } = inv
-  const confirm = useConfirm()
+  const { inv } = useOutletContext()
+  const { cluster, error, setError } = inv
   const members = asList(cluster?.members)
-  const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ peer: '', username: 'admin', password: '' })
-  const [busy, setBusy] = useState(false)
-
-  async function join(e) {
-    e.preventDefault()
-    setBusy(true)
-    try {
-      await mutate(() =>
-        api('/v1/cluster/join', {
-          method: 'POST',
-          body: {
-            peer: form.peer.trim(),
-            username: form.username.trim(),
-            password: form.password,
-          },
-        }),
-      )
-      setOpen(false)
-      setForm({ peer: '', username: 'admin', password: '' })
-    } catch {
-      /* inventory */
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return (
     <div className="dash-page">
@@ -51,30 +21,6 @@ export default function Cluster() {
             {cluster?.fenced ? ' · fenced' : ''}
           </p>
         </div>
-        {canWrite && (
-          <div className="dash-resources-actions">
-            {members.length > 1 && (
-              <Btn
-                icon="trash"
-                variant="danger"
-                onClick={async () => {
-                  const ok = await confirm({
-                    title: 'Leave cluster',
-                    message:
-                      'This node becomes a solo cluster. Guests on other nodes stay there. Continue?',
-                    confirmLabel: 'Leave',
-                  })
-                  if (ok) mutate(() => api('/v1/cluster/leave', { method: 'POST' }))
-                }}
-              >
-                Leave
-              </Btn>
-            )}
-            <Btn icon="plus" onClick={() => setOpen(true)}>
-              Join peer
-            </Btn>
-          </div>
-        )}
       </div>
       {error && (
         <div className="banner danger">
@@ -129,56 +75,6 @@ export default function Cluster() {
           )
         })}
       </div>
-
-      {open && (
-        <Modal
-          title="Join a peer"
-          hint="This node will join the cluster advertised at the peer URL."
-          onClose={() => setOpen(false)}
-          footer={
-            <>
-              <button type="button" className="secondary" onClick={() => setOpen(false)}>
-                Cancel
-              </button>
-              <button type="submit" form="join-peer" disabled={busy}>
-                Join
-              </button>
-            </>
-          }
-        >
-          <form id="join-peer" onSubmit={join}>
-            <div className="field">
-              <label htmlFor="peer-url">Peer URL</label>
-              <input
-                id="peer-url"
-                required
-                value={form.peer}
-                onChange={(e) => setForm({ ...form, peer: e.target.value })}
-                placeholder="http://127.0.0.1:7481"
-              />
-            </div>
-            <div className="form-grid">
-              <div className="field">
-                <label htmlFor="peer-user">Username</label>
-                <input
-                  id="peer-user"
-                  value={form.username}
-                  onChange={(e) => setForm({ ...form, username: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="peer-pass">Password</label>
-                <input
-                  id="peer-pass"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                />
-              </div>
-            </div>
-          </form>
-        </Modal>
-      )}
     </div>
   )
 }
