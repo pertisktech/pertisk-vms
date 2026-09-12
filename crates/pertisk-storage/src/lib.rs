@@ -67,6 +67,83 @@ struct Inventory {
     isos: BTreeMap<String, IsoRecord>,
 }
 
+/// Re-register disk files present under `disks/` that are missing from inventory
+/// (e.g. after a zeroed/corrupt `inventory.json` was quarantined).
+fn recover_orphan_disks(root: &Path, inv: &mut Inventory) -> usize {
+    let disks = root.join("disks");
+    let Ok(entries) = std::fs::read_dir(&disks) else {
+        return 0;
+    };
+    let mut recovered = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(id) = stem.parse::<VolumeId>() else {
+            continue;
+        };
+        if inv.volumes.contains_key(&id) {
+            continue;
+        }
+        let format = match path.extension().and_then(|e| e.to_str()) {
+            Some("qcow2") => VolumeFormat::Qcow2,
+            Some("raw") => VolumeFormat::Raw,
+            _ => continue,
+        };
+        let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        if size_bytes == 0 {
+            continue;
+        }
+        inv.volumes.insert(
+            id,
+            VolumeRecord {
+                id,
+                name: format!("recovered-{id}"),
+                format,
+                size_bytes,
+                path: path.clone(),
+                backing_id: None,
+                snapshots: Vec::new(),
+                replicas: Vec::new(),
+                replica_count: 1,
+                backend: StorageBackend::Replica,
+            },
+        );
+        recovered += 1;
+    }
+
+    let iso_dir = root.join("iso");
+    if let Ok(entries) = std::fs::read_dir(&iso_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()).map(str::to_string) else {
+                continue;
+            };
+            if inv.isos.contains_key(&name) {
+                continue;
+            }
+            let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            inv.isos.insert(
+                name.clone(),
+                IsoRecord {
+                    name,
+                    path,
+                    size_bytes,
+                },
+            );
+            recovered += 1;
+        }
+    }
+    recovered
+}
+
 #[derive(Debug)]
 pub struct VolumePool {
     root: PathBuf,
@@ -82,9 +159,9 @@ impl VolumePool {
         std::fs::create_dir_all(root.join("iso"))?;
         std::fs::create_dir_all(root.join("snapshots"))?;
         let inventory_path = root.join("inventory.json");
-        let inner = if inventory_path.exists() {
+        let mut inner = if inventory_path.exists() {
             let text = std::fs::read_to_string(&inventory_path)?;
-            if text.trim().is_empty() {
+            if text.trim().is_empty() || text.bytes().all(|b| b == 0) {
                 Inventory::default()
             } else {
                 match serde_json::from_str(&text) {
@@ -104,12 +181,20 @@ impl VolumePool {
         } else {
             Inventory::default()
         };
-        Ok(Self {
+        let recovered = recover_orphan_disks(&root, &mut inner);
+        let pool = Self {
             qemu: QemuImg::new(qemu_img),
             root,
             inner: Mutex::new(inner),
             inventory_path,
-        })
+        };
+        if recovered > 0 {
+            let _ = pool.flush();
+            eprintln!(
+                "pertisk-storage: re-registered {recovered} orphan disk(s) into inventory"
+            );
+        }
+        Ok(pool)
     }
 
     pub fn root(&self) -> &Path {
