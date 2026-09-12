@@ -1,8 +1,9 @@
 import { useOutletContext } from 'react-router-dom'
+import JoinCluster from '../components/JoinCluster'
 import ResourceView from '../components/ResourceView'
 
 export default function Datacenter() {
-  const { user, inv } = useOutletContext()
+  const { user, canWrite, inv } = useOutletContext()
   const tabs = [
     { to: 'summary', label: 'Summary', icon: 'summary' },
     { to: 'storage', label: 'Storage', icon: 'disk' },
@@ -24,6 +25,7 @@ export default function Datacenter() {
         inv.cluster?.fenced ? <span className="badge error">fenced</span> : null
       }
       tabs={tabs}
+      actions={<JoinCluster canWrite={canWrite} inv={inv} />}
     />
   )
 }
