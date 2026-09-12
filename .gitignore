@@ -1,5 +1,5 @@
 /target
-terraform-provider-pertisk/terraform-provider-pertisk
+terraform-provider-pertisk-vms/terraform-provider-pertisk-vms
 **/.terraform/
 **/.terraform.lock.hcl
 *.tfstate

@@ -18,7 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk/internal/client"
+	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/client"
 )
 
 var (
@@ -225,7 +225,7 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Attributes: map[string]schema.Attribute{
 					"template_id": schema.StringAttribute{
 						Optional:            true,
-						MarkdownDescription: "Template ID (`pertisk_template.ubuntu.id`). Preferred over `id`/`name`.",
+						MarkdownDescription: "Template ID (`pertisk_vms_template.ubuntu.id`). Preferred over `id`/`name`.",
 					},
 					"id": schema.StringAttribute{
 						Optional:            true,

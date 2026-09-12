@@ -146,7 +146,7 @@ pertisk-daemon    node agent, reconcile      phases 1 and 5
 pertisk-api       HTTP, auth, tasks          phase 4
 pertisk-cli       operator CLI               phase 1 onward
 iso/image         live + installer (scripts) phase 7
-terraform-provider-pertisk  Terraform provider  phase 8
+terraform-provider-pertisk-vms  Terraform provider  phase 8
 
 
 Release gates

@@ -337,7 +337,7 @@ pertisk cluster status
 - GPU sharing
 - Advanced scheduling (DRS-style)
 - Multi-cloud federation
-- [x] Terraform provider (`terraform-provider-pertisk/`, UI: Datacenter → Terraform)
+- [x] Terraform provider (`terraform-provider-pertisk-vms/`, UI: Datacenter → Terraform)
 
 ## Building & Testing
 
@@ -370,7 +370,7 @@ crates/
   ├─ pertisk-api/         # OpenAPI types & schema
   └─ pertisk-cli/         # Command-line interface
 web/ui/                   # React + Vite web dashboard
-terraform-provider-pertisk/ # Terraform provider (guests, networks, volumes)
+terraform-provider-pertisk-vms/ # Terraform provider (guests, templates, networks, volumes)
 docs/                     # Documentation
   ├─ 2-phases.txt         # Project phases & roadmap
   ├─ GRAPHICS_CONSOLE.md  # VGA console guide

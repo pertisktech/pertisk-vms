@@ -1,4 +1,4 @@
-module github.com/pertisktech/pertisk-vms/terraform-provider-pertisk
+module github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms
 
 go 1.25.0
 

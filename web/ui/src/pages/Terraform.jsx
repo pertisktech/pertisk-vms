@@ -71,13 +71,13 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
   const providerLines = [
     'terraform {',
     '  required_providers {',
-    '    pertisk = {',
-    '      source = "pertisktech/pertisk"',
+    '    pertisk_vms = {',
+    '      source = "pertisktech/pertisk-vms"',
     '    }',
     '  }',
     '}',
     '',
-    'provider "pertisk" {',
+    'provider "pertisk_vms" {',
     `  endpoint = ${quote(url)}`,
     `  username = ${quote(user)}`,
     '  password = var.pertisk_password',
@@ -92,7 +92,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
   chunks.push(providerLines.join('\n'))
 
   if (templates.length) {
-    const parts = ['# Cloud templates — terraform import pertisk_template.<name> <id>']
+    const parts = ['# Cloud templates — terraform import pertisk_vms_template.<name> <id>']
     for (const tpl of templates) {
       const ident = tfIdent(tpl.spec?.name || tpl.id, tplNames)
       const spec = tpl.spec || {}
@@ -102,9 +102,9 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
         `vcpus      = ${Number(spec.vcpus) || 1}`,
         `memory_mib = ${Number(spec.memory_mib) || 1024}`,
         '# image   = "./disk.qcow2"   # upload a cloud image',
-        '# volume_id = pertisk_volume.cloud.id',
+        '# volume_id = pertisk_vms_volume.cloud.id',
       ].join('\n')
-      parts.push(block('resource "pertisk_template"', ident, inner))
+      parts.push(block('resource "pertisk_vms_template"', ident, inner))
     }
     chunks.push(parts.join('\n\n'))
   }
@@ -125,7 +125,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
       ]
         .filter(Boolean)
         .join('\n')
-      parts.push(block('resource "pertisk_network"', ident, inner))
+      parts.push(block('resource "pertisk_vms_network"', ident, inner))
     }
     chunks.push(parts.join('\n\n'))
   }
@@ -142,7 +142,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
       ]
         .filter(Boolean)
         .join('\n')
-      parts.push(block('resource "pertisk_volume"', ident, inner))
+      parts.push(block('resource "pertisk_vms_volume"', ident, inner))
     }
     chunks.push(parts.join('\n\n'))
   }
@@ -170,7 +170,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
       for (const d of disksOf(vm).filter((disk) => !disk.cdrom && disk.volume_id)) {
         const volIdent = volById.get(String(d.volume_id))
         const inner = volIdent
-          ? `volume_id = pertisk_volume.${volIdent}.id`
+          ? `volume_id = pertisk_vms_volume.${volIdent}.id`
           : `volume_id = ${quote(d.volume_id)}`
         rows.push(`disk {\n${indent(inner)}\n}`)
       }
@@ -178,7 +178,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
         const netIdent = netById.get(String(n.network_id))
         const inner = [
           netIdent
-            ? `network_id = pertisk_network.${netIdent}.id`
+            ? `network_id = pertisk_vms_network.${netIdent}.id`
             : n.network_id
               ? `network_id = ${quote(n.network_id)}`
               : null,
@@ -188,7 +188,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
           .join('\n')
         if (inner) rows.push(`nic {\n${indent(inner)}\n}`)
       }
-      parts.push(block('resource "pertisk_vm"', ident, rows.join('\n')))
+      parts.push(block('resource "pertisk_vms_vm"', ident, rows.join('\n')))
     }
     chunks.push(parts.join('\n\n'))
   }
@@ -196,19 +196,19 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
   if (!networks.length && !vms.length && !volumes.length) {
     chunks.push(`# No guests or networks yet. Example:
 #
-# resource "pertisk_network" "lan" {
+# resource "pertisk_vms_network" "lan" {
 #   name = "lan"
 #   mode = "nat"
 #   cidr = "10.90.0.0/24"
 # }
 #
-# resource "pertisk_vm" "web" {
+# resource "pertisk_vms_vm" "web" {
 #   name       = "web-1"
 #   vcpus      = 2
 #   memory_mib = 2048
 #   started    = true
 #   disk { size = "32G" }
-#   nic { network_id = pertisk_network.lan.id }
+#   nic { network_id = pertisk_vms_network.lan.id }
 # }`)
   }
 
@@ -240,26 +240,26 @@ function CodeBlock({ value, label }) {
 
 const SETUP = `provider_installation {
   dev_overrides {
-    "pertisktech/pertisk" = "/path/to/pertisk-vms/terraform-provider-pertisk"
+    "pertisktech/pertisk-vms" = "/path/to/pertisk-vms/terraform-provider-pertisk-vms"
   }
   direct {}
 }`
 
-const FROM_TEMPLATE = `resource "pertisk_template" "ubuntu" {
+const FROM_TEMPLATE = `resource "pertisk_vms_template" "ubuntu" {
   name       = "ubuntu-24.04"
   image      = "./ubuntu-24.04-server-cloudimg-amd64.img"
   vcpus      = 1
   memory_mib = 1024
 }
 
-resource "pertisk_vm" "web" {
+resource "pertisk_vms_vm" "web" {
   name       = "web-1"
   vcpus      = 2
   memory_mib = 2048
   started    = true
 
   clone {
-    template_id = pertisk_template.ubuntu.id
+    template_id = pertisk_vms_template.ubuntu.id
     linked      = true
   }
 
@@ -317,7 +317,7 @@ export default function Terraform() {
           Provider setup
         </h2>
         <p className="muted tf-help">
-          From the repo: <code>cd terraform-provider-pertisk && go build</code>. Put this in{' '}
+          From the repo: <code>cd terraform-provider-pertisk-vms && go build</code>. Put this in{' '}
           <code>~/.terraformrc</code> so Terraform uses that binary (not the registry):
         </p>
         <CodeBlock value={SETUP} label="Copy" />
@@ -334,8 +334,8 @@ export default function Terraform() {
           Upload a template, then clone guests
         </h2>
         <p className="muted tf-help">
-          <code>pertisk_template</code> uploads a cloud image (or wraps a volume).{' '}
-          <code>pertisk_vm</code> with <code>clone.template_id</code> creates a guest from it.
+          <code>pertisk_vms_template</code> uploads a cloud image (or wraps a volume).{' '}
+          <code>pertisk_vms_vm</code> with <code>clone.template_id</code> creates a guest from it.
         </p>
         <CodeBlock value={FROM_TEMPLATE} label="Copy" />
       </section>
@@ -347,7 +347,7 @@ export default function Terraform() {
         </h2>
         <p className="muted tf-help">
           Snapshot of current inventory as HCL. Import existing objects with{' '}
-          <code>terraform import pertisk_vm.&lt;name&gt; &lt;id&gt;</code> before applying, or use
+          <code>terraform import pertisk_vms_vm.&lt;name&gt; &lt;id&gt;</code> before applying, or use
           this as a starting point for new guests.
         </p>
         <CodeBlock value={hcl} label="Copy HCL" />
@@ -370,21 +370,21 @@ export default function Terraform() {
             <tbody>
               <tr>
                 <td>
-                  <code>pertisk_network</code>
+                  <code>pertisk_vms_network</code>
                 </td>
                 <td>NAT or bridge networks</td>
                 <td>{inv?.networks?.length || 0}</td>
               </tr>
               <tr>
                 <td>
-                  <code>pertisk_volume</code>
+                  <code>pertisk_vms_volume</code>
                 </td>
                 <td>raw / qcow2 disks</td>
                 <td>{inv?.volumes?.length || 0}</td>
               </tr>
               <tr>
                 <td>
-                  <code>pertisk_template</code>
+                  <code>pertisk_vms_template</code>
                 </td>
                 <td>Upload a cloud image, wrap a volume, or convert a guest</td>
                 <td>
@@ -393,7 +393,7 @@ export default function Terraform() {
               </tr>
               <tr>
                 <td>
-                  <code>pertisk_vm</code>
+                  <code>pertisk_vms_vm</code>
                 </td>
                 <td>
                   Guests — clone with <code>clone.template_id</code>
@@ -404,7 +404,7 @@ export default function Terraform() {
               </tr>
               <tr>
                 <td>
-                  <code>data.pertisk_cluster</code>
+                  <code>data.pertisk_vms_cluster</code>
                 </td>
                 <td>Quorum and members</td>
                 <td>{inv?.cluster?.name || '—'}</td>

@@ -30,7 +30,7 @@ Writes require majority quorum. A node that loses quorum fences itself (stops lo
 Web UI: [http://127.0.0.1:7480/](http://127.0.0.1:7480/)  
 OpenAPI: [http://127.0.0.1:7480/v1/openapi.json](http://127.0.0.1:7480/v1/openapi.json)
 
-**Terraform:** Datacenter → Terraform in the UI, or the provider in `terraform-provider-pertisk/`. Build with `cd terraform-provider-pertisk && go build`, then `dev_overrides` in `~/.terraformrc` (see that README). Resources: `pertisk_vm`, `pertisk_network`, `pertisk_volume`.
+**Terraform:** Datacenter → Terraform in the UI, or the provider in `terraform-provider-pertisk-vms/`. Build with `cd terraform-provider-pertisk-vms && go build`, then `dev_overrides` in `~/.terraformrc` (see that README). Resources: `pertisk_vms_vm`, `pertisk_vms_template`, `pertisk_vms_network`, `pertisk_vms_volume`.
 
 The UI is a React app in `web/ui`. Rebuild it into the daemon with:
 

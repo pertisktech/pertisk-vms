@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk/internal/client"
+	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/client"
 )
 
 var (

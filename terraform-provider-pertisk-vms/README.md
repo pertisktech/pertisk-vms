@@ -5,32 +5,32 @@ Manage guests, templates, networks, and volumes through the Pertisk HTTP API.
 ```hcl
 terraform {
   required_providers {
-    pertisk = {
-      source = "pertisktech/pertisk"
+    pertisk_vms = {
+      source = "pertisktech/pertisk-vms"
     }
   }
 }
 
-provider "pertisk" {
+provider "pertisk_vms" {
   endpoint = "https://node:7480"
   username = "admin"
   password = var.pertisk_password
   insecure = true # self-signed appliance certs
 }
 
-resource "pertisk_template" "ubuntu" {
+resource "pertisk_vms_template" "ubuntu" {
   name  = "ubuntu-24.04"
   image = "./ubuntu-24.04-server-cloudimg-amd64.img"
 }
 
-resource "pertisk_vm" "web" {
+resource "pertisk_vms_vm" "web" {
   name       = "web-1"
   vcpus      = 2
   memory_mib = 2048
   started    = true
 
   clone {
-    template_id = pertisk_template.ubuntu.id
+    template_id = pertisk_vms_template.ubuntu.id
     linked      = true
   }
 
@@ -46,8 +46,8 @@ resource "pertisk_vm" "web" {
 The provider is not on the Terraform Registry yet. Build it from this repo:
 
 ```bash
-cd terraform-provider-pertisk
-go build -o terraform-provider-pertisk
+cd terraform-provider-pertisk-vms
+go build -o terraform-provider-pertisk-vms
 ```
 
 Point Terraform at the binary with a [CLI config](https://developer.hashicorp.com/terraform/cli/config/config-file) `dev_overrides` block (`~/.terraformrc` on macOS/Linux):
@@ -55,7 +55,7 @@ Point Terraform at the binary with a [CLI config](https://developer.hashicorp.co
 ```hcl
 provider_installation {
   dev_overrides {
-    "pertisktech/pertisk" = "/absolute/path/to/pertisk-vms/terraform-provider-pertisk"
+    "pertisktech/pertisk-vms" = "/absolute/path/to/pertisk-vms/terraform-provider-pertisk-vms"
   }
   direct {}
 }
@@ -67,17 +67,17 @@ provider_installation {
 
 | Name | API |
 |---|---|
-| `pertisk_template` | `POST /v1/templates/import`, `POST /v1/templates`, or `POST /v1/vms/{id}/template` |
-| `pertisk_network` | `POST /v1/networks` |
-| `pertisk_volume` | `POST /v1/volumes` (resize via `/resize`) |
-| `pertisk_vm` | define + attach, or `POST /v1/vms/{id}/clone` |
+| `pertisk_vms_template` | `POST /v1/templates/import`, `POST /v1/templates`, or `POST /v1/vms/{id}/template` |
+| `pertisk_vms_network` | `POST /v1/networks` |
+| `pertisk_vms_volume` | `POST /v1/volumes` (resize via `/resize`) |
+| `pertisk_vms_vm` | define + attach, or `POST /v1/vms/{id}/clone` |
 
-### `pertisk_template`
+### `pertisk_vms_template`
 
 Upload a cloud disk image (same as Datacenter → Templates → Import image):
 
 ```hcl
-resource "pertisk_template" "ubuntu" {
+resource "pertisk_vms_template" "ubuntu" {
   name       = "ubuntu-24.04"
   image      = "./ubuntu-24.04-server-cloudimg-amd64.img"
   format     = "qcow2" # optional; `.img` / `.qcow2` default to qcow2
@@ -89,25 +89,25 @@ resource "pertisk_template" "ubuntu" {
 Wrap an already-imported volume, or convert a stopped guest:
 
 ```hcl
-resource "pertisk_template" "from_vol" {
+resource "pertisk_vms_template" "from_vol" {
   name      = "ubuntu-24.04"
-  volume_id = pertisk_volume.cloud.id
+  volume_id = pertisk_vms_volume.cloud.id
 }
 
-resource "pertisk_template" "golden" {
+resource "pertisk_vms_template" "golden" {
   name         = "web-golden"
-  source_vm_id = pertisk_vm.golden.id
+  source_vm_id = pertisk_vms_vm.golden.id
 }
 ```
 
 Set exactly one of `image`, `volume_id`, or `source_vm_id`. Changing the image file (SHA-256) replaces the template.
 
-### `pertisk_vm`
+### `pertisk_vms_vm`
 
 Create a blank guest with a disk and installer ISO:
 
 ```hcl
-resource "pertisk_vm" "install" {
+resource "pertisk_vms_vm" "install" {
   vm_id      = "120"
   name       = "alpine"
   vcpus      = 1
@@ -122,20 +122,20 @@ resource "pertisk_vm" "install" {
 Clone a template into a guest:
 
 ```hcl
-resource "pertisk_vm" "web" {
+resource "pertisk_vms_vm" "web" {
   name       = "web-1"
   vcpus      = 2
   memory_mib = 2048
   started    = true
 
   clone {
-    template_id = pertisk_template.ubuntu.id
+    template_id = pertisk_vms_template.ubuntu.id
     linked      = true
     disk_size   = "40G"
   }
 
   nic {
-    network_id = pertisk_network.lan.id
+    network_id = pertisk_vms_network.lan.id
   }
 
   cloud_init {
@@ -151,16 +151,16 @@ Destroy deletes the guest. Exclusive disks (and cidata ISOs) are removed by the 
 
 ## Data sources
 
-- `pertisk_cluster` — quorum, members
-- `pertisk_vm` — lookup by `id` or `name`
-- `pertisk_network` — lookup by `id` or `name`
-- `pertisk_template` — lookup a cloud template by `id` or `name`
+- `pertisk_vms_cluster` — quorum, members
+- `pertisk_vms_vm` — lookup by `id` or `name`
+- `pertisk_vms_network` — lookup by `id` or `name`
+- `pertisk_vms_template` — lookup a cloud template by `id` or `name`
 
 ## Import
 
 ```bash
-terraform import pertisk_vm.web 100
-terraform import pertisk_template.ubuntu 100
-terraform import pertisk_network.lan <uuid>
-terraform import pertisk_volume.disk <uuid>
+terraform import pertisk_vms_vm.web 100
+terraform import pertisk_vms_template.ubuntu 100
+terraform import pertisk_vms_network.lan <uuid>
+terraform import pertisk_vms_volume.disk <uuid>
 ```

@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk/internal/provider"
+	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/provider"
 )
 
 var version = "0.1.0"
@@ -17,7 +17,7 @@ func main() {
 	flag.Parse()
 
 	err := providerserver.Serve(context.Background(), provider.New(version), providerserver.ServeOpts{
-		Address: "registry.terraform.io/pertisktech/pertisk",
+		Address: "registry.terraform.io/pertisktech/pertisk-vms",
 		Debug:   debug,
 	})
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk/internal/client"
+	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/client"
 )
 
 var (
@@ -50,7 +50,7 @@ func (r *templateResource) Metadata(_ context.Context, req resource.MetadataRequ
 
 func (r *templateResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "A cloud template. Upload a disk image, wrap an existing volume, or convert a stopped guest. Clone it with `pertisk_vm` `clone.template_id`.",
+		MarkdownDescription: "A cloud template. Upload a disk image, wrap an existing volume, or convert a stopped guest. Clone it with `pertisk_vms_vm` `clone.template_id`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,

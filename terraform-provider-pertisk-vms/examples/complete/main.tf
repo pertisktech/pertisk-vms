@@ -1,12 +1,12 @@
 terraform {
   required_providers {
-    pertisk = {
-      source = "pertisktech/pertisk"
+    pertisk_vms = {
+      source = "pertisktech/pertisk-vms"
     }
   }
 }
 
-provider "pertisk" {
+provider "pertisk_vms" {
   endpoint = var.endpoint
   username = var.username
   password = var.password
@@ -33,22 +33,22 @@ variable "insecure" {
   default = false
 }
 
-data "pertisk_cluster" "this" {}
+data "pertisk_vms_cluster" "this" {}
 
-resource "pertisk_template" "ubuntu" {
+resource "pertisk_vms_template" "ubuntu" {
   name       = "ubuntu-24.04"
   image      = "./ubuntu-24.04-server-cloudimg-amd64.img"
   vcpus      = 1
   memory_mib = 1024
 }
 
-resource "pertisk_network" "lan" {
+resource "pertisk_vms_network" "lan" {
   name = "tf-lan"
   mode = "nat"
   cidr = "10.94.0.0/24"
 }
 
-resource "pertisk_vm" "web" {
+resource "pertisk_vms_vm" "web" {
   vm_id      = "110"
   name       = "tf-web-1"
   vcpus      = 2
@@ -57,12 +57,12 @@ resource "pertisk_vm" "web" {
   ha         = true
 
   clone {
-    template_id = pertisk_template.ubuntu.id
+    template_id = pertisk_vms_template.ubuntu.id
     linked      = true
   }
 
   nic {
-    network_id = pertisk_network.lan.id
+    network_id = pertisk_vms_network.lan.id
   }
 
   cloud_init {
@@ -75,9 +75,9 @@ resource "pertisk_vm" "web" {
 }
 
 output "cluster_quorum" {
-  value = data.pertisk_cluster.this.quorum
+  value = data.pertisk_vms_cluster.this.quorum
 }
 
 output "web_id" {
-  value = pertisk_vm.web.vm_id
+  value = pertisk_vms_vm.web.vm_id
 }

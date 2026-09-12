@@ -9,13 +9,13 @@ import (
 
 func testAccProtoV6ProviderFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
-		"pertisk": providerserver.NewProtocol6WithError(New("test")()),
+		"pertisk_vms": providerserver.NewProtocol6WithError(New("test")()),
 	}
 }
 
 func TestProviderFactories(t *testing.T) {
 	factories := testAccProtoV6ProviderFactories()
-	if _, ok := factories["pertisk"]; !ok {
-		t.Fatal("missing pertisk factory")
+	if _, ok := factories["pertisk_vms"]; !ok {
+		t.Fatal("missing pertisk_vms factory")
 	}
 }

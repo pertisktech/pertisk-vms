@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk/internal/client"
+	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/client"
 )
 
 var _ provider.Provider = &pertiskProvider{}
@@ -36,7 +36,7 @@ func New(version string) func() provider.Provider {
 }
 
 func (p *pertiskProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "pertisk"
+	resp.TypeName = "pertisk_vms"
 	resp.Version = p.version
 }
 
