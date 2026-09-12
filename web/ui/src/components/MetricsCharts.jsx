@@ -5,63 +5,25 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { asList, formatBytes } from '../api'
+import { asList } from '../api'
 import { Icon } from './Icons'
 
 const CHART = {
-  cpu: 'var(--color-primary)',
-  mem: 'var(--color-blue-b1)',
-  disk: 'var(--color-yellow-y1)',
-  rx: 'var(--color-green-g1)',
-  tx: 'var(--color-yellow-y1)',
-}
-
-const tooltipStyle = {
-  backgroundColor: 'var(--color-surface-elevated)',
-  border: '1px solid var(--color-border)',
-  borderRadius: 8,
-  color: 'var(--color-text)',
-  fontSize: 12,
-  fontFamily: 'Geist, ui-sans-serif, system-ui, sans-serif',
-}
-
-function formatRate(bps) {
-  const n = Number(bps) || 0
-  if (n < 1024) return `${n} B/s`
-  return `${formatBytes(n)}/s`
+  cpu: 'var(--chart-1)',
+  mem: 'var(--chart-3)',
+  disk: 'var(--chart-4)',
+  rx: 'var(--chart-2)',
+  tx: 'var(--chart-5)',
 }
 
 function formatPct(value) {
   if (value == null || !Number.isFinite(value)) return '—'
   return `${value.toFixed(value >= 10 ? 0 : 1)}%`
-}
-
-function sampleBytes(sample, bytesKey, aliasKey) {
-  const raw = sample?.[bytesKey] ?? sample?.[aliasKey]
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : 0
-}
-
-function formatMemStat(sample) {
-  const total = sampleBytes(sample, 'mem_total_bytes', 'mem_total')
-  const used = sampleBytes(sample, 'mem_used_bytes', 'mem_used')
-  if (total <= 0) return '—'
-  const free = Math.max(0, total - used)
-  const pct = Math.round((used / total) * 1000) / 10
-  return `${formatPct(pct)} · ${formatBytes(used)} used · ${formatBytes(free)} free · ${formatBytes(total)} total`
-}
-
-function formatDiskStat(sample) {
-  const total = sampleBytes(sample, 'disk_total_bytes', 'disk_total')
-  const used = sampleBytes(sample, 'disk_used_bytes', 'disk_used')
-  if (total <= 0) return '—'
-  return `${formatBytes(used)} / ${formatBytes(total)}`
 }
 
 function formatMibps(value) {
@@ -82,23 +44,11 @@ function EmptyChart({ message }) {
   return <div className="metrics-chart-empty">{message}</div>
 }
 
-function Stat({ label, value }) {
-  return (
-    <div className="stat">
-      <div className="label">{label}</div>
-      <div className="value">{value}</div>
-    </div>
-  )
-}
-
-function ChartCard({ title, hint, legend, children, empty }) {
+function ChartCard({ title, legend, children, empty }) {
   return (
     <section className="card metrics-chart-card">
       <div className="metrics-chart-head">
-        <div>
-          <h2>{title}</h2>
-          {hint && <p className="metrics-chart-hint">{hint}</p>}
-        </div>
+        <h2>{title}</h2>
         {legend && <div className="metrics-legend">{legend}</div>}
       </div>
       {empty ? <EmptyChart message={empty} /> : <div className="metrics-chart">{children}</div>}
@@ -106,45 +56,97 @@ function ChartCard({ title, hint, legend, children, empty }) {
   )
 }
 
-const HINTS = {
-  cluster: {
-    cpu: 'Percent of host cores',
-    mem: 'Used percent of installed RAM and storage root.',
-    net: 'Receive and transmit, from successive host samples.',
-  },
-  node: {
-    cpu: 'Percent of this node’s cores',
-    mem: 'Used percent of this node’s RAM and storage root.',
-    net: 'Receive and transmit on this node.',
-  },
-  vm: {
-    cpu: 'Guest CPU as a share of host cores',
-    mem: 'Guest RSS versus assigned memory, and disk image usage.',
-    net: 'Receive and transmit on the guest TAP.',
-  },
+function ChartTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="metrics-chart-tooltip">
+      <div className="metrics-chart-tooltip-time">{label}</div>
+      {payload.map((item) => (
+        <div key={item.dataKey} className="metrics-chart-tooltip-row">
+          <span className="metrics-legend-dot" style={{ backgroundColor: item.stroke }} />
+          <span>{item.name}</span>
+          <span className="metrics-chart-tooltip-val">
+            {item.unit === '%' ? formatPct(Number(item.value)) : formatMibps(Number(item.value))}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function UsageChart({ data, metrics, domain }) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 4, right: 12, bottom: 0, left: -8 }}>
+        <defs>
+          {metrics.map((metric) => (
+            <linearGradient key={metric.key} id={metric.gradient} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={metric.color} stopOpacity={0.35} />
+              <stop offset="100%" stopColor={metric.color} stopOpacity={0.02} />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+        <XAxis
+          dataKey="time"
+          tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
+          tickLine={false}
+          axisLine={{ stroke: 'var(--border)' }}
+          minTickGap={48}
+        />
+        <YAxis
+          domain={domain}
+          tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
+          tickLine={false}
+          axisLine={false}
+          width={44}
+          tickFormatter={domain?.[1] === 100 ? (v) => `${v}` : undefined}
+        />
+        <Tooltip content={<ChartTooltip />} />
+        {metrics.map((metric) => (
+          <Area
+            key={metric.key}
+            type="monotone"
+            dataKey={metric.key}
+            name={metric.label}
+            unit={metric.unit}
+            stroke={metric.color}
+            strokeWidth={2}
+            fill={`url(#${metric.gradient})`}
+            isAnimationActive={false}
+            dot={false}
+          />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  )
 }
 
 export default function MetricsCharts({
   history,
-  latest,
   nodes,
   live,
   setLive,
   loading,
   onRefresh,
   title,
-  extras,
   empty,
   scope = 'cluster',
 }) {
-  const current = history[history.length - 1]
-  const sample = latest?.live || current
   const waiting = history.length === 0
   const emptyMsg =
     empty || (loading ? 'Loading…' : 'No time-series data yet — wait for the next sample.')
-  const hints = HINTS[scope] || HINTS.cluster
   const gid = (name) => `${scope}-${name}`
   const nodeRows = asList(nodes)
+
+  const cpuMemMetrics = [
+    { key: 'cpu', label: 'CPU', color: CHART.cpu, unit: '%', gradient: gid('cpuFill') },
+    { key: 'mem_pct', label: 'Memory', color: CHART.mem, unit: '%', gradient: gid('memFill') },
+  ]
+  const netMetrics = [
+    { key: 'rx_mibps', label: 'Net In', color: CHART.rx, unit: ' MiB/s', gradient: gid('rxFill') },
+    { key: 'tx_mibps', label: 'Net Out', color: CHART.tx, unit: ' MiB/s', gradient: gid('txFill') },
+  ]
 
   const nodeBars = nodeRows.map((n) => {
     const liveSample = n.live || {}
@@ -180,173 +182,36 @@ export default function MetricsCharts({
         {title && <span className="muted">{title}</span>}
       </div>
 
-      <div className="dash-stat-row metrics-stat-row">
-        <Stat label="CPU" value={formatPct(sample?.cpu ?? sample?.cpu_pct)} />
-        <Stat label="Memory" value={formatMemStat(sample)} />
-        <Stat label="Disk" value={formatDiskStat(sample)} />
-        <Stat
-          label="Network"
-          value={`↓ ${formatRate(sample?.rx ?? sample?.net_rx_bps)} · ↑ ${formatRate(
-            sample?.tx ?? sample?.net_tx_bps,
-          )}`}
-        />
-        {extras}
-      </div>
-
-      <ChartCard
-        title="CPU"
-        hint={`${hints.cpu}${live ? ' (live every 3s)' : ''}.`}
-        empty={waiting ? emptyMsg : null}
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id={gid('cpuFill')} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={CHART.cpu} stopOpacity={0.35} />
-                <stop offset="100%" stopColor={CHART.cpu} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="time" tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }} />
-            <YAxis
-              domain={[0, 100]}
-              tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }}
-              width={40}
-              tickFormatter={(v) => `${v}%`}
-            />
-            <Tooltip
-              contentStyle={tooltipStyle}
-              labelStyle={{ color: 'var(--color-text-secondary)' }}
-              formatter={(value) => [formatPct(Number(value)), 'CPU']}
-            />
-            <Area
-              type="monotone"
-              dataKey="cpu"
-              stroke={CHART.cpu}
-              fill={`url(#${gid('cpuFill')})`}
-              strokeWidth={2}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </ChartCard>
-
       <div className="metrics-chart-grid">
         <ChartCard
-          title="Memory & disk"
-          hint={hints.mem}
+          title="CPU / Memory usage"
           legend={
             <>
+              <LegendDot color={CHART.cpu} label="CPU" />
               <LegendDot color={CHART.mem} label="Memory" />
-              <LegendDot color={CHART.disk} label="Disk" />
             </>
           }
           empty={waiting ? emptyMsg : null}
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id={gid('memFill')} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART.mem} stopOpacity={0.35} />
-                  <stop offset="100%" stopColor={CHART.mem} stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id={gid('diskFill')} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART.disk} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={CHART.disk} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="time" tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }} />
-              <YAxis
-                domain={[0, 100]}
-                tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }}
-                width={40}
-                tickFormatter={(v) => `${v}%`}
-              />
-              <Tooltip
-                contentStyle={tooltipStyle}
-                labelStyle={{ color: 'var(--color-text-secondary)' }}
-                formatter={(value, name) => [formatPct(Number(value)), name === 'mem_pct' ? 'Memory' : 'Disk']}
-              />
-              <Area
-                type="monotone"
-                dataKey="mem_pct"
-                stroke={CHART.mem}
-                fill={`url(#${gid('memFill')})`}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-              <Area
-                type="monotone"
-                dataKey="disk_pct"
-                stroke={CHART.disk}
-                fill={`url(#${gid('diskFill')})`}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <UsageChart data={history} metrics={cpuMemMetrics} domain={[0, 100]} />
         </ChartCard>
-
         <ChartCard
           title="Network throughput"
-          hint={hints.net}
           legend={
             <>
-              <LegendDot color={CHART.rx} label="Receive" />
-              <LegendDot color={CHART.tx} label="Transmit" />
+              <LegendDot color={CHART.rx} label="Net In" />
+              <LegendDot color={CHART.tx} label="Net Out" />
             </>
           }
           empty={waiting ? emptyMsg : null}
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={history} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id={gid('rxFill')} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART.rx} stopOpacity={0.35} />
-                  <stop offset="100%" stopColor={CHART.rx} stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id={gid('txFill')} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART.tx} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={CHART.tx} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="time" tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }} />
-              <YAxis tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }} width={48} />
-              <Tooltip
-                contentStyle={tooltipStyle}
-                labelStyle={{ color: 'var(--color-text-secondary)' }}
-                formatter={(value, name) => [
-                  formatMibps(Number(value)),
-                  name === 'rx_mibps' ? 'Receive' : 'Transmit',
-                ]}
-              />
-              <Area
-                type="monotone"
-                dataKey="rx_mibps"
-                stroke={CHART.rx}
-                fill={`url(#${gid('rxFill')})`}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-              <Area
-                type="monotone"
-                dataKey="tx_mibps"
-                stroke={CHART.tx}
-                fill={`url(#${gid('txFill')})`}
-                strokeWidth={2}
-                isAnimationActive={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <UsageChart data={history} metrics={netMetrics} domain={[0, 'auto']} />
         </ChartCard>
       </div>
 
       {nodeBars.length > 0 && (
         <ChartCard
           title="Nodes"
-          hint="Latest CPU, memory, and disk percent per node."
           legend={
             <>
               <LegendDot color={CHART.cpu} label="CPU" />
@@ -357,28 +222,30 @@ export default function MetricsCharts({
         >
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={nodeBars} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="name" tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }} />
+              <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }} />
               <YAxis
                 domain={[0, 100]}
-                tick={{ fill: 'var(--color-text-secondary)', fontSize: 11 }}
+                tick={{ fill: 'var(--muted-foreground)', fontSize: 11 }}
                 width={40}
                 tickFormatter={(v) => `${v}%`}
               />
               <Tooltip
-                contentStyle={tooltipStyle}
-                labelStyle={{ color: 'var(--color-text-secondary)' }}
-                cursor={{ fill: 'var(--color-hover)', opacity: 0.4 }}
+                contentStyle={{
+                  backgroundColor: 'var(--color-card)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  color: 'var(--text)',
+                  fontSize: 12,
+                }}
+                labelStyle={{ color: 'var(--text-muted)' }}
+                cursor={{ fill: 'var(--bg-hover)', opacity: 0.4 }}
                 formatter={(value, name) => [
                   formatPct(Number(value)),
                   name === 'cpu' ? 'CPU' : name === 'mem' ? 'Memory' : 'Disk',
                 ]}
               />
-              <Bar dataKey="cpu" fill={CHART.cpu} radius={[4, 4, 0, 0]} isAnimationActive={false}>
-                {nodeBars.map((row) => (
-                  <Cell key={`${row.node_id}-cpu`} fill={CHART.cpu} />
-                ))}
-              </Bar>
+              <Bar dataKey="cpu" fill={CHART.cpu} radius={[4, 4, 0, 0]} isAnimationActive={false} />
               <Bar dataKey="mem" fill={CHART.mem} radius={[4, 4, 0, 0]} isAnimationActive={false} />
               <Bar dataKey="disk" fill={CHART.disk} radius={[4, 4, 0, 0]} isAnimationActive={false} />
             </BarChart>
