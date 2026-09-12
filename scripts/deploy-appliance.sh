@@ -218,6 +218,11 @@ if [[ "$need_chroot" -eq 1 ]]; then
     mkdir -p "$MNT/$d"
     mount --bind "/$d" "$MNT/$d" 2>/dev/null || true
   done
+  # Bind /dev does not include the host's /dev/pts mount; apt/dpkg need a PTY.
+  mkdir -p "$MNT/dev/pts"
+  mount --bind /dev/pts "$MNT/dev/pts" 2>/dev/null \
+    || mount -t devpts devpts "$MNT/dev/pts" -o nosuid,noexec,gid=5,mode=620 2>/dev/null \
+    || true
   printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$MNT/etc/resolv.conf.pertisk-deploy"
   if [[ -e "$MNT/etc/resolv.conf" || -L "$MNT/etc/resolv.conf" ]]; then
     mount --bind "$MNT/etc/resolv.conf.pertisk-deploy" "$MNT/etc/resolv.conf" 2>/dev/null || true
@@ -227,15 +232,17 @@ if [[ "$need_chroot" -eq 1 ]]; then
   run_chroot() {
     local bin="$1"
     [[ -x "$MNT$bin" ]] || return 0
+    local env=(env DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8)
     if command -v timeout >/dev/null 2>&1; then
-      timeout 300 chroot "$MNT" "$bin" || echo "deploy-appliance: $bin skipped" >&2
+      timeout 300 chroot "$MNT" "${env[@]}" "$bin" || echo "deploy-appliance: $bin skipped" >&2
     else
-      chroot "$MNT" "$bin" || echo "deploy-appliance: $bin skipped" >&2
+      chroot "$MNT" "${env[@]}" "$bin" || echo "deploy-appliance: $bin skipped" >&2
     fi
   }
   run_chroot /usr/sbin/pertisk-apt-bootstrap
   run_chroot /usr/sbin/pertisk-zsh-setup
   umount "$MNT/etc/resolv.conf" 2>/dev/null || true
+  umount "$MNT/dev/pts" 2>/dev/null || true
   umount "$MNT/dev" "$MNT/sys" "$MNT/proc" 2>/dev/null || true
   rm -f "$MNT/etc/resolv.conf.pertisk-deploy"
 fi

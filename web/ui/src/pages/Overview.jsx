@@ -75,6 +75,7 @@ export default function Overview() {
           hint={cluster?.quorum ? 'Quorum held' : 'No quorum'}
           hintTone={cluster?.quorum ? 'ok' : undefined}
           pct={(online / (members.length || 1)) * 100}
+          barTone={cluster?.quorum ? 'ok' : 'hot'}
         />
       </div>
 

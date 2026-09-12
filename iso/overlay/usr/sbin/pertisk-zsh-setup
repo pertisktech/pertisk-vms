@@ -17,7 +17,7 @@ install_pkg() {
   local pkg="$1"
   pkg_ok "$pkg" && return 0
   have apt-get || return 1
-  apt-get install -y --no-install-recommends "$pkg"
+  apt-get -o Dpkg::Use-Pty=0 install -y --no-install-recommends "$pkg"
 }
 
 if have apt-get; then
