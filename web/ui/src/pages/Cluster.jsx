@@ -55,9 +55,6 @@ export default function Cluster() {
               <div className="cluster-card-head">
                 <span className={`cluster-card-dot ${m.online ? 'on' : 'off'}`} />
                 <strong className="cluster-card-name">{m.name || m.id}</strong>
-                <span className={`cluster-card-state ${m.online ? 'on' : 'off'}`}>
-                  {m.online ? 'online' : 'offline'}
-                </span>
               </div>
               <div className="cluster-card-meta">
                 {m.id === cluster?.self_id && <span>this</span>}
@@ -66,7 +63,6 @@ export default function Cluster() {
               </div>
               <div className="cluster-card-meters">
                 <div className="cluster-card-meter">
-                  <span>CPU</span>
                   <div className="cluster-card-track">
                     <div
                       className={`cluster-card-fill cpu ${meterTone(cpuPct)}`}
@@ -78,7 +74,6 @@ export default function Cluster() {
                   </em>
                 </div>
                 <div className="cluster-card-meter">
-                  <span>Mem</span>
                   <div className="cluster-card-track">
                     <div
                       className={`cluster-card-fill mem ${meterTone(memPct)}`}
@@ -86,8 +81,7 @@ export default function Cluster() {
                     />
                   </div>
                   <em>
-                    {formatBytes((m.used_memory_mib || 0) * 1024 * 1024)}/
-                    {formatBytes((m.memory_mib || 0) * 1024 * 1024)}
+                    {formatBytes((m.used_memory_mib || 0) * 1024 * 1024)}
                   </em>
                 </div>
               </div>

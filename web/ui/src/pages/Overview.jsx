@@ -116,13 +116,13 @@ export default function Overview() {
         ) : (
           <div className="guest-grid">
             {guests.slice(0, 8).map((vm) => (
-              <Link key={vm.id} to={`/vm/${vm.id}/summary`} className="guest-card">
+              <Link key={vm.id} to={`/vm/${vm.id}/summary`} className="guest-card" title={vm.spec?.name || String(vm.id)}>
                 <div className="guest-card-top">
                   <span className={`guest-orb ${vm.state}`} />
                   <strong>{vm.spec?.name || vm.id}</strong>
-                  <span className={`badge ${stateClass(vm.state)}`}>{vm.state}</span>
                 </div>
                 <div className="guest-meta">
+                  <span className={`guest-card-state ${stateClass(vm.state)}`}>{vm.state}</span>
                   <span>
                     {vm.spec?.vcpus || 1} vCPU · {vm.spec?.memory_mib || 0} MiB
                   </span>
