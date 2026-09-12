@@ -97,6 +97,19 @@ export default function GuestSummary() {
           <dd>{cdroms.length === 0 ? 'none' : cdroms.map((d) => d.iso_name || 'ISO').join(', ')}</dd>
           <dt>Network</dt>
           <dd>{networkLine(vm, inv.networks)}</dd>
+          <dt>IPv4</dt>
+          <dd className="mono-inline">
+            {netsOf(vm)
+              .map((n) => n.ip)
+              .filter(Boolean)
+              .join(', ') || '—'}
+          </dd>
+          <dt>IPv6</dt>
+          <dd className="mono-inline">
+            {netsOf(vm)
+              .flatMap((n) => (n.ipv6 ? [n.ipv6] : []))
+              .join(', ') || '—'}
+          </dd>
           <dt>Serial log</dt>
           <dd className="mono-inline">{vm.serial_log || '—'}</dd>
           <dt>PID</dt>

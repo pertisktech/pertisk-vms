@@ -208,6 +208,10 @@ impl NodeId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    pub fn as_bytes(&self) -> [u8; 16] {
+        *self.0.as_bytes()
+    }
 }
 
 impl Default for NodeId {

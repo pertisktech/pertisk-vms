@@ -57,6 +57,13 @@ pub fn prepare_shim_disk_boot(
     if !cmdline.contains("console=") {
         cmdline.push_str(" console=ttyS0,115200n8");
     }
+    // Cloud Hypervisor exits cleanly on guest reboot when reboot=k is set.
+    if !cmdline.contains("reboot=") {
+        cmdline.push_str(" reboot=k");
+    }
+    if !cmdline.contains("panic=") {
+        cmdline.push_str(" panic=1");
+    }
 
     Ok(Some(LinuxIsoBoot {
         kernel,

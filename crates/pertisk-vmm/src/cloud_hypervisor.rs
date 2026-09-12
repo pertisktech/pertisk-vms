@@ -262,6 +262,9 @@ struct ChDisk {
 struct ChNet {
     #[serde(skip_serializing_if = "Option::is_none")]
     tap: Option<String>,
+    /// Guest-visible MAC. Required so cloud-init / NM profiles match the allocated NIC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mac: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -330,6 +333,7 @@ impl ChVmConfig {
                     .iter()
                     .map(|net| ChNet {
                         tap: net.tap.clone(),
+                        mac: net.mac.clone(),
                     })
                     .collect(),
             )
@@ -451,5 +455,25 @@ mod tests {
         assert_eq!(disks[1]["path"], "/var/disk.raw");
         assert_eq!(disks[1]["direct"], false);
         assert_eq!(disks[2]["path"], "/var/seed-cidata.iso");
+    }
+
+    #[test]
+    fn net_passes_guest_mac() {
+        let mut s = spec();
+        s.nets = vec![pertisk_types::NetSpec {
+            network_id: None,
+            tap: Some("p1010".into()),
+            mac: Some("52:54:00:00:00:65".into()),
+            ip: None,
+            ipv6: None,
+        }];
+        let cfg = ChVmConfig::from_spec(
+            &s,
+            PathBuf::from("/tmp/c.sock").as_path(),
+            Some(PathBuf::from("/usr/lib/hypervisor-fw").as_path()),
+        );
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["net"][0]["tap"], "p1010");
+        assert_eq!(json["net"][0]["mac"], "52:54:00:00:00:65");
     }
 }

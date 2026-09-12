@@ -137,7 +137,10 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
         ));
     }
     let written = apply_identity(&mnt, id);
-    let _ = File::create(mnt.join(".autorelabel"));
+    // Full `/.autorelabel` reboots the guest; Cloud Hypervisor exits on reboot and
+    // leaves clones with no IP until a manual restart. Restore labels in-place instead.
+    let _ = fs::remove_file(mnt.join(".autorelabel"));
+    schedule_selinux_restorecon(&mnt);
     let _ = Command::new("umount").arg(&mnt).status();
     let _ = fs::remove_dir_all(&mnt);
     written
@@ -226,8 +229,39 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
         unlock_passwd(root, &user);
     }
     write_authorized_keys(root, &user, id.ssh_authorized_keys)?;
-    let _ = File::create(root.join(".autorelabel"));
+    let _ = fs::remove_file(root.join(".autorelabel"));
+    schedule_selinux_restorecon(root);
     Ok(())
+}
+
+/// Run `restorecon` early without the reboot that `/.autorelabel` would trigger.
+fn schedule_selinux_restorecon(root: &Path) {
+    let unit_dir = root.join("etc/systemd/system");
+    let _ = fs::create_dir_all(&unit_dir);
+    let unit = "\
+[Unit]\n\
+Description=Restore SELinux labels after pertisk inject\n\
+DefaultDependencies=no\n\
+Before=sysinit.target NetworkManager.service network-pre.target\n\
+ConditionPathExists=/etc/selinux/config\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=/bin/sh -c '/sbin/restorecon -R /etc /home /root /var/lib/cloud 2>/dev/null || true'\n\
+RemainAfterExit=yes\n\
+\n\
+[Install]\n\
+WantedBy=sysinit.target\n";
+    let _ = fs::write(unit_dir.join("pertisk-selinux-restorecon.service"), unit);
+    let wants = unit_dir.join("sysinit.target.wants");
+    let _ = fs::create_dir_all(&wants);
+    let link = wants.join("pertisk-selinux-restorecon.service");
+    if !link.exists() {
+        let _ = std::os::unix::fs::symlink(
+            "../pertisk-selinux-restorecon.service",
+            &link,
+        );
+    }
 }
 
 fn sanitize_user(raw: &str) -> String {

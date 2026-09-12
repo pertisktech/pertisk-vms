@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub use host::{
     delete_tap, ipv4_for_mac, ipv6_for_mac, normalize_mac, probe_bridge_neighbors, provision_nic,
+    probe_guest_ipv6_ll,
 };
 pub use ipam::{Ipv4Net, parse_cidr, parse_ipv4};
 
@@ -186,6 +187,7 @@ impl NetworkPool {
         requested_ip: Option<&str>,
         used_ips: &[String],
         used_macs: &[String],
+        node_salt: &[u8],
     ) -> Result<NetSpec> {
         let network = self.get(network_id)?;
         let tap = tap_name(vm_id, nic_index);
@@ -229,7 +231,7 @@ impl NetworkPool {
         let spec = NetSpec {
             network_id: Some(network_id),
             tap: Some(tap),
-            mac: Some(unique_guest_mac(vm_id, nic_index, used_macs)),
+            mac: Some(unique_guest_mac(vm_id, nic_index, used_macs, node_salt)),
             ip,
             ipv6: None,
         };
@@ -326,23 +328,39 @@ pub fn tap_name(vm_id: VmId, nic_index: u8) -> String {
 }
 
 pub fn guest_mac(vm_id: VmId, nic_index: u8) -> String {
+    guest_mac_salted(vm_id, nic_index, &[])
+}
+
+/// Locally unique QEMU-style MAC. `node_salt` (e.g. node UUID bytes) keeps the same
+/// numeric VM id on different hosts from colliding on a shared L2 (DHCP + IPv6 DAD).
+pub fn guest_mac_salted(vm_id: VmId, nic_index: u8, node_salt: &[u8]) -> String {
     let b = vm_id.as_bytes();
+    let mut s0 = 0u8;
+    let mut s1 = 0u8;
+    let mut s2 = 0u8;
+    for (i, byte) in node_salt.iter().enumerate() {
+        match i % 3 {
+            0 => s0 ^= byte,
+            1 => s1 ^= byte,
+            _ => s2 ^= byte,
+        }
+    }
     format!(
         "52:54:00:{:02x}:{:02x}:{:02x}",
-        b[13],
-        b[14],
-        b[15] ^ nic_index
+        b[13] ^ s0,
+        b[14] ^ s1,
+        b[15] ^ nic_index ^ s2
     )
 }
 
 /// Skip MACs already on other guests. Same VM ID (or 24-bit wrap) would otherwise
 /// share a DHCP lease and the same SLAAC address, and DAD would drop SSH.
-fn unique_guest_mac(vm_id: VmId, nic_index: u8, used_macs: &[String]) -> String {
+fn unique_guest_mac(vm_id: VmId, nic_index: u8, used_macs: &[String], node_salt: &[u8]) -> String {
     let used: std::collections::HashSet<String> = used_macs
         .iter()
         .filter_map(|mac| host::normalize_mac(mac))
         .collect();
-    let mut mac = guest_mac(vm_id, nic_index);
+    let mut mac = guest_mac_salted(vm_id, nic_index, node_salt);
     for _ in 0..(1 << 20) {
         let key = host::normalize_mac(&mac).unwrap_or_else(|| mac.clone());
         if !used.contains(&key) {
@@ -402,7 +420,7 @@ mod tests {
             })
             .unwrap();
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[]).unwrap();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[], &[]).unwrap();
         assert!(nic.tap.unwrap().starts_with('p'));
         assert_eq!(nic.ip.as_deref(), Some("10.88.0.2"));
         let nic2 = pool
@@ -413,6 +431,7 @@ mod tests {
                 None,
                 &[nic.ip.clone().unwrap()],
                 &[nic.mac.clone().unwrap()],
+                &[],
             )
             .unwrap();
         assert_eq!(nic2.ip.as_deref(), Some("10.88.0.3"));
@@ -436,7 +455,7 @@ mod tests {
         assert_eq!(net.mode, pertisk_types::NetworkMode::Bridge);
         assert_eq!(net.bridge, "br0");
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[]).unwrap();
+        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[], &[]).unwrap();
         assert!(nic.ip.is_none());
     }
 
@@ -458,14 +477,23 @@ mod tests {
         let a: VmId = "101".parse().unwrap();
         let b: VmId = "16777317".parse().unwrap();
         assert_eq!(guest_mac(a, 0), guest_mac(b, 0));
-        let nic_a = pool.allocate_nic(net.id, a, 0, None, &[], &[]).unwrap();
+        let nic_a = pool.allocate_nic(net.id, a, 0, None, &[], &[], &[]).unwrap();
         let nic_b = pool
-            .allocate_nic(net.id, b, 0, None, &[], &[nic_a.mac.clone().unwrap()])
+            .allocate_nic(net.id, b, 0, None, &[], &[nic_a.mac.clone().unwrap()], &[])
             .unwrap();
         assert_eq!(nic_a.mac.as_deref(), Some("52:54:00:00:00:65"));
         assert_ne!(
             nic_a.mac, nic_b.mac,
             "duplicate MAC would share DHCP + SLAAC"
         );
+    }
+
+    #[test]
+    fn mac_differs_across_nodes_for_same_vm_id() {
+        let a: VmId = "101".parse().unwrap();
+        let mac_a = guest_mac_salted(a, 0, b"node-aaaa");
+        let mac_b = guest_mac_salted(a, 0, b"node-bbbb");
+        assert_ne!(mac_a, mac_b);
+        assert_ne!(mac_a, guest_mac(a, 0));
     }
 }

@@ -1482,6 +1482,7 @@ impl Service {
             req.ip.as_deref(),
             &used_ips,
             &used_macs,
+            &self.cluster.self_id().as_bytes(),
         )?;
         vm.spec.nets.push(nic);
         self.store.upsert(vm.clone())?;
@@ -2724,6 +2725,10 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
     } else {
         Default::default()
     };
+    let serial_v4 = vm
+        .serial_log
+        .as_deref()
+        .and_then(ipv4_from_serial_log);
     let mut changed = false;
     for nic in &mut vm.spec.nets {
         let Some(mac) = nic.mac.as_deref() else {
@@ -2739,7 +2744,8 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                     .find(|(m, _)| m == want)
                     .map(|(_, ip)| ip.clone())
             })
-            .or_else(|| pertisk_net::ipv4_for_mac(mac));
+            .or_else(|| pertisk_net::ipv4_for_mac(mac))
+            .or_else(|| serial_v4.clone());
         if let Some(ip) = observed_v4 {
             if nic.ip.as_deref() != Some(ip.as_str()) {
                 nic.ip = Some(ip);
@@ -2764,11 +2770,12 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                     .is_some_and(|addr| !addr.is_unique_local())
             });
             if !has_public {
+                pertisk_net::probe_guest_ipv6_ll(mac);
                 if let Some(ip) = pertisk_net::ipv6_for_mac(mac) {
                     candidates.push(ip);
                 }
             }
-            pertisk_types::prefer_ipv6(candidates)
+            pertisk_types::prefer_ipv6(candidates.clone()).or_else(|| candidates.into_iter().next())
         };
         if let Some(ip) = observed_v6 {
             if nic.ipv6.as_deref() != Some(ip.as_str()) {
@@ -2778,6 +2785,62 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
         }
     }
     changed
+}
+
+/// Cloud images often print `https://A.B.C.D:9090/` (Cockpit) on the serial console.
+/// Useful when ARP/neigh is cold (no ping on the host).
+fn ipv4_from_serial_log(path: &Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    let start = data.len().saturating_sub(64 * 1024);
+    let text = String::from_utf8_lossy(&data[start..]);
+    let mut last = None;
+    let mut rest = text.as_ref();
+    while let Some(idx) = rest.find("://") {
+        let after = &rest[idx + 3..];
+        let host = after
+            .split(|c| c == '/' || c == ':' || c == ' ' || c == '\n' || c == '\r' || c == '\'')
+            .next()
+            .unwrap_or("");
+        if looks_like_lan_ipv4(host) {
+            last = Some(host.to_string());
+        }
+        rest = &after[host.len().min(after.len())..];
+        if rest.is_empty() {
+            break;
+        }
+    }
+    if last.is_some() {
+        return last;
+    }
+    for line in text.lines().rev() {
+        if !(line.contains("ci-info") || line.contains('|')) {
+            continue;
+        }
+        for token in line.split(|c: char| !c.is_ascii_digit() && c != '.') {
+            if looks_like_lan_ipv4(token) {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn looks_like_lan_ipv4(s: &str) -> bool {
+    let parts: Vec<_> = s.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    let Ok(octets) = parts
+        .iter()
+        .map(|p| p.parse::<u8>())
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    if octets[0] == 127 || (octets[0] == 169 && octets[1] == 254) || octets[0] == 0 {
+        return false;
+    }
+    true
 }
 
 fn vm_needs_ip_probe(vm: &VmRecord) -> bool {

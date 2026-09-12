@@ -302,11 +302,7 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
         let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() else {
             continue;
         };
-        if addr.is_loopback()
-            || addr.is_unspecified()
-            || addr.is_multicast()
-            || addr.is_unicast_link_local()
-        {
+        if addr.is_loopback() || addr.is_unspecified() || addr.is_multicast() {
             continue;
         }
         let Some(ll) = fields.iter().position(|f| *f == "lladdr") else {
@@ -322,9 +318,83 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
         if state == "FAILED" || state == "INCOMPLETE" {
             continue;
         }
-        candidates.push(ip.to_string());
+        // Prefer GUA/ULA; keep link-local as a last-resort display address.
+        if addr.is_unicast_link_local() {
+            candidates.push(format!("ll:{ip}"));
+        } else {
+            candidates.push(ip.to_string());
+        }
     }
-    pertisk_types::prefer_ipv6(candidates)
+    let global: Vec<String> = candidates
+        .iter()
+        .filter(|ip| !ip.starts_with("ll:"))
+        .cloned()
+        .collect();
+    if !global.is_empty() {
+        return pertisk_types::prefer_ipv6(global);
+    }
+    candidates
+        .into_iter()
+        .find_map(|ip| ip.strip_prefix("ll:").map(str::to_string))
+}
+
+/// Ping the EUI-64 link-local for `mac` on each bridge so `ip -6 neigh` learns it.
+pub fn probe_guest_ipv6_ll(mac: &str) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = mac;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Some(want) = normalize_mac(mac) else {
+            return;
+        };
+        let Some(ll) = eui64_link_local(&want) else {
+            return;
+        };
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !valid_ifname(&name) || !is_bridge(&name) {
+                    continue;
+                }
+                let target = format!("{ll}%{name}");
+                let _ = Command::new("ping")
+                    .args(["-6", "-c", "1", "-W", "1", "-I", &name, &target])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn eui64_link_local(mac: &str) -> Option<String> {
+    let parts: Vec<u8> = mac
+        .split(':')
+        .filter_map(|p| u8::from_str_radix(p, 16).ok())
+        .collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let mut eui = [0u8; 8];
+    eui[0] = parts[0] ^ 0x02;
+    eui[1] = parts[1];
+    eui[2] = parts[2];
+    eui[3] = 0xff;
+    eui[4] = 0xfe;
+    eui[5] = parts[3];
+    eui[6] = parts[4];
+    eui[7] = parts[5];
+    // fe80:: + EUI-64 with zero compression where possible
+    Some(format!(
+        "fe80::{:x}:{:x}:{:x}:{:x}",
+        (u16::from(eui[0]) << 8) | u16::from(eui[1]),
+        (u16::from(eui[2]) << 8) | u16::from(eui[3]),
+        (u16::from(eui[4]) << 8) | u16::from(eui[5]),
+        (u16::from(eui[6]) << 8) | u16::from(eui[7]),
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -420,16 +490,42 @@ pub fn probe_bridge_neighbors() {
             let mut launched = 0u32;
             while addr <= last && launched < 256 {
                 let ip = crate::ipam::ipv4_string(addr);
-                let _ = Command::new("ping")
-                    .args(["-c", "1", "-W", "1", "-I", &dev, &ip])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                spawn_neigh_probe(&dev, &ip);
                 launched += 1;
                 addr = addr.saturating_add(1);
             }
             // Wait for probes to fill the neighbour table.
             std::thread::sleep(Duration::from_millis(2200));
+        }
+    }
+}
+
+/// Prefer `ping -I <bridge>`; fall back to `arping` when iputils-ping is missing.
+#[cfg(target_os = "linux")]
+fn spawn_neigh_probe(dev: &str, ip: &str) {
+    let ping = ["ping", "/bin/ping", "/usr/bin/ping"]
+        .into_iter()
+        .find(|bin| std::path::Path::new(bin).exists() || *bin == "ping");
+    if let Some(bin) = ping {
+        let spawned = Command::new(bin)
+            .args(["-c", "1", "-W", "1", "-I", dev, ip])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+        if spawned {
+            return;
+        }
+    }
+    for bin in ["arping", "/usr/sbin/arping", "/usr/bin/arping"] {
+        if Command::new(bin)
+            .args(["-c", "1", "-w", "1", "-I", dev, ip])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return;
         }
     }
 }
