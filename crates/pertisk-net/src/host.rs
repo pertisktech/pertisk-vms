@@ -269,7 +269,8 @@ fn ipv4_for_mac_from_neigh(want_mac: &str) -> Option<String> {
     None
 }
 
-/// Best-effort IPv6 for a guest MAC from `ip -6 neigh`.
+/// Best-effort IPv6 for a guest MAC from `ip -6 neigh`, falling back to SLAAC
+/// derived from the host bridge's global prefix + the guest EUI-64.
 pub fn ipv6_for_mac(mac: &str) -> Option<String> {
     let want = normalize_mac(mac)?;
     #[cfg(not(target_os = "linux"))]
@@ -279,6 +280,25 @@ pub fn ipv6_for_mac(mac: &str) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
+        if let Some(ip) = ipv6_for_mac_from_neigh(&want) {
+            if let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() {
+                if !addr.is_unicast_link_local() {
+                    return Some(ip);
+                }
+            }
+        }
+        // Neigh often only has fe80:: after an LL ping. Build the GUA guests get via RA.
+        if let Some(gua) = ipv6_slaac_from_host_prefix(&want) {
+            probe_ipv6_addr(&gua);
+            if let Some(ip) = ipv6_for_mac_from_neigh(&want) {
+                if let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() {
+                    if !addr.is_unicast_link_local() {
+                        return Some(ip);
+                    }
+                }
+            }
+            return Some(gua);
+        }
         ipv6_for_mac_from_neigh(&want)
     }
 }
@@ -338,7 +358,7 @@ fn ipv6_for_mac_from_neigh(want_mac: &str) -> Option<String> {
         .find_map(|ip| ip.strip_prefix("ll:").map(str::to_string))
 }
 
-/// Ping the EUI-64 link-local for `mac` on each bridge so `ip -6 neigh` learns it.
+/// Ping the EUI-64 link-local (and derived GUA) for `mac` so `ip -6 neigh` learns it.
 pub fn probe_guest_ipv6_ll(mac: &str) {
     #[cfg(not(target_os = "linux"))]
     {
@@ -349,28 +369,97 @@ pub fn probe_guest_ipv6_ll(mac: &str) {
         let Some(want) = normalize_mac(mac) else {
             return;
         };
-        let Some(ll) = eui64_link_local(&want) else {
-            return;
-        };
-        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !valid_ifname(&name) || !is_bridge(&name) {
-                    continue;
-                }
-                let target = format!("{ll}%{name}");
-                let _ = Command::new("ping")
-                    .args(["-6", "-c", "1", "-W", "1", "-I", &name, &target])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-            }
+        if let Some(ll) = eui64_link_local(&want) {
+            probe_ipv6_addr(&ll);
+        }
+        if let Some(gua) = ipv6_slaac_from_host_prefix(&want) {
+            probe_ipv6_addr(&gua);
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-fn eui64_link_local(mac: &str) -> Option<String> {
+fn probe_ipv6_addr(ip: &str) {
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !valid_ifname(&name) || !is_bridge(&name) {
+                continue;
+            }
+            let target = if ip.starts_with("fe80:") {
+                format!("{ip}%{name}")
+            } else {
+                ip.to_string()
+            };
+            let _ = Command::new("ping")
+                .args(["-6", "-c", "1", "-W", "1", "-I", &name, &target])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// Combine the first /64 global prefix on a host bridge with the guest EUI-64.
+#[cfg(target_os = "linux")]
+fn ipv6_slaac_from_host_prefix(mac: &str) -> Option<String> {
+    let eui = eui64_bytes(mac)?;
+    let output = Command::new("ip")
+        .args(["-6", "-o", "addr", "show", "scope", "global"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut candidates_ula = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        // 3: br0    inet6 2405:.../64 scope global ...
+        let Some(inet6) = fields.iter().position(|f| *f == "inet6") else {
+            continue;
+        };
+        let Some(cidr) = fields.get(inet6 + 1) else {
+            continue;
+        };
+        let Some((addr_s, prefix_s)) = cidr.split_once('/') else {
+            continue;
+        };
+        let Ok(prefix) = prefix_s.parse::<u8>() else {
+            continue;
+        };
+        if prefix != 64 {
+            continue;
+        }
+        let Ok(addr) = addr_s.parse::<std::net::Ipv6Addr>() else {
+            continue;
+        };
+        if addr.is_loopback() || addr.is_unicast_link_local() {
+            continue;
+        }
+        let segs = addr.segments();
+        let guest = std::net::Ipv6Addr::new(
+            segs[0],
+            segs[1],
+            segs[2],
+            segs[3],
+            (u16::from(eui[0]) << 8) | u16::from(eui[1]),
+            (u16::from(eui[2]) << 8) | u16::from(eui[3]),
+            (u16::from(eui[4]) << 8) | u16::from(eui[5]),
+            (u16::from(eui[6]) << 8) | u16::from(eui[7]),
+        );
+        // Prefer global unicast prefixes over ULA when both exist.
+        if !addr.is_unique_local() {
+            return Some(guest.to_string());
+        }
+        if candidates_ula.is_none() {
+            candidates_ula = Some(guest.to_string());
+        }
+    }
+    candidates_ula
+}
+
+#[cfg(target_os = "linux")]
+fn eui64_bytes(mac: &str) -> Option<[u8; 8]> {
     let parts: Vec<u8> = mac
         .split(':')
         .filter_map(|p| u8::from_str_radix(p, 16).ok())
@@ -387,7 +476,12 @@ fn eui64_link_local(mac: &str) -> Option<String> {
     eui[5] = parts[3];
     eui[6] = parts[4];
     eui[7] = parts[5];
-    // fe80:: + EUI-64 with zero compression where possible
+    Some(eui)
+}
+
+#[cfg(target_os = "linux")]
+fn eui64_link_local(mac: &str) -> Option<String> {
+    let eui = eui64_bytes(mac)?;
     Some(format!(
         "fe80::{:x}:{:x}:{:x}:{:x}",
         (u16::from(eui[0]) << 8) | u16::from(eui[1]),
