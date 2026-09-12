@@ -13,7 +13,7 @@ export default function Cluster() {
         <div>
           <h1>
             <Icon name="cluster" size={20} />
-            {cluster?.name || 'Cluster'}
+            Cluster
           </h1>
           <p className="dash-lead muted">
             {cluster?.name || 'cluster'} · gen {cluster?.generation ?? 0} ·{' '}

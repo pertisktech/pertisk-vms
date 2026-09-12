@@ -223,12 +223,8 @@ export default function Layout() {
           >
             <Icon name="menu" size={18} />
           </button>
-          <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`} title={inv.cluster?.name || 'cluster'}>
+          <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
             <Icon name={quorum ? 'check' : 'alert'} size={13} />
-            <span className="pve-quorum-name">{inv.cluster?.name || 'cluster'}</span>
-            <span className="pve-quorum-sep" aria-hidden>
-              ·
-            </span>
             {quorum ? 'Quorate' : 'No quorum'}
           </span>
           <div className="pve-header-spacer" />
