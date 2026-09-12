@@ -1597,6 +1597,41 @@ impl Service {
             DriverKind::CloudHypervisor | DriverKind::Qemu => {}
             DriverKind::Mock => return Ok(spec),
         }
+
+        // Rocky/Alma/RHEL GenericCloud images ship Secure Boot shim as BOOTX64.EFI.
+        // Cloud Hypervisor firmware cannot load it — kernel-boot from the BLS /boot FS.
+        if matches!(self.driver(), DriverKind::CloudHypervisor) {
+            if let Some(os_disk) = spec.disks.iter().find(|disk| !disk.cdrom) {
+                let dest = self
+                    .config
+                    .storage
+                    .root
+                    .join("disk-boot")
+                    .join(os_disk.volume_id.map(|id| id.to_string()).unwrap_or_else(|| {
+                        os_disk
+                            .path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "disk".into())
+                    }));
+                if let Some(boot) = pertisk_storage::prepare_shim_disk_boot(&os_disk.path, &dest)? {
+                    tracing::info!(
+                        disk = %os_disk.path.display(),
+                        kernel = %boot.kernel.display(),
+                        initramfs = %boot.initramfs.display(),
+                        cmdline = %boot.cmdline,
+                        "kernel-booting cloud disk (bypassing UEFI shim)"
+                    );
+                    spec.kernel = Some(boot.kernel);
+                    spec.initramfs = Some(boot.initramfs);
+                    if spec.cmdline.is_none() {
+                        spec.cmdline = Some(boot.cmdline);
+                    }
+                    return Ok(spec);
+                }
+            }
+        }
+
         let Some(disk) = spec
             .disks
             .iter()

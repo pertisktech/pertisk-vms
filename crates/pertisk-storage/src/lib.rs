@@ -1,5 +1,6 @@
 //! Local directory volumes, file snapshots, ISO library, optional qemu-img, optional Ceph RBD.
 
+mod disk_boot;
 mod inject;
 mod iso9660;
 mod iso_boot;
@@ -24,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::iso9660::cidata_files;
 use crate::qemu::QemuImg;
 pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
+pub use disk_boot::prepare_shim_disk_boot;
 pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
 pub use rbd::Rbd;
 
