@@ -339,8 +339,8 @@ impl Cluster {
         let cpus = default_cpus(config.cluster.cpus);
         let memory_mib = default_memory_mib(config.cluster.memory_mib);
         let now = now_ms();
-        let inner = if path.exists() && !std::fs::read_to_string(&path)?.trim().is_empty() {
-            let persisted: Persisted = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let existing = load_persisted_cluster(&path)?;
+        let inner = if let Some(persisted) = existing {
             let mut members = BTreeMap::new();
             for record in persisted.members {
                 let last_seen_ms = if record.id == persisted.self_id {
@@ -776,11 +776,74 @@ impl Cluster {
         };
         drop(inner);
         let json = serde_json::to_vec_pretty(&persisted)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
+        atomic_write_json(&self.path, &json)
     }
+}
+
+fn load_persisted_cluster(path: &Path) -> Result<Option<Persisted>, DaemonError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)?;
+    if !json_bytes_look_valid(&bytes) {
+        quarantine_corrupt_json(path, &bytes);
+        return Ok(None);
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(persisted) => Ok(Some(persisted)),
+        Err(err) => {
+            quarantine_corrupt_json(path, &bytes);
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "cluster.json corrupt; creating a new solo cluster"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn json_bytes_look_valid(bytes: &[u8]) -> bool {
+    let trimmed = trim_ascii(bytes);
+    !trimmed.is_empty() && (trimmed[0] == b'{' || trimmed[0] == b'[')
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+fn quarantine_corrupt_json(path: &Path, bytes: &[u8]) {
+    let backup = path.with_extension("json.corrupt");
+    let _ = std::fs::write(&backup, bytes);
+    tracing::warn!(
+        path = %path.display(),
+        backup = %backup.display(),
+        "quarantined corrupt state file"
+    );
+}
+
+fn atomic_write_json(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
+    let tmp = path.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::File::open(parent).and_then(|f| f.sync_all());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

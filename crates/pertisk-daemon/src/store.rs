@@ -18,15 +18,9 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let vms = if path.exists() {
-            let text = std::fs::read_to_string(&path)?;
-            if text.trim().is_empty() {
-                BTreeMap::new()
-            } else {
-                serde_json::from_str(&text)?
-            }
-        } else {
-            BTreeMap::new()
+        let vms = match load_json_map(&path)? {
+            Some(map) => map,
+            None => BTreeMap::new(),
         };
         Ok(Self {
             path,
@@ -90,11 +84,77 @@ impl Store {
     fn flush(&self) -> Result<(), DaemonError> {
         let vms = self.vms.lock().expect("store lock");
         let json = serde_json::to_vec_pretty(&*vms)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
+        atomic_write(&self.path, &json)
     }
+}
+
+/// Read a JSON object map, or `None` when the file is missing/empty/corrupt
+/// (e.g. all-zero after a hard power cut mid-write).
+fn load_json_map(path: &Path) -> Result<Option<BTreeMap<VmId, VmRecord>>, DaemonError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)?;
+    if !json_bytes_look_valid(&bytes) {
+        quarantine_corrupt(path, &bytes)?;
+        return Ok(None);
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(map) => Ok(Some(map)),
+        Err(err) => {
+            quarantine_corrupt(path, &bytes)?;
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "vms.json corrupt; starting with empty inventory"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn json_bytes_look_valid(bytes: &[u8]) -> bool {
+    let trimmed = trim_ascii(bytes);
+    !trimmed.is_empty() && (trimmed[0] == b'{' || trimmed[0] == b'[')
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+fn quarantine_corrupt(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
+    let backup = path.with_extension("json.corrupt");
+    let _ = std::fs::write(&backup, bytes);
+    tracing::warn!(
+        path = %path.display(),
+        backup = %backup.display(),
+        "quarantined corrupt state file"
+    );
+    Ok(())
+}
+
+fn atomic_write(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
+    let tmp = path.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::File::open(parent).and_then(|f| f.sync_all());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -154,5 +214,14 @@ mod tests {
         let path = dir.path().join("vms.json");
         std::fs::write(&path, "\n").unwrap();
         assert!(Store::open(path).unwrap().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn opens_zeroed_corrupt_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vms.json");
+        std::fs::write(&path, vec![0u8; 128]).unwrap();
+        assert!(Store::open(&path).unwrap().list().unwrap().is_empty());
+        assert!(path.with_extension("json.corrupt").exists());
     }
 }
