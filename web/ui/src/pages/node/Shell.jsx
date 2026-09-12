@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
-import { PURPLE_XTERM_THEME } from '../../termTheme'
+import { useTheme } from '../../ThemeContext'
 import { useNode } from '../NodeView'
 
 function cellSize(term) {
@@ -40,6 +40,7 @@ function scheduleFit(fit, term, host, socket) {
 
 export default function NodeShell() {
   const { node, nodeId, inv } = useNode()
+  const { terminalTheme } = useTheme()
   const members = inv.cluster?.members || []
   const self = !inv.cluster?.self_id || inv.cluster.self_id === nodeId
   const [connected, setConnected] = useState(false)
@@ -72,7 +73,7 @@ export default function NodeShell() {
         '"MesloLGS NF", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
       lineHeight: 1,
-      theme: PURPLE_XTERM_THEME,
+      theme: terminalTheme,
       convertEol: false,
       allowProposedApi: true,
       scrollback: 1000,
@@ -183,6 +184,15 @@ export default function NodeShell() {
       setConnecting(false)
     }
   }, [self, nodeId])
+
+  useEffect(() => {
+    if (!self) return
+    const term = termRef.current
+    const host = termHostRef.current
+    if (!term || !host) return
+    term.options.theme = terminalTheme
+    host.style.background = terminalTheme.background
+  }, [self, terminalTheme])
 
   if (!self) {
     const name = node?.name || 'this node'

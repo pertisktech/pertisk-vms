@@ -5,7 +5,7 @@ import RFB from '@novnc/novnc'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
-import { PURPLE_XTERM_THEME } from '../../termTheme'
+import { useTheme } from '../../ThemeContext'
 import { useGuest } from '../GuestView'
 
 function scheduleFit(fit) {
@@ -21,6 +21,7 @@ function scheduleFit(fit) {
 
 export default function GuestConsole() {
   const { vm, vmId } = useGuest()
+  const { terminalTheme } = useTheme()
   const [connected, setConnected] = useState(false)
   const [connecting, setConnecting] = useState(true)
   const [wsError, setWsError] = useState('')
@@ -69,7 +70,7 @@ export default function GuestConsole() {
       cursorBlink: true,
       fontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
-      theme: PURPLE_XTERM_THEME,
+      theme: terminalTheme,
       convertEol: true,
       disableStdin: false,
     })
@@ -161,6 +162,15 @@ export default function GuestConsole() {
       setConnecting(false)
     }
   }, [vmId, tab])
+
+  useEffect(() => {
+    if (tab !== 'serial') return
+    const term = termRef.current
+    const host = termHostRef.current
+    if (!term || !host) return
+    term.options.theme = terminalTheme
+    host.style.background = terminalTheme.background
+  }, [tab, terminalTheme])
 
   useEffect(() => {
     if (tab === 'serial') scheduleFit(fitRef.current)

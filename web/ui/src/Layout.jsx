@@ -2,7 +2,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, clearToken, getToken, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired } from './api'
 import { Icon } from './components/Icons'
-import { applyTheme } from './theme'
+import { useTheme } from './ThemeContext'
 import { useConfirm } from './components/Confirm'
 import { useInventory } from './useInventory'
 import ResourceTree from './components/ResourceTree'
@@ -29,8 +29,8 @@ export default function Layout() {
   const location = useLocation()
   const confirm = useConfirm()
   const inv = useInventory()
+  const { preset, presets, setPreset } = useTheme()
   const [user, setUser] = useState(null)
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(TREE_KEY) === 'true')
@@ -45,10 +45,6 @@ export default function Layout() {
   const [reauthBusy, setReauthBusy] = useState(false)
   const userMenuRef = useRef(null)
   const treeRef = useRef(null)
-
-  useEffect(() => {
-    applyTheme(theme)
-  }, [theme])
 
   useEffect(() => {
     if (!getToken()) {
@@ -270,17 +266,20 @@ export default function Layout() {
                   <Icon name="key" size={16} />
                   Change password
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = theme === 'dark' ? 'light' : 'dark'
-                    setTheme(next)
-                    applyTheme(next)
-                  }}
-                >
-                  <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-                  {theme === 'dark' ? 'Light' : 'Dark'}
-                </button>
+                <div className="user-menu-theme">
+                  <label htmlFor="theme-preset">Color theme</label>
+                  <select
+                    id="theme-preset"
+                    value={preset}
+                    onChange={(e) => setPreset(e.target.value)}
+                  >
+                    {presets.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <button type="button" onClick={logout}>
                   <Icon name="logout" size={16} />
                   Sign out

@@ -1,5 +1,6 @@
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ConfirmProvider } from './components/Confirm'
+import { ThemeProvider } from './ThemeContext'
 import Layout from './Layout'
 import Login from './pages/Login'
 import Datacenter from './pages/Datacenter'
@@ -24,41 +25,43 @@ import Templates from './pages/Templates'
 
 export default function App() {
   return (
-    <ConfirmProvider>
-      <HashRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route element={<Layout />}>
-            <Route path="/dc" element={<Datacenter />}>
-              <Route index element={<Navigate to="summary" replace />} />
-              <Route path="summary" element={<Overview />} />
-              <Route path="storage" element={<Storage />} />
-              <Route path="templates" element={<Templates />} />
-              <Route path="networks" element={<Networks />} />
-              <Route path="cluster" element={<Cluster />} />
-              <Route path="tasks" element={<Activity />} />
-              <Route path="users" element={<Users />} />
+    <ThemeProvider>
+      <ConfirmProvider>
+        <HashRouter>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route element={<Layout />}>
+              <Route path="/dc" element={<Datacenter />}>
+                <Route index element={<Navigate to="summary" replace />} />
+                <Route path="summary" element={<Overview />} />
+                <Route path="storage" element={<Storage />} />
+                <Route path="templates" element={<Templates />} />
+                <Route path="networks" element={<Networks />} />
+                <Route path="cluster" element={<Cluster />} />
+                <Route path="tasks" element={<Activity />} />
+                <Route path="users" element={<Users />} />
+              </Route>
+              <Route path="/node/:nodeId" element={<NodeView />}>
+                <Route index element={<Navigate to="summary" replace />} />
+                <Route path="summary" element={<NodeSummary />} />
+                <Route path="guests" element={<NodeGuests />} />
+                <Route path="updates" element={<NodeUpdates />} />
+                <Route path="repositories" element={<NodeRepositories />} />
+                <Route path="shell" element={<NodeShell />} />
+                <Route path="tasks" element={<Activity />} />
+              </Route>
+              <Route path="/vm/:vmId" element={<GuestView />}>
+                <Route index element={<Navigate to="summary" replace />} />
+                <Route path="summary" element={<GuestSummary />} />
+                <Route path="console" element={<GuestConsoleRoute />} />
+                <Route path="hardware" element={<GuestHardware />} />
+                <Route path="options" element={<GuestOptions />} />
+              </Route>
             </Route>
-            <Route path="/node/:nodeId" element={<NodeView />}>
-              <Route index element={<Navigate to="summary" replace />} />
-              <Route path="summary" element={<NodeSummary />} />
-              <Route path="guests" element={<NodeGuests />} />
-              <Route path="updates" element={<NodeUpdates />} />
-              <Route path="repositories" element={<NodeRepositories />} />
-              <Route path="shell" element={<NodeShell />} />
-              <Route path="tasks" element={<Activity />} />
-            </Route>
-            <Route path="/vm/:vmId" element={<GuestView />}>
-              <Route index element={<Navigate to="summary" replace />} />
-              <Route path="summary" element={<GuestSummary />} />
-              <Route path="console" element={<GuestConsoleRoute />} />
-              <Route path="hardware" element={<GuestHardware />} />
-              <Route path="options" element={<GuestOptions />} />
-            </Route>
-          </Route>
-          <Route path="*" element={<Navigate to="/dc/summary" replace />} />
-        </Routes>
-      </HashRouter>
-    </ConfirmProvider>
+            <Route path="*" element={<Navigate to="/dc/summary" replace />} />
+          </Routes>
+        </HashRouter>
+      </ConfirmProvider>
+    </ThemeProvider>
   )
 }
