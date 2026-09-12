@@ -126,7 +126,7 @@ export default function Layout() {
   const location = useLocation()
   const confirm = useConfirm()
   const inv = useInventory()
-  const { preset, presets, setPreset, appearance, toggleAppearance } = useTheme()
+  const { appearance, toggleAppearance } = useTheme()
   const [user, setUser] = useState(null)
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -350,20 +350,6 @@ export default function Layout() {
                     <Icon name="key" size={16} />
                     Change password
                   </button>
-                  <div className="user-menu-theme">
-                    <label htmlFor="theme-preset">Color theme</label>
-                    <select
-                      id="theme-preset"
-                      value={preset}
-                      onChange={(e) => setPreset(e.target.value)}
-                    >
-                      {presets.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                   <button type="button" onClick={logout}>
                     <Icon name="logout" size={16} />
                     Sign out

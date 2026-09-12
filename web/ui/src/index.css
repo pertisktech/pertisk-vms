@@ -846,18 +846,6 @@ a.btn-icon.secondary:hover {
   color: var(--text-muted);
 }
 .user-menu-dropdown button:hover { background: var(--bg-hover); color: var(--text); }
-.user-menu-theme {
-  padding: 0.45rem 0.75rem 0.65rem;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 0.25rem;
-}
-.user-menu-theme label {
-  margin-bottom: 0.35rem;
-}
-.user-menu-theme select {
-  font-size: var(--fs-sm);
-  padding: 0.4rem 1.8rem 0.4rem 0.6rem;
-}
 .user-menu-meta {
   padding: 0.5rem 0.75rem 0.35rem;
   font-size: 0.7rem;

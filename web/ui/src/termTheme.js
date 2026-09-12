@@ -1,6 +1,6 @@
-import { getStoredThemePreset, terminalPalette } from './theme'
+import { getStoredAppearance, terminalPalette } from './theme'
 
-/** Terminal palette that follows the current app color theme. */
-export function getXtermTheme(presetId) {
-  return terminalPalette(presetId || getStoredThemePreset())
+/** Terminal palette for the console violet theme. */
+export function getXtermTheme() {
+  return terminalPalette(getStoredAppearance())
 }
