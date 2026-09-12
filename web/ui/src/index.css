@@ -1879,6 +1879,47 @@ a.guest-card:hover { color: inherit; }
   gap: 0.4rem;
 }
 
+.tf-help {
+  margin: 0 0 0.85rem;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.tf-help code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.tf-code-wrap + .tf-help {
+  margin-top: 0.85rem;
+  margin-bottom: 0;
+}
+.tf-code-wrap {
+  position: relative;
+}
+.tf-code-wrap .tf-copy {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  z-index: 1;
+}
+.tf-code {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  padding-right: 6.5rem;
+  max-height: 28rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: var(--color-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: pre;
+  color: var(--text);
+}
+
 .recharts-text,
 .recharts-legend-item-text,
 .recharts-cartesian-axis-tick-value {

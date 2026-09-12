@@ -43,6 +43,7 @@ import {
   LuLayoutTemplate,
   LuDownload,
   LuLibrary,
+  LuBoxes,
 } from 'react-icons/lu'
 
 const ICONS = {
@@ -90,6 +91,7 @@ const ICONS = {
   template: LuLayoutTemplate,
   updates: LuDownload,
   repo: LuLibrary,
+  terraform: LuBoxes,
 }
 
 export function Icon({ name, size = 18, className = '' }) {

@@ -22,6 +22,7 @@ import GuestConsoleRoute from './pages/guest/ConsoleRoute'
 import GuestHardware from './pages/guest/Hardware'
 import GuestOptions from './pages/guest/Options'
 import Templates from './pages/Templates'
+import Terraform from './pages/Terraform'
 
 export default function App() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="templates" element={<Templates />} />
                 <Route path="networks" element={<Networks />} />
                 <Route path="cluster" element={<Cluster />} />
+                <Route path="terraform" element={<Terraform />} />
                 <Route path="tasks" element={<Activity />} />
                 <Route path="users" element={<Users />} />
               </Route>

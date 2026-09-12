@@ -1,4 +1,9 @@
 /target
+terraform-provider-pertisk/terraform-provider-pertisk
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
 **/*.rs.bk
 .DS_Store
 /.pertisk

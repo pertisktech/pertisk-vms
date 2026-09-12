@@ -9,6 +9,7 @@ export default function Datacenter() {
     { to: 'templates', label: 'Templates', icon: 'template' },
     { to: 'networks', label: 'Networks', icon: 'network' },
     { to: 'cluster', label: 'Cluster', icon: 'cluster' },
+    { to: 'terraform', label: 'Terraform', icon: 'terraform' },
     { to: 'tasks', label: 'Task History', icon: 'activity' },
   ]
   if (user?.role === 'admin') {
