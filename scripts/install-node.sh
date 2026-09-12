@@ -36,12 +36,9 @@ if [[ "$SKIP_KVM" != "1" ]]; then
 fi
 
 # The web UI is compiled into pertiskd by rust-embed, so it must be built first.
-if command -v npm >/dev/null 2>&1; then
-  echo "building web ui"
-  (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
-else
-  echo "npm not found; keeping the checked-in web/ui build in crates/pertisk-daemon/static" >&2
-fi
+command -v npm >/dev/null || die "npm not found (needed to build web/ui into pertiskd)"
+echo "building web ui"
+(cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
 
 echo "building release pertiskd + pertisk + pertisk-tui"
 cargo build --release -p pertisk-daemon -p pertisk-cli -p pertisk-tui
