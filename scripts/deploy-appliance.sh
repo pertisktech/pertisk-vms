@@ -56,6 +56,7 @@ done
 mkdir -p "$MNT"
 mount -o "offset=$((ROOT_PART_START * 512))" "$ZVOL" "$MNT"
 
+rm -f "$MNT/usr/bin/pertiskd" "$MNT/usr/bin/pertisk" "$MNT/usr/bin/pertisk-tui"
 install -m 755 "$ROOT/target/release/pertiskd" "$MNT/usr/bin/pertiskd"
 install -m 755 "$ROOT/target/release/pertisk" "$MNT/usr/bin/pertisk"
 install -m 755 "$ROOT/target/release/pertisk-tui" "$MNT/usr/bin/pertisk-tui"

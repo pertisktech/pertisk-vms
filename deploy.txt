@@ -1,11 +1,16 @@
-# Deploy pertisk code updates to appliance VM 901 on Proxmox (10.1.1.144)
+# New Proxmox host (no VM 901 yet): create the appliance from out/pertisk-node.raw
+#   sudo ./scripts/create-appliance-vm.sh 901
+# Then deploy current binaries (also starts the VM):
+#   sudo ./deploy.sh
+#
+# Deploy pertisk code updates to appliance VM 901 on this Proxmox host.
 # Run on the Proxmox host — NOT inside the appliance (no Rust there).
 #
 # Only needed when you change pertisk source code — NOT after every reboot.
 
 sudo ./deploy.sh
 
-# UI: http://10.1.1.144:7480/  login admin / admin
+# UI: https://10.1.1.174:7443/  or http://10.1.1.174:7480/  login admin / admin
 #
 # Do NOT run pertisk-install inside the Proxmox VM — you are already booted from disk.
 # pertisk-install is for copying the live image onto bare-metal NVMe/USB.

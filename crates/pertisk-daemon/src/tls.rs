@@ -29,8 +29,19 @@ pub fn tls_bind(home: &Path, daemon: &DaemonConfig) -> Option<TlsBind> {
     })
 }
 
+fn pem_looks_valid(cert: &Path, key: &Path) -> bool {
+    let Ok(cert_pem) = std::fs::read_to_string(cert) else {
+        return false;
+    };
+    let Ok(key_pem) = std::fs::read_to_string(key) else {
+        return false;
+    };
+    cert_pem.contains("BEGIN CERTIFICATE")
+        && (key_pem.contains("BEGIN PRIVATE KEY") || key_pem.contains("BEGIN RSA PRIVATE KEY"))
+}
+
 pub fn ensure_self_signed(cert: &Path, key: &Path) -> Result<(), std::io::Error> {
-    if cert.is_file() && key.is_file() {
+    if pem_looks_valid(cert, key) {
         return Ok(());
     }
     if let Some(parent) = cert.parent() {
@@ -109,6 +120,20 @@ mod tests {
         assert!(key_pem.contains("BEGIN PRIVATE KEY") || key_pem.contains("BEGIN RSA PRIVATE KEY"));
         ensure_self_signed(&cert, &key).unwrap();
         assert_eq!(std::fs::read_to_string(&cert).unwrap(), cert_pem);
+    }
+
+    #[test]
+    fn regenerates_zeroed_pem_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        std::fs::write(&cert, vec![0u8; 611]).unwrap();
+        std::fs::write(&key, vec![0u8; 241]).unwrap();
+        ensure_self_signed(&cert, &key).unwrap();
+        let cert_pem = std::fs::read_to_string(&cert).unwrap();
+        let key_pem = std::fs::read_to_string(&key).unwrap();
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(key_pem.contains("BEGIN PRIVATE KEY") || key_pem.contains("BEGIN RSA PRIVATE KEY"));
     }
 
     #[test]
