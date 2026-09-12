@@ -464,12 +464,29 @@ export function getStoredAppearance() {
   }
 }
 
-export function applyAppearance(appearance) {
+function paintTheme(presetId, appearance) {
+  const id = normalizeThemePreset(presetId)
   const mode = normalizeAppearance(appearance)
+  const preset = APP_THEME_PRESETS.find((item) => item.id === id) || APP_THEME_PRESETS[0]
   const root = document.documentElement
   root.classList.toggle('dark', mode === 'dark')
   root.classList.toggle('light', mode === 'light')
   root.style.colorScheme = mode
+  root.removeAttribute('data-theme')
+  for (const key of THEME_TOKEN_KEYS) {
+    root.style.removeProperty(key)
+  }
+  // Dark-only preset hexes would clobber the light stylesheet.
+  if (mode === 'dark') {
+    Object.entries(preset.tokens).forEach(([token, value]) => {
+      root.style.setProperty(token, value)
+    })
+  }
+  return { id, mode }
+}
+
+export function applyAppearance(appearance) {
+  const { mode } = paintTheme(getStoredThemePreset(), appearance)
   try {
     localStorage.setItem(THEME_APPEARANCE_KEY, mode)
   } catch {
@@ -479,16 +496,7 @@ export function applyAppearance(appearance) {
 }
 
 export function applyThemePreset(presetId) {
-  const id = normalizeThemePreset(presetId)
-  const preset = APP_THEME_PRESETS.find((item) => item.id === id) || APP_THEME_PRESETS[0]
-  const root = document.documentElement
-  root.removeAttribute('data-theme')
-  for (const key of THEME_TOKEN_KEYS) {
-    root.style.removeProperty(key)
-  }
-  Object.entries(preset.tokens).forEach(([token, value]) => {
-    root.style.setProperty(token, value)
-  })
+  const { id } = paintTheme(presetId, getStoredAppearance())
   try {
     localStorage.setItem(THEME_PRESET_KEY, id)
     localStorage.removeItem('theme')
@@ -499,16 +507,15 @@ export function applyThemePreset(presetId) {
 }
 
 export function initTheme() {
-  applyAppearance(getStoredAppearance())
-  applyThemePreset(getStoredThemePreset())
+  paintTheme(getStoredThemePreset(), getStoredAppearance())
 }
 
 export function terminalPalette(presetId, appearance) {
   const preset = APP_THEME_PRESETS.find((item) => item.id === presetId) || APP_THEME_PRESETS[0]
   const tokens = preset.tokens
   const mode = normalizeAppearance(appearance)
-  if (!tokens['--color-bg']) {
-    return mode === 'light' ? CONSOLE_TERM_LIGHT : CONSOLE_TERM_DARK
+  if (mode === 'light' || !tokens['--color-bg']) {
+    return CONSOLE_TERM_DARK
   }
   return {
     background: tokens['--color-bg'] || '#0c0d18',

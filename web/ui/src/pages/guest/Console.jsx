@@ -170,6 +170,12 @@ export default function GuestConsole() {
     if (!term || !host) return
     term.options.theme = terminalTheme
     host.style.background = terminalTheme.background
+    try {
+      term.refresh(0, Math.max(0, term.rows - 1))
+    } catch {
+      /* ignore */
+    }
+    scheduleFit(fitRef.current)
   }, [tab, terminalTheme])
 
   useEffect(() => {
