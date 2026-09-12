@@ -117,8 +117,9 @@ impl Service {
             cluster: Arc::new(cluster),
             console: ConsoleHub::new(),
             http: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_millis(250))
-                .timeout(std::time::Duration::from_secs(5))
+                .connect_timeout(std::time::Duration::from_secs(2))
+                .timeout(std::time::Duration::from_secs(15))
+                .danger_accept_invalid_certs(true)
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
@@ -129,6 +130,10 @@ impl Service {
             created_this_boot: Arc::new(Mutex::new(HashSet::new())),
             metrics: Arc::new(MetricsCache::new()),
         }
+    }
+
+    pub fn configured_peer_url(&self) -> Option<&str> {
+        self.config.cluster.peer_url.as_deref()
     }
 
     pub fn driver(&self) -> DriverKind {
@@ -1967,6 +1972,18 @@ impl Service {
             .json()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        let remote: pertisk_types::ClusterStatus = self
+            .http
+            .get(format!("{peer}/v1/cluster"))
+            .header("Authorization", format!("Bearer {}", login.token))
+            .send()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?
+            .error_for_status()
+            .map_err(|err| DaemonError::Peer(err.to_string()))?
+            .json()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
         let snap: pertisk_types::ClusterSnapshot = self
             .http
             .post(format!("{peer}/v1/cluster/accept"))
@@ -1981,7 +1998,10 @@ impl Service {
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
         self.apply_snapshot(snap)?;
+        self.cluster
+            .set_member_peer_url(remote.self_id, peer.to_string())?;
         self.cluster.touch(self.cluster.self_id(), None);
+        let _ = self.cluster.heal_remote_peer_urls();
         Ok(self.cluster_status()?)
     }
 
@@ -2003,6 +2023,16 @@ impl Service {
 
     pub async fn cluster_tick(&self) -> Result<(), DaemonError> {
         self.cluster.touch_self();
+        if crate::cluster::is_loopback_peer_url(&self.cluster.self_record().peer_url) {
+            let url = crate::cluster::advertise_url(
+                &self.config.daemon.listen,
+                self.config.cluster.peer_url.as_deref(),
+            );
+            if !crate::cluster::is_loopback_peer_url(&url) {
+                let _ = self.cluster.set_peer_url(url);
+            }
+        }
+        let _ = self.cluster.heal_remote_peer_urls();
         let quorum = self.cluster.has_quorum();
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
@@ -2337,7 +2367,7 @@ impl Service {
             let _ = self
                 .http
                 .post(url)
-                .timeout(std::time::Duration::from_millis(400))
+                .timeout(std::time::Duration::from_secs(2))
                 .header("x-pertisk-peer", self.cluster.secret())
                 .json(&msg)
                 .send()

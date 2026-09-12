@@ -61,7 +61,10 @@ pub async fn bind_and_serve(
     install_rustls_provider();
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let addr = listener.local_addr()?;
-    let _ = service.set_peer_url(advertise_url(&addr.to_string(), None));
+    let _ = service.set_peer_url(advertise_url(
+        &addr.to_string(),
+        service.configured_peer_url(),
+    ));
     tracing::info!(%listen, bound = %addr, driver = %service.driver(), "pertiskd listening");
 
     let https_addr = if let Some(tls) = &tls {

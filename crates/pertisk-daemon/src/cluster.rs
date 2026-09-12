@@ -156,17 +156,98 @@ pub fn place_replicas(online: &[NodeId], count: u8, include: Option<NodeId>) -> 
 }
 
 pub fn advertise_url(listen: &str, explicit: Option<&str>) -> String {
+    advertise_peer_url(listen, None, explicit)
+}
+
+/// Cluster URL other nodes should dial. Unspecified binds (`0.0.0.0` / `::`)
+/// advertise a LAN address, not loopback — otherwise join/heartbeat stay local.
+pub fn advertise_peer_url(
+    listen: &str,
+    tls_listen: Option<&str>,
+    explicit: Option<&str>,
+) -> String {
     if let Some(url) = explicit {
-        return url.trim_end_matches('/').to_string();
+        let url = url.trim().trim_end_matches('/');
+        if !url.is_empty() {
+            return url.to_string();
+        }
     }
-    let rewritten = listen
-        .replace("0.0.0.0", "127.0.0.1")
-        .replace("[::]", "[::1]");
-    if rewritten.starts_with("http://") || rewritten.starts_with("https://") {
-        rewritten
+    if let Some(tls) = tls_listen.map(str::trim).filter(|s| !s.is_empty()) {
+        let (host, port) = split_listen(tls);
+        return format!(
+            "https://{}:{port}",
+            format_url_host(&resolve_advertise_host(&host))
+        );
+    }
+    let (host, port) = split_listen(listen);
+    format!(
+        "http://{}:{port}",
+        format_url_host(&resolve_advertise_host(&host))
+    )
+}
+
+pub fn is_loopback_peer_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.contains("127.0.0.1")
+        || lower.contains("localhost")
+        || lower.contains("[::1]")
+        || lower.contains("://[::1]")
+        || lower.contains("0.0.0.0")
+}
+
+fn split_listen(listen: &str) -> (String, String) {
+    let listen = listen.trim();
+    if let Some(rest) = listen.strip_prefix('[')
+        && let Some((host, port)) = rest.split_once("]:")
+    {
+        return (host.to_string(), port.to_string());
+    }
+    if let Some((host, port)) = listen.rsplit_once(':') {
+        return (host.to_string(), port.to_string());
+    }
+    (listen.to_string(), "7480".into())
+}
+
+fn resolve_advertise_host(host: &str) -> String {
+    let host = host.trim().trim_matches(['[', ']']);
+    if host == "0.0.0.0" || host == "::" {
+        return lan_advertise_host().unwrap_or_else(|| "127.0.0.1".into());
+    }
+    host.to_string()
+}
+
+fn lan_advertise_host() -> Option<String> {
+    let addrs = probe_host_addrs();
+    addrs
+        .ipv4
+        .into_iter()
+        .next()
+        .or_else(|| addrs.ipv6.into_iter().next())
+}
+
+fn format_url_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
     } else {
-        format!("http://{rewritten}")
+        host.to_string()
     }
+}
+
+fn rewrite_peer_host(template: &str, host: &str) -> Option<String> {
+    let url = template.trim().trim_end_matches('/');
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let scheme = if url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    let port = rest
+        .rsplit_once(':')
+        .map(|(_, p)| p)
+        .filter(|p| !p.is_empty())?;
+    Some(format!("{scheme}://{}:{port}", format_url_host(host)))
 }
 
 fn now_ms() -> u64 {
@@ -376,6 +457,53 @@ impl Cluster {
         self.persist()
     }
 
+    pub fn set_member_peer_url(&self, id: NodeId, url: String) -> Result<(), DaemonError> {
+        {
+            let mut inner = self.inner.lock().expect("cluster lock");
+            if let Some(member) = inner.members.get_mut(&id) {
+                member.record.peer_url = url;
+            }
+        }
+        self.persist()
+    }
+
+    /// When this node has a LAN URL, rewrite other members still advertising loopback
+    /// to `scheme://<their ipv4>:port` so a joined cluster can recover after upgrade.
+    pub fn heal_remote_peer_urls(&self) -> Result<bool, DaemonError> {
+        let self_url = self.self_record().peer_url;
+        if is_loopback_peer_url(&self_url) {
+            return Ok(false);
+        }
+        let mut changed = false;
+        {
+            let mut inner = self.inner.lock().expect("cluster lock");
+            let self_id = inner.self_id;
+            for (id, member) in inner.members.iter_mut() {
+                if *id == self_id || !is_loopback_peer_url(&member.record.peer_url) {
+                    continue;
+                }
+                let host = member
+                    .record
+                    .ipv4
+                    .first()
+                    .cloned()
+                    .or_else(|| member.record.ipv6.first().cloned());
+                let Some(host) = host else {
+                    continue;
+                };
+                let Some(url) = rewrite_peer_host(&self_url, &host) else {
+                    continue;
+                };
+                member.record.peer_url = url;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
     pub fn generation(&self) -> u64 {
         self.inner.lock().expect("cluster lock").generation
     }
@@ -414,7 +542,13 @@ impl Cluster {
     pub fn touch(&self, id: NodeId, record: Option<NodeRecord>) {
         let mut inner = self.inner.lock().expect("cluster lock");
         let now = now_ms();
-        if let Some(record) = record {
+        if let Some(mut record) = record {
+            if is_loopback_peer_url(&record.peer_url)
+                && let Some(existing) = inner.members.get(&id)
+                && !is_loopback_peer_url(&existing.record.peer_url)
+            {
+                record.peer_url = existing.record.peer_url.clone();
+            }
             inner.members.insert(
                 id,
                 MemberState {
@@ -854,11 +988,31 @@ mod tests {
 
     #[test]
     fn advertise_url_defaults_to_http() {
-        assert_eq!(advertise_url("0.0.0.0:7480", None), "http://127.0.0.1:7480");
+        assert_eq!(
+            advertise_url("127.0.0.1:7480", None),
+            "http://127.0.0.1:7480"
+        );
+        let public = advertise_url("0.0.0.0:7480", None);
+        assert!(public.starts_with("http://"), "{public}");
+        assert!(public.ends_with(":7480"), "{public}");
+        assert!(!public.contains("0.0.0.0"), "{public}");
         assert_eq!(
             advertise_url("10.1.1.144:7443", Some("https://10.1.1.144:7443")),
             "https://10.1.1.144:7443"
         );
+        assert_eq!(
+            advertise_peer_url("0.0.0.0:7480", Some("0.0.0.0:7443"), None)
+                .split("://")
+                .next(),
+            Some("https")
+        );
+    }
+
+    #[test]
+    fn loopback_peer_url_detection() {
+        assert!(is_loopback_peer_url("http://127.0.0.1:7480"));
+        assert!(is_loopback_peer_url("https://localhost:7443"));
+        assert!(!is_loopback_peer_url("https://10.1.1.144:7443"));
     }
 
     #[test]

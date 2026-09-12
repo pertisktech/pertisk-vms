@@ -12,18 +12,28 @@ export default function JoinCluster({ canWrite, inv }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ peer: '', username: 'admin', password: '' })
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
 
   if (!canWrite) return null
+
+  function peerUrl() {
+    let peer = form.peer.trim().replace(/\/+$/, '')
+    if (peer && !/^https?:\/\//i.test(peer)) {
+      peer = `https://${peer}`
+    }
+    return peer
+  }
 
   async function join(e) {
     e.preventDefault()
     setBusy(true)
+    setError('')
     try {
       await inv.mutate(() =>
         api('/v1/cluster/join', {
           method: 'POST',
           body: {
-            peer: form.peer.trim(),
+            peer: peerUrl(),
             username: form.username.trim(),
             password: form.password,
           },
@@ -31,8 +41,8 @@ export default function JoinCluster({ canWrite, inv }) {
       )
       setOpen(false)
       setForm({ peer: '', username: 'admin', password: '' })
-    } catch {
-      /* inventory */
+    } catch (err) {
+      setError(err.message || String(err))
     } finally {
       setBusy(false)
     }
@@ -65,7 +75,7 @@ export default function JoinCluster({ canWrite, inv }) {
         createPortal(
           <Modal
             title="Join a cluster"
-            hint="This node joins the cluster advertised at the peer URL."
+            hint="HTTPS is fine (self-signed). This node joins the cluster at the peer URL."
             onClose={() => setOpen(false)}
             footer={
               <>
@@ -79,6 +89,7 @@ export default function JoinCluster({ canWrite, inv }) {
             }
           >
             <form id="join-peer" onSubmit={join}>
+              {error && <div className="banner danger">{error}</div>}
               <div className="field">
                 <label htmlFor="peer-url">Peer URL</label>
                 <input
