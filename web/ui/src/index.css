@@ -1188,6 +1188,13 @@ a.guest-card:hover { color: inherit; }
 }
 .pve-quorum.ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, transparent); }
 .pve-quorum.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.pve-quorum-name {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pve-quorum-sep { opacity: 0.55; }
 
 .pve-header-btn {
   display: inline-flex;
@@ -1281,21 +1288,18 @@ a.guest-card:hover { color: inherit; }
 }
 .tree-icon { flex: none; opacity: 0.8; }
 .tree-label {
-  display: flex;
-  align-items: baseline;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tree-vmid {
-  flex: none;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-sm);
 }
 .tree-vmname {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--text-muted);
 }
 .tree-row:hover .tree-vmname,
