@@ -460,8 +460,10 @@ export default function Layout() {
           host={inv.host}
           cluster={inv.cluster}
           onClose={() => setWizard(false)}
-          onCreated={async () => {
+          onCreated={async (vmId) => {
             await inv.refresh()
+            setWizard(false)
+            if (vmId != null && vmId !== '') nav(`/vm/${vmId}/console`)
           }}
         />
       )}

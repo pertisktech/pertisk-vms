@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useOutletContext } from 'react-router-dom'
+import { Link, useNavigate, useOutletContext } from 'react-router-dom'
 import { api, disksOf, formatBytes, isTemplate } from '../api'
 import { Btn, Icon } from '../components/Icons'
 import Modal from '../components/Modal'
@@ -14,6 +14,7 @@ function imageFormat(name) {
 
 export default function Templates() {
   const { canWrite, inv } = useOutletContext()
+  const nav = useNavigate()
   const { vms, volumes, networks, cluster, host, error, setError, mutate, refresh } = inv
   const confirm = useConfirm()
   const templates = vms.filter(isTemplate)
@@ -377,7 +378,11 @@ export default function Templates() {
           cluster={cluster}
           host={host}
           onClose={() => setCloneOf(null)}
-          onCreated={refresh}
+          onCreated={async (vmId) => {
+            await refresh()
+            setCloneOf(null)
+            if (vmId != null && vmId !== '') nav(`/vm/${vmId}/console`)
+          }}
         />
       )}
     </div>

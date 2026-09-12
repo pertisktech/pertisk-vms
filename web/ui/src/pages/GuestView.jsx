@@ -211,7 +211,11 @@ export default function GuestView() {
           cluster={inv.cluster}
           host={inv.host}
           onClose={() => setCloneOpen(false)}
-          onCreated={inv.refresh}
+          onCreated={async (vmId) => {
+            await inv.refresh()
+            setCloneOpen(false)
+            if (vmId != null && vmId !== '') nav(`/vm/${vmId}/console`)
+          }}
         />
       )}
     </>

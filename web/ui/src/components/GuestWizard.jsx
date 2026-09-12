@@ -123,7 +123,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     setProgress([])
     if (form.diskMode === 'template') {
       try {
-        await run('Clone template', () =>
+        const cloned = await run('Clone template', () =>
           api(`/v1/vms/${form.templateId}/clone`, {
             method: 'POST',
             body: {
@@ -151,7 +151,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             },
           }),
         )
-        await onCreated()
+        await onCreated(cloned?.id ?? Number(form.id))
         setCreated(true)
       } catch (err) {
         await onCreated()
@@ -235,7 +235,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
       if (form.start) {
         await run('Start guest', () => api(`/v1/vms/${vm.id}/start`, { method: 'POST' }))
       }
-      await onCreated()
+      await onCreated(vm.id)
       setCreated(true)
     } catch (err) {
       if (createdVmId) {

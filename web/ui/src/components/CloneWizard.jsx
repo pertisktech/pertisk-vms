@@ -91,7 +91,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
     setBusy(true)
     setError('')
     try {
-      await api(`/v1/vms/${source.id}/clone`, {
+      const vm = await api(`/v1/vms/${source.id}/clone`, {
         method: 'POST',
         body: {
           id: Number(form.id),
@@ -118,7 +118,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
           start: form.start,
         },
       })
-      await onCreated()
+      await onCreated(vm?.id ?? Number(form.id))
       onClose()
     } catch (err) {
       setError(err.message || String(err))
