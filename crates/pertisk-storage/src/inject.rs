@@ -242,7 +242,9 @@ fn write_hostname(root: &Path, hostname: &str) -> Result<()> {
     let path = root.join("etc/hostname");
     // AlmaLinux hostnamed cannot rewrite this file when it is immutable
     // or still labeled from the hypervisor mount (unlabeled_t / default_t).
-    let _ = Command::new("chattr").args(["-i"]).arg(&path).status();
+    if path.is_file() {
+        let _ = Command::new("chattr").args(["-i"]).arg(&path).status();
+    }
     fs::write(&path, format!("{hostname}\n"))?;
     #[cfg(unix)]
     {
@@ -296,16 +298,17 @@ WantedBy=sysinit.target\n";
     }
     let libexec = root.join("usr/libexec");
     let _ = fs::create_dir_all(&libexec);
-    let script = "#!/bin/sh\n\
-set -eu\n\
-name=$(tr -d ' \\t\\n' </etc/pertisk/hostname 2>/dev/null || true)\n\
-[ -n \"$name\" ] || exit 0\n\
-chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true\n\
-printf '%s\\n' \"$name\" >/etc/hostname\n\
-hostname \"$name\" 2>/dev/null || true\n\
-hostnamectl set-hostname \"$name\" --transient 2>/dev/null || true\n\
-restorecon /etc/hostname /etc/hosts 2>/dev/null || true\n\
-exit 0\n";
+    let script = r#"#!/bin/sh
+set -u
+name=$(tr -d ' \t\n' </etc/pertisk/hostname 2>/dev/null || true)
+[ -n "$name" ] || exit 0
+chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true
+printf '%s\n' "$name" >/etc/hostname || true
+hostname "$name" 2>/dev/null || true
+hostnamectl set-hostname "$name" --transient 2>/dev/null || true
+restorecon /etc/hostname /etc/hosts 2>/dev/null || true
+exit 0
+"#;
     let path = libexec.join("pertisk-set-hostname");
     let _ = fs::write(&path, script);
     #[cfg(unix)]
@@ -996,10 +999,18 @@ mod tests {
         assert!(cfg.contains("hostname: AlmaLinux-10-1"), "{cfg}");
         let seed = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/user-data")).unwrap();
         assert!(seed.contains("prefer_fqdn_over_hostname: false"), "{seed}");
-        assert!(
-            seed.contains("hostnamectl set-hostname AlmaLinux-10-1 --static"),
-            "{seed}"
+        assert!(seed.contains("chattr -i /etc/hostname"), "{seed}");
+        assert!(seed.contains("printf '%s\\n' 'AlmaLinux-10-1' >/etc/hostname"), "{seed}");
+        assert_eq!(
+            fs::read_to_string(root.join("etc/pertisk/hostname"))
+                .unwrap()
+                .trim(),
+            "AlmaLinux-10-1"
         );
+        assert!(root.join("usr/libexec/pertisk-set-hostname").is_file());
+        assert!(root
+            .join("etc/systemd/system/pertisk-hostname.service")
+            .is_file());
         assert!(!root.join("var/lib/cloud/instance").exists());
         assert_eq!(
             fs::read_to_string(root.join("etc/machine-id")).unwrap(),

@@ -1285,7 +1285,8 @@ mod tests {
         }
         assert!(text.contains("hostname: web-1"));
         assert!(text.contains("prefer_fqdn_over_hostname: false"));
-        assert!(text.contains("hostnamectl set-hostname web-1 --static"));
+        assert!(text.contains("chattr -i /etc/hostname"));
+        assert!(text.contains("printf '%s\\n' 'web-1' >/etc/hostname"));
         assert!(text.contains("ubuntu:ubuntu"));
         assert!(text.contains("ssh_pwauth: true"));
         assert!(text.contains("groups: [adm, wheel, sudo]"));
