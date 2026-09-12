@@ -1862,7 +1862,7 @@ a.guest-card:hover { color: inherit; }
 }
 .pve-tabbody:has(.pve-console-wrap) {
   overflow: hidden;
-  padding: 0.45rem 0.55rem 0;
+  padding: 5px;
   gap: 0;
 }
 .pve-tabbody:has(.pve-console-wrap) > .pve-console-wrap {
@@ -2073,9 +2073,7 @@ a.guest-card:hover { color: inherit; }
   background: var(--color-console);
 }
 .pve-tabbody:has(.pve-console-wrap) .console-pane-stack {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  border-bottom: 0;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 .console-pane-hidden {
   visibility: hidden;
@@ -2146,7 +2144,7 @@ a.guest-card:hover { color: inherit; }
 }
 .pve-console {
   position: absolute;
-  inset: 0;
+  inset: 5px;
   flex: none;
   min-height: 0;
   max-height: none;
