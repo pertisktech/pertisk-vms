@@ -28,7 +28,7 @@ const tooltipStyle = {
   borderRadius: 8,
   color: 'var(--color-text)',
   fontSize: 12,
-  fontFamily: 'Plus Jakarta Sans, ui-sans-serif, system-ui, sans-serif',
+  fontFamily: 'Geist, ui-sans-serif, system-ui, sans-serif',
 }
 
 function formatRate(bps) {

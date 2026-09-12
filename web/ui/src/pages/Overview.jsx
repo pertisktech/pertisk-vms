@@ -31,6 +31,7 @@ export default function Overview() {
 
       <div className="dash-stat-row">
         <MetricCard
+          icon="cpu"
           label="CPU load"
           value={pctLabel(Number(metrics.data?.live?.cpu_pct))}
           hint={
@@ -44,6 +45,7 @@ export default function Overview() {
           pct={Number(metrics.data?.live?.cpu_pct)}
         />
         <MetricCard
+          icon="memory"
           label="Memory"
           value={pctLabel(
             Number(metrics.data?.live?.mem_total_bytes) > 0
@@ -62,6 +64,7 @@ export default function Overview() {
           }
         />
         <MetricCard
+          icon="guests"
           label="Virtual machines"
           value={`${running} / ${guests.length}`}
           hint={`${running} running`}
@@ -70,6 +73,7 @@ export default function Overview() {
           barTone="ok"
         />
         <MetricCard
+          icon="worker"
           label="Nodes"
           value={`${online} / ${members.length || 1}`}
           hint={cluster?.quorum ? 'Quorum held' : 'No quorum'}

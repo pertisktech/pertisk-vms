@@ -37,6 +37,10 @@ export default function GuestView() {
   const [cloneOpen, setCloneOpen] = useState(false)
 
   const peers = asList(inv.cluster?.members).filter((m) => m.online && m.id !== vm?.node_id)
+  const nodeName =
+    asList(inv.cluster?.members).find((m) => m.id === vm?.node_id)?.name ||
+    inv.host?.hostname ||
+    'node'
   const running = vm?.state === 'running'
   const template = isTemplate(vm)
 
@@ -79,6 +83,7 @@ export default function GuestView() {
         icon={template ? 'template' : 'guests'}
         kind={template ? 'Template' : 'Guest'}
         name={vmCaption(vm).title}
+        crumbs={['Datacenter', nodeName, vm.spec?.name || vmCaption(vm).title]}
         status={
           <>
             {template ? (
@@ -91,54 +96,61 @@ export default function GuestView() {
           </>
         }
         tabs={[
-          { to: 'summary', label: 'Summary', icon: 'summary' },
+          { to: 'summary', label: 'Summary', icon: 'gauge' },
           !template && { to: 'console', label: 'Console', icon: 'terminal' },
           { to: 'hardware', label: 'Hardware', icon: 'hardware' },
           { to: 'options', label: 'Options', icon: 'options' },
         ].filter(Boolean)}
         actions={
-          canWrite && (
-            <>
-              {template && (
-                <Btn icon="clone" variant="secondary" onClick={() => setCloneOpen(true)}>
-                  Clone
-                </Btn>
-              )}
-              {!template && !running && (
-                <Btn icon="play" variant="secondary" onClick={() => act('start')}>
-                  Start
-                </Btn>
-              )}
-              {!template && running && (
-                <>
-                  <Btn icon="power" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
-                    Shutdown
-                  </Btn>
-                  <Btn icon="refresh" variant="secondary" onClick={() => act('restart')} title="Hard reset">
-                    Restart
-                  </Btn>
-                  <Btn icon="stop" variant="secondary" onClick={() => act('stop')} title="Force power off">
-                    Stop
-                  </Btn>
-                </>
-              )}
-              {!template && running && peers.length > 0 && (
-                <Btn
-                  icon="migrate"
-                  variant="secondary"
-                  onClick={() => {
-                    setMigrateTarget(peers[0]?.id || '')
-                    setMigrateOpen(true)
-                  }}
-                >
-                  Migrate
-                </Btn>
-              )}
-              <Btn icon="trash" variant="danger" onClick={() => act('rm')}>
-                Destroy
+          <>
+            {!template && (
+              <Btn icon="terminal" onClick={() => nav(`/vm/${vmId}/console`)}>
+                Console
               </Btn>
-            </>
-          )
+            )}
+            {canWrite && (
+              <>
+                {template && (
+                  <Btn icon="clone" variant="secondary" onClick={() => setCloneOpen(true)}>
+                    Clone
+                  </Btn>
+                )}
+                {!template && !running && (
+                  <Btn icon="play" variant="secondary" onClick={() => act('start')}>
+                    Start
+                  </Btn>
+                )}
+                {!template && running && (
+                  <>
+                    <Btn icon="power" variant="secondary" onClick={() => act('shutdown')} title="ACPI shutdown">
+                      Shutdown
+                    </Btn>
+                    <Btn icon="stop" variant="secondary" onClick={() => act('stop')} title="Force power off">
+                      Stop
+                    </Btn>
+                    <Btn icon="refresh" variant="secondary" onClick={() => act('restart')} title="Hard reset">
+                      Reboot
+                    </Btn>
+                  </>
+                )}
+                {!template && running && peers.length > 0 && (
+                  <Btn
+                    icon="migrate"
+                    variant="secondary"
+                    onClick={() => {
+                      setMigrateTarget(peers[0]?.id || '')
+                      setMigrateOpen(true)
+                    }}
+                  >
+                    Migrate
+                  </Btn>
+                )}
+                <Btn icon="trash" variant="danger" onClick={() => act('rm')}>
+                  Destroy
+                </Btn>
+              </>
+            )}
+          </>
         }
       />
 

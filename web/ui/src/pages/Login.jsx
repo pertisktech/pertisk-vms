@@ -2,10 +2,12 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, clearAuthRequired, clearToken, getToken, setToken } from '../api'
 import { Icon } from '../components/Icons'
+import { useTheme } from '../ThemeContext'
 import { useState } from 'react'
 
 export default function Login() {
   const nav = useNavigate()
+  const { appearance, toggleAppearance } = useTheme()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
@@ -60,15 +62,28 @@ export default function Login() {
 
   return (
     <div className="login-wrap">
+      <button
+        type="button"
+        className="pve-icon-btn login-theme"
+        onClick={toggleAppearance}
+        title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
+        aria-label="Toggle color theme"
+      >
+        <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
+      </button>
       <div className="login-card">
         <div className="login-brand">
           <span className="login-brand-mark" aria-hidden>
-            <Icon name="guests" size={18} />
+            <Icon name="worker" size={18} />
           </span>
-          <h1>Pertisk VM</h1>
+          <div>
+            <h1>
+              Pertisk <span className="accent">VM</span>
+            </h1>
+            {version ? <p className="login-version">v{version}</p> : null}
+          </div>
         </div>
         <p>Sign in to the virtualization control plane.</p>
-        {version ? <p className="login-version">v{version}</p> : null}
         {error && <div className="error">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">

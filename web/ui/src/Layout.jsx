@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, clearToken, getToken, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired } from './api'
+import { api, asList, clearToken, getToken, isTemplate, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired, vmCaption } from './api'
 import { Icon } from './components/Icons'
 import { useTheme } from './ThemeContext'
 import { useConfirm } from './components/Confirm'
@@ -16,7 +16,7 @@ const TREE_KEY = 'pertisk_vm_tree_collapsed'
 const TREE_WIDTH_KEY = 'pertisk_vm_tree_width'
 const TREE_WIDTH_MIN = 180
 const TREE_WIDTH_MAX = 560
-const TREE_WIDTH_DEFAULT = 256
+const TREE_WIDTH_DEFAULT = 288
 
 function clampTreeWidth(value) {
   const n = Number(value)
@@ -24,12 +24,109 @@ function clampTreeWidth(value) {
   return Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, Math.round(n)))
 }
 
+function ResourceSearch({ cluster, host, vms }) {
+  const nav = useNavigate()
+  const location = useLocation()
+  const wrapRef = useRef(null)
+  const [q, setQ] = useState('')
+  const [open, setOpen] = useState(false)
+  const currentRoute = useMemo(() => parseResourceRoute(location.pathname), [location.pathname])
+
+  const results = useMemo(() => {
+    const query = q.trim().toLowerCase()
+    if (!query) return []
+    const members = asList(cluster?.members)
+    const nodes = members.length
+      ? members
+      : [{ id: 'local', name: host?.hostname || 'localhost' }]
+    const out = []
+    if ('datacenter'.includes(query) || 'pertisk'.includes(query)) {
+      out.push({ to: resourceLink('dc', null, currentRoute), label: 'Datacenter', icon: 'datacenter' })
+    }
+    for (const node of nodes) {
+      if (String(node.name || '').toLowerCase().includes(query) || String(node.id || '').toLowerCase().includes(query)) {
+        out.push({ to: resourceLink('node', node.id, currentRoute), label: node.name, icon: 'worker' })
+      }
+    }
+    for (const vm of vms) {
+      const caption = vmCaption(vm)
+      const hay = `${caption.id} ${caption.name || ''} ${caption.title}`.toLowerCase()
+      if (hay.includes(query)) {
+        out.push({
+          to: resourceLink('vm', vm.id, currentRoute, { template: isTemplate(vm) }),
+          label: caption.title,
+          icon: isTemplate(vm) ? 'template' : 'guests',
+        })
+      }
+    }
+    return out.slice(0, 8)
+  }, [q, cluster, host, vms, currentRoute])
+
+  useEffect(() => {
+    function onPointerDown(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [])
+
+  function go(to) {
+    setQ('')
+    setOpen(false)
+    nav(to)
+  }
+
+  return (
+    <div className="pve-search" ref={wrapRef}>
+      <Icon name="search" size={16} />
+      <input
+        type="search"
+        placeholder="Search resources…"
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && results[0]) {
+            e.preventDefault()
+            go(results[0].to)
+          }
+          if (e.key === 'Escape') setOpen(false)
+        }}
+      />
+      {open && q.trim() && (
+        <div className="pve-search-results">
+          {results.length === 0 ? (
+            <div className="pve-search-empty">No matches</div>
+          ) : (
+            results.map((item) => (
+              <a
+                key={item.to}
+                href={`#${item.to}`}
+                onClick={(e) => {
+                  e.preventDefault()
+                  go(item.to)
+                }}
+              >
+                <Icon name={item.icon} size={14} />
+                {item.label}
+              </a>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Layout() {
   const nav = useNavigate()
   const location = useLocation()
   const confirm = useConfirm()
   const inv = useInventory()
-  const { preset, presets, setPreset } = useTheme()
+  const { preset, presets, setPreset, appearance, toggleAppearance } = useTheme()
   const [user, setUser] = useState(null)
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -72,6 +169,14 @@ export default function Layout() {
   useEffect(() => {
     localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth))
   }, [treeWidth])
+
+  function toggleSidebar() {
+    if (typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches) {
+      setCollapsed((v) => !v)
+    } else {
+      setMobileOpen((v) => !v)
+    }
+  }
 
   function onResizePointerDown(e) {
     if (e.button !== 0) return
@@ -162,72 +267,33 @@ export default function Layout() {
 
   return (
     <div className="pve-shell">
-      <div
-        className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
-        aria-hidden={!mobileOpen}
-        onClick={() => setMobileOpen(false)}
-      />
-
-      <aside
-        ref={treeRef}
-        className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}${
-          resizing ? ' resizing' : ''
-        }`}
-        style={collapsed ? undefined : { width: `${treeWidth}px` }}
-      >
-        <div className="pve-tree-header">
-          <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
-            <span className="brand-mark" aria-hidden>
-              <Icon name="guests" size={15} />
-            </span>
+      <header className="pve-header">
+        <button
+          type="button"
+          className="pve-icon-btn ghost"
+          onClick={toggleSidebar}
+          aria-label="Toggle resource tree"
+        >
+          <Icon name="panel-left" size={18} />
+        </button>
+        <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
+          <span className="brand-mark" aria-hidden>
+            <Icon name="worker" size={16} />
+          </span>
+          <span className="pve-brand-copy">
             <span className="pve-brand-text">
               Pertisk <span className="accent">VM</span>
             </span>
-          </Link>
-          <button
-            type="button"
-            className="pve-tree-collapse"
-            onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={16} />
-          </button>
-        </div>
-        <ResourceTree
-          cluster={inv.cluster}
-          host={inv.host}
-          vms={inv.vms}
-        />
-        <div className="pve-tree-footer">{version ? `v${version}` : 'Pertisk VM'}</div>
-        {!collapsed && (
-          <div
-            className="pve-tree-resize"
-            onPointerDown={onResizePointerDown}
-            onDoubleClick={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize sidebar"
-            title="Drag to resize"
-          />
-        )}
-      </aside>
-
-      <div className={`pve-content${mobileOpen ? ' sidebar-open' : ''}`}>
-        <header className="pve-header">
-          <button
-            type="button"
-            className="pve-icon-btn pve-mobile-toggle"
-            onClick={() => setMobileOpen((v) => !v)}
-            aria-label="Toggle resource tree"
-          >
-            <Icon name="menu" size={18} />
-          </button>
-          <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
-            <Icon name={quorum ? 'check' : 'alert'} size={13} />
-            {quorum ? 'Quorate' : 'No quorum'}
+            <span className="pve-brand-ver">{version ? `v${version}` : 'Virtual Environment'}</span>
           </span>
-          <div className="pve-header-spacer" />
+        </Link>
+        <ResourceSearch cluster={inv.cluster} host={inv.host} vms={inv.vms} />
+        <div className="pve-header-spacer" />
+        <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
+          <Icon name={quorum ? 'check' : 'alert'} size={13} />
+          {quorum ? 'Quorate' : 'No quorum'}
+        </span>
+        <div className="pve-header-actions">
           {canWrite && (
             <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
               <Icon name="plus" size={15} />
@@ -236,13 +302,25 @@ export default function Layout() {
           )}
           <button
             type="button"
-            className="pve-icon-btn"
+            className="pve-icon-btn ghost"
             onClick={inv.refresh}
             onMouseDown={(e) => e.preventDefault()}
             title="Refresh"
             aria-label="Refresh"
           >
             <Icon name="refresh" size={16} />
+          </button>
+          <button type="button" className="pve-icon-btn ghost" title="Help" aria-label="Help">
+            <Icon name="help" size={16} />
+          </button>
+          <button
+            type="button"
+            className="pve-icon-btn"
+            onClick={toggleAppearance}
+            title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
+            aria-label="Toggle color theme"
+          >
+            <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
           </button>
           <div className="user-menu" ref={userMenuRef}>
             <button
@@ -287,11 +365,46 @@ export default function Layout() {
               </div>
             )}
           </div>
-        </header>
+        </div>
+      </header>
 
-        <main className="pve-main">
-          <Outlet context={{ user, canWrite, inv }} />
-        </main>
+      <div className="pve-body">
+        <div
+          className={`sidebar-backdrop${mobileOpen ? ' open' : ''}`}
+          aria-hidden={!mobileOpen}
+          onClick={() => setMobileOpen(false)}
+        />
+
+        <aside
+          ref={treeRef}
+          className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}${
+            resizing ? ' resizing' : ''
+          }`}
+          style={collapsed ? undefined : { width: `${treeWidth}px` }}
+        >
+          <ResourceTree
+            cluster={inv.cluster}
+            host={inv.host}
+            vms={inv.vms}
+          />
+          {!collapsed && (
+            <div
+              className="pve-tree-resize"
+              onPointerDown={onResizePointerDown}
+              onDoubleClick={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+              title="Drag to resize"
+            />
+          )}
+        </aside>
+
+        <div className={`pve-content${mobileOpen ? ' sidebar-open' : ''}`}>
+          <main className="pve-main">
+            <Outlet context={{ user, canWrite, inv }} />
+          </main>
+        </div>
       </div>
 
       {passwordOpen && <ChangePassword onClose={() => setPasswordOpen(false)} />}

@@ -44,6 +44,11 @@ import {
   LuDownload,
   LuLibrary,
   LuBoxes,
+  LuSearch,
+  LuBell,
+  LuCircleHelp,
+  LuPanelLeft,
+  LuGauge,
 } from 'react-icons/lu'
 
 const ICONS = {
@@ -92,6 +97,11 @@ const ICONS = {
   updates: LuDownload,
   repo: LuLibrary,
   terraform: LuBoxes,
+  search: LuSearch,
+  bell: LuBell,
+  help: LuCircleHelp,
+  'panel-left': LuPanelLeft,
+  gauge: LuGauge,
 }
 
 export function Icon({ name, size = 18, className = '' }) {

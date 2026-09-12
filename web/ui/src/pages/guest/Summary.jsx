@@ -1,4 +1,5 @@
 import { asList, disksOf, isTemplate, netsOf, nicAddrs, shortId } from '../../api'
+import MetricCard from '../../components/MetricCard'
 import MetricsCharts from '../../components/MetricsCharts'
 import { useMetrics } from '../../useMetrics'
 import { useGuest } from '../GuestView'
@@ -36,22 +37,10 @@ export default function GuestSummary() {
       {vm.last_error && <div className="banner danger">{vm.last_error}</div>}
 
       <div className="dash-stat-row">
-        <div className="stat">
-          <div className="label">Status</div>
-          <div className="value">{vm.state}</div>
-        </div>
-        <div className="stat">
-          <div className="label">vCPU</div>
-          <div className="value">{vm.spec?.vcpus || 1}</div>
-        </div>
-        <div className="stat">
-          <div className="label">Memory</div>
-          <div className="value">{vm.spec?.memory_mib || 0} MiB</div>
-        </div>
-        <div className="stat">
-          <div className="label">Node</div>
-          <div className="value">{nodeName(inv.cluster, vm.node_id)}</div>
-        </div>
+        <MetricCard icon="check" label="Status" value={vm.state} hint={running ? 'Live' : vm.state} hintTone={running ? 'ok' : undefined} />
+        <MetricCard icon="cpu" label="vCPU" value={String(vm.spec?.vcpus || 1)} hint="cores" />
+        <MetricCard icon="memory" label="Memory" value={`${vm.spec?.memory_mib || 0} MiB`} />
+        <MetricCard icon="worker" label="Node" value={nodeName(inv.cluster, vm.node_id)} />
       </div>
 
       <MetricsCharts

@@ -1,6 +1,61 @@
 export const THEME_PRESET_KEY = 'pertisk_theme_preset'
+export const THEME_APPEARANCE_KEY = 'pertisk_theme_appearance'
+
+const CONSOLE_TERM_DARK = {
+  background: '#17132a',
+  foreground: '#e7e1f5',
+  cursor: '#b79cff',
+  cursorAccent: '#17132a',
+  selectionBackground: '#4c3f7a',
+  black: '#2a2440',
+  red: '#ff7b72',
+  green: '#8ce39b',
+  yellow: '#f0d98c',
+  blue: '#a78bfa',
+  magenta: '#c792ea',
+  cyan: '#89ddff',
+  white: '#e7e1f5',
+  brightBlack: '#6b6390',
+  brightRed: '#ff8a84',
+  brightGreen: '#7aecb8',
+  brightYellow: '#fcd34d',
+  brightBlue: '#c4b5fd',
+  brightMagenta: '#e0c4ff',
+  brightCyan: '#a5f3fc',
+  brightWhite: '#ffffff',
+}
+
+const CONSOLE_TERM_LIGHT = {
+  background: '#ffffff',
+  foreground: '#2c2340',
+  cursor: '#7c3aed',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#e3d8fb',
+  black: '#2c2340',
+  red: '#c0392b',
+  green: '#2f8f4e',
+  yellow: '#9a7d20',
+  blue: '#6d28d9',
+  magenta: '#8b5cf6',
+  cyan: '#0e7490',
+  white: '#2c2340',
+  brightBlack: '#8a80a8',
+  brightRed: '#e24b3d',
+  brightGreen: '#3cb86a',
+  brightYellow: '#c9a227',
+  brightBlue: '#7c3aed',
+  brightMagenta: '#a78bfa',
+  brightCyan: '#22d3ee',
+  brightWhite: '#1a1626',
+}
 
 export const APP_THEME_PRESETS = [
+  {
+    id: 'console-violet',
+    label: 'Console Violet',
+    description: 'Proxmox-style purple console palette with light and dark modes.',
+    tokens: {},
+  },
   {
     id: 'flux-violet',
     label: 'Flux Violet',
@@ -386,23 +441,47 @@ export const APP_THEME_PRESETS = [
 const THEME_TOKEN_KEYS = [...new Set(APP_THEME_PRESETS.flatMap((preset) => Object.keys(preset.tokens)))]
 
 export function normalizeThemePreset(value) {
-  return APP_THEME_PRESETS.some((preset) => preset.id === value) ? value : 'flux-violet'
+  return APP_THEME_PRESETS.some((preset) => preset.id === value) ? value : 'console-violet'
 }
 
 export function getStoredThemePreset() {
   try {
     return normalizeThemePreset(localStorage.getItem(THEME_PRESET_KEY))
   } catch {
-    return 'flux-violet'
+    return 'console-violet'
   }
+}
+
+export function normalizeAppearance(value) {
+  return value === 'light' ? 'light' : 'dark'
+}
+
+export function getStoredAppearance() {
+  try {
+    return normalizeAppearance(localStorage.getItem(THEME_APPEARANCE_KEY))
+  } catch {
+    return 'dark'
+  }
+}
+
+export function applyAppearance(appearance) {
+  const mode = normalizeAppearance(appearance)
+  const root = document.documentElement
+  root.classList.toggle('dark', mode === 'dark')
+  root.classList.toggle('light', mode === 'light')
+  root.style.colorScheme = mode
+  try {
+    localStorage.setItem(THEME_APPEARANCE_KEY, mode)
+  } catch {
+    /* ignore quota / private mode */
+  }
+  return mode
 }
 
 export function applyThemePreset(presetId) {
   const id = normalizeThemePreset(presetId)
   const preset = APP_THEME_PRESETS.find((item) => item.id === id) || APP_THEME_PRESETS[0]
   const root = document.documentElement
-  root.classList.remove('light')
-  root.classList.add('dark')
   root.removeAttribute('data-theme')
   for (const key of THEME_TOKEN_KEYS) {
     root.style.removeProperty(key)
@@ -420,12 +499,17 @@ export function applyThemePreset(presetId) {
 }
 
 export function initTheme() {
+  applyAppearance(getStoredAppearance())
   applyThemePreset(getStoredThemePreset())
 }
 
-export function terminalPalette(presetId) {
+export function terminalPalette(presetId, appearance) {
   const preset = APP_THEME_PRESETS.find((item) => item.id === presetId) || APP_THEME_PRESETS[0]
   const tokens = preset.tokens
+  const mode = normalizeAppearance(appearance)
+  if (!tokens['--color-bg']) {
+    return mode === 'light' ? CONSOLE_TERM_LIGHT : CONSOLE_TERM_DARK
+  }
   return {
     background: tokens['--color-bg'] || '#0c0d18',
     foreground: tokens['--color-text'] || '#e6e7f0',

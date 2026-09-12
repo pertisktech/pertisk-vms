@@ -5,7 +5,7 @@ import ResourceView from '../components/ResourceView'
 export default function Datacenter() {
   const { user, canWrite, inv } = useOutletContext()
   const tabs = [
-    { to: 'summary', label: 'Summary', icon: 'summary' },
+    { to: 'summary', label: 'Summary', icon: 'gauge' },
     { to: 'storage', label: 'Storage', icon: 'disk' },
     { to: 'templates', label: 'Templates', icon: 'template' },
     { to: 'networks', label: 'Networks', icon: 'network' },
@@ -22,6 +22,7 @@ export default function Datacenter() {
       icon="datacenter"
       kind="Datacenter"
       name={inv.cluster?.name || 'pertisk'}
+      crumbs={['Datacenter']}
       status={
         inv.cluster?.fenced ? <span className="badge error">fenced</span> : null
       }

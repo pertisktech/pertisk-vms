@@ -70,7 +70,7 @@ export default function NodeShell() {
     term = new Terminal({
       cursorBlink: true,
       fontFamily:
-        '"MesloLGS NF", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        '"Geist Mono", "MesloLGS NF", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
       lineHeight: 1,
       theme: terminalTheme,

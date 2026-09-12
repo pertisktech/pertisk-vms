@@ -1,7 +1,9 @@
 import { createContext, useContext, useMemo, useState } from 'react'
 import {
   APP_THEME_PRESETS,
+  applyAppearance,
   applyThemePreset,
+  getStoredAppearance,
   getStoredThemePreset,
   terminalPalette,
 } from './theme'
@@ -10,18 +12,28 @@ const ThemeContext = createContext(null)
 
 export function ThemeProvider({ children }) {
   const [preset, setPresetState] = useState(getStoredThemePreset)
+  const [appearance, setAppearanceState] = useState(getStoredAppearance)
 
   const value = useMemo(() => {
     function setPreset(next) {
       setPresetState(applyThemePreset(next))
     }
+    function setAppearance(next) {
+      setAppearanceState(applyAppearance(next))
+    }
+    function toggleAppearance() {
+      setAppearanceState(applyAppearance(appearance === 'dark' ? 'light' : 'dark'))
+    }
     return {
       preset,
+      appearance,
       presets: APP_THEME_PRESETS,
       setPreset,
-      terminalTheme: terminalPalette(preset),
+      setAppearance,
+      toggleAppearance,
+      terminalTheme: terminalPalette(preset, appearance),
     }
-  }, [preset])
+  }, [preset, appearance])
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

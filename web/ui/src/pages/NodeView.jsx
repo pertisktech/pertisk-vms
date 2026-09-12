@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useOutletContext, useParams } from 'react-router-dom'
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api, asList, isTemplate } from '../api'
 import { Btn } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
@@ -30,6 +30,7 @@ export function useNode() {
 export default function NodeView() {
   const { nodeId, node, inv, canWrite } = useNode()
   const confirm = useConfirm()
+  const nav = useNavigate()
   const members = asList(inv.cluster?.members)
   const self = !inv.cluster?.self_id || inv.cluster.self_id === nodeId
   const [busy, setBusy] = useState('')
@@ -61,6 +62,7 @@ export default function NodeView() {
       icon="worker"
       kind="Node"
       name={node?.name || nodeId}
+      crumbs={['Datacenter', node?.name || nodeId]}
       status={
         <>
           <span className={`badge ${node?.online === false ? 'error' : 'ready'}`}>
@@ -76,37 +78,45 @@ export default function NodeView() {
         </>
       }
       tabs={[
-        { to: 'summary', label: 'Summary', icon: 'summary' },
+        { to: 'summary', label: 'Summary', icon: 'gauge' },
         { to: 'guests', label: 'Guests', icon: 'guests' },
         { to: 'updates', label: 'Updates', icon: 'updates' },
         { to: 'repositories', label: 'Repositories', icon: 'repo' },
-        { to: 'shell', label: 'Shell', icon: 'terminal' },
+        { to: 'shell', label: 'Console', icon: 'terminal' },
         { to: 'tasks', label: 'Task History', icon: 'activity' },
       ]}
       actions={
-        canWrite &&
-        self && (
-          <>
-            <Btn
-              icon="power"
-              variant="secondary"
-              disabled={!!busy}
-              onClick={() => power('shutdown')}
-              title="Power off this hypervisor"
-            >
-              Shutdown
-            </Btn>
-            <Btn
-              icon="refresh"
-              variant="secondary"
-              disabled={!!busy}
-              onClick={() => power('reboot')}
-              title="Reboot this hypervisor"
-            >
-              Restart
-            </Btn>
-          </>
-        )
+        <>
+          <Btn
+            icon="terminal"
+            onClick={() => nav(`/node/${nodeId}/shell`)}
+            title="Open node console"
+          >
+            Console
+          </Btn>
+          {canWrite && self && (
+            <>
+              <Btn
+                icon="power"
+                variant="secondary"
+                disabled={!!busy}
+                onClick={() => power('shutdown')}
+                title="Power off this hypervisor"
+              >
+                Shutdown
+              </Btn>
+              <Btn
+                icon="refresh"
+                variant="secondary"
+                disabled={!!busy}
+                onClick={() => power('reboot')}
+                title="Reboot this hypervisor"
+              >
+                Reboot
+              </Btn>
+            </>
+          )}
+        </>
       }
     />
   )

@@ -1,22 +1,31 @@
 import { NavLink, Outlet, useOutletContext } from 'react-router-dom'
 import { Icon } from './Icons'
 
-/// Proxmox-style resource panel: breadcrumb + action bar on top, vertical tab
-/// strip on the left, tab body on the right.
-export default function ResourceView({ icon, kind, name, status, tabs, actions }) {
+export default function ResourceView({ icon, kind, name, crumbs, status, tabs, actions }) {
   const ctx = useOutletContext()
+  const trail = crumbs?.length ? crumbs : [kind, name].filter(Boolean)
 
   return (
     <div className="pve-panel">
       <div className="pve-toolbar">
-        <div className="pve-crumb">
-          <Icon name={icon} size={16} />
-          <span className="pve-crumb-kind">{kind}</span>
-          <span className="pve-crumb-sep">/</span>
-          <strong>{name}</strong>
-          {status}
+        <nav className="pve-crumbs" aria-label="Breadcrumb">
+          {trail.map((item, i) => (
+            <span key={`${item}-${i}`} className="flex-crumb">
+              {i > 0 && <Icon name="chevron-right" size={12} />}
+              <span className={i === trail.length - 1 ? 'current' : undefined}>{item}</span>
+            </span>
+          ))}
+        </nav>
+        <div className="pve-title-row">
+          <span className="pve-title-icon" aria-hidden>
+            <Icon name={icon} size={18} />
+          </span>
+          <div className="pve-title-copy">
+            <h2>{name}</h2>
+            {status ? <div className="pve-title-status">{status}</div> : null}
+          </div>
+          <div className="pve-toolbar-actions">{actions}</div>
         </div>
-        <div className="pve-toolbar-actions">{actions}</div>
       </div>
       <div className="pve-panel-body">
         <nav className="pve-tabs" aria-label={`${kind} sections`}>

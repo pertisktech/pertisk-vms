@@ -42,12 +42,14 @@ export default function NodeSummary() {
     <div className="pve-stack">
       <div className="dash-stat-row">
         <MetricCard
+          icon="check"
           label="Status"
           value={node?.online === false ? 'offline' : 'online'}
           hint={node?.online === false ? 'Down' : 'Live'}
           hintTone={node?.online === false ? undefined : 'ok'}
         />
         <MetricCard
+          icon="guests"
           label="Guests"
           value={`${metrics.data?.running_vms ?? running.length} / ${guests.length}`}
           hint={`${metrics.data?.running_vms ?? running.length} running`}
@@ -56,11 +58,13 @@ export default function NodeSummary() {
           barTone="ok"
         />
         <MetricCard
+          icon="cpu"
           label="Allocated vCPU"
           value={`${metrics.data?.allocated_vcpus ?? usedCpu} / ${totalCpu || '—'}`}
           pct={totalCpu ? ((metrics.data?.allocated_vcpus ?? usedCpu) / totalCpu) * 100 : null}
         />
         <MetricCard
+          icon="memory"
           label="Allocated memory"
           value={`${metrics.data?.allocated_memory_mib ?? usedMem} MiB`}
           hint={allocMemTotal ? `/ ${allocMemTotal} MiB` : undefined}

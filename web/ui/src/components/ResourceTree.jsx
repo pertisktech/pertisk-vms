@@ -113,7 +113,7 @@ export default function ResourceTree({ cluster, host, vms }) {
         <Branch
           depth={0}
           icon="datacenter"
-          label="Pertisk"
+          label="Datacenter"
           to={resourceLink('dc', null, currentRoute)}
           open={isOpen('dc')}
           onToggle={() => toggle('dc')}
