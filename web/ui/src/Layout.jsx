@@ -267,103 +267,110 @@ export default function Layout() {
 
   return (
     <div className="pve-shell">
-      <header className="pve-header">
-        <button
-          type="button"
-          className="pve-icon-btn ghost"
-          onClick={toggleSidebar}
-          aria-label="Toggle resource tree"
+      <header className={`pve-header${collapsed ? ' sidebar-collapsed' : ''}`}>
+        <div
+          className={`pve-header-start${resizing ? ' resizing' : ''}`}
+          style={!collapsed ? { width: `${treeWidth}px` } : undefined}
         >
-          <Icon name="panel-left" size={18} />
-        </button>
-        <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
-          <span className="brand-mark" aria-hidden>
-            <Icon name="worker" size={16} />
-          </span>
-          <span className="pve-brand-copy">
-            <span className="pve-brand-text">
-              Pertisk <span className="accent">VM</span>
-            </span>
-            <span className="pve-brand-ver">{version ? `v${version}` : 'Virtual Environment'}</span>
-          </span>
-        </Link>
-        <ResourceSearch cluster={inv.cluster} host={inv.host} vms={inv.vms} />
-        <div className="pve-header-spacer" />
-        <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
-          <Icon name={quorum ? 'check' : 'alert'} size={13} />
-          {quorum ? 'Quorate' : 'No quorum'}
-        </span>
-        <div className="pve-header-actions">
-          {canWrite && (
-            <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
-              <Icon name="plus" size={15} />
-              <span>Create guest</span>
-            </button>
-          )}
           <button
             type="button"
             className="pve-icon-btn ghost"
-            onClick={inv.refresh}
-            onMouseDown={(e) => e.preventDefault()}
-            title="Refresh"
-            aria-label="Refresh"
+            onClick={toggleSidebar}
+            aria-label="Toggle resource tree"
           >
-            <Icon name="refresh" size={16} />
+            <Icon name="panel-left" size={18} />
           </button>
-          <button type="button" className="pve-icon-btn ghost" title="Help" aria-label="Help">
-            <Icon name="help" size={16} />
-          </button>
-          <button
-            type="button"
-            className="pve-icon-btn"
-            onClick={toggleAppearance}
-            title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
-            aria-label="Toggle color theme"
-          >
-            <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
-          </button>
-          <div className="user-menu" ref={userMenuRef}>
+          <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
+            <span className="brand-mark" aria-hidden>
+              <Icon name="worker" size={16} />
+            </span>
+            <span className="pve-brand-copy">
+              <span className="pve-brand-text">
+                Pertisk <span className="accent">VM</span>
+              </span>
+              <span className="pve-brand-ver">{version ? `v${version}` : 'Virtual Environment'}</span>
+            </span>
+          </Link>
+        </div>
+        <div className="pve-header-main">
+          <ResourceSearch cluster={inv.cluster} host={inv.host} vms={inv.vms} />
+          <div className="pve-header-spacer" />
+          <span className={`pve-quorum ${quorum ? 'ok' : 'bad'}`}>
+            <Icon name={quorum ? 'check' : 'alert'} size={13} />
+            {quorum ? 'Quorate' : 'No quorum'}
+          </span>
+          <div className="pve-header-actions">
+            {canWrite && (
+              <button type="button" className="pve-header-btn" onClick={() => setWizard(true)}>
+                <Icon name="plus" size={15} />
+                <span>Create guest</span>
+              </button>
+            )}
             <button
               type="button"
-              className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
-              onClick={() => setShowUserMenu((v) => !v)}
+              className="pve-icon-btn ghost"
+              onClick={inv.refresh}
+              onMouseDown={(e) => e.preventDefault()}
+              title="Refresh"
+              aria-label="Refresh"
             >
-              <span className="user-avatar">{initial}</span>
-              <span className="user-name">{user?.username || '…'}</span>
+              <Icon name="refresh" size={16} />
             </button>
-            {showUserMenu && (
-              <div className="user-menu-dropdown">
-                <div className="user-menu-meta">{user?.role || 'session'}</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowUserMenu(false)
-                    setPasswordOpen(true)
-                  }}
-                >
-                  <Icon name="key" size={16} />
-                  Change password
-                </button>
-                <div className="user-menu-theme">
-                  <label htmlFor="theme-preset">Color theme</label>
-                  <select
-                    id="theme-preset"
-                    value={preset}
-                    onChange={(e) => setPreset(e.target.value)}
+            <button type="button" className="pve-icon-btn ghost" title="Help" aria-label="Help">
+              <Icon name="help" size={16} />
+            </button>
+            <button
+              type="button"
+              className="pve-icon-btn"
+              onClick={toggleAppearance}
+              title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
+              aria-label="Toggle color theme"
+            >
+              <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
+            </button>
+            <div className="user-menu" ref={userMenuRef}>
+              <button
+                type="button"
+                className={`user-menu-trigger${showUserMenu ? ' open' : ''}`}
+                onClick={() => setShowUserMenu((v) => !v)}
+              >
+                <span className="user-avatar">{initial}</span>
+                <span className="user-name">{user?.username || '…'}</span>
+              </button>
+              {showUserMenu && (
+                <div className="user-menu-dropdown">
+                  <div className="user-menu-meta">{user?.role || 'session'}</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUserMenu(false)
+                      setPasswordOpen(true)
+                    }}
                   >
-                    {presets.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                    <Icon name="key" size={16} />
+                    Change password
+                  </button>
+                  <div className="user-menu-theme">
+                    <label htmlFor="theme-preset">Color theme</label>
+                    <select
+                      id="theme-preset"
+                      value={preset}
+                      onChange={(e) => setPreset(e.target.value)}
+                    >
+                      {presets.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button type="button" onClick={logout}>
+                    <Icon name="logout" size={16} />
+                    Sign out
+                  </button>
                 </div>
-                <button type="button" onClick={logout}>
-                  <Icon name="logout" size={16} />
-                  Sign out
-                </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </header>

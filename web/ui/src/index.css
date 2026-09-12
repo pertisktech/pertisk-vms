@@ -1315,14 +1315,35 @@ a.guest-card:hover { color: inherit; }
 .pve-header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0;
   flex: none;
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  padding: 0 1rem;
+  padding: 0;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border);
   z-index: 40;
+}
+
+.pve-header-start {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: none;
+  height: 100%;
+  min-width: 0;
+  padding: 0 0.75rem 0 1rem;
+}
+
+.pve-header-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  height: 100%;
+  padding: 0 1rem;
+  overflow: visible;
 }
 
 .pve-brand {
@@ -1361,7 +1382,7 @@ a.guest-card:hover { color: inherit; }
   align-items: center;
   flex: 1;
   max-width: 20rem;
-  margin-left: 0.5rem;
+  margin-left: 0;
 }
 .pve-search .icon {
   position: absolute;
@@ -1376,8 +1397,18 @@ a.guest-card:hover { color: inherit; }
   font-size: var(--fs-sm);
   appearance: none;
   -webkit-appearance: none;
-  background: var(--color-card);
+  background: var(--color-bg);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   color: var(--text);
+}
+.pve-search input:hover {
+  border-color: var(--border);
+  background: var(--color-bg);
+}
+.pve-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--color-bg);
 }
 .pve-search input::-webkit-search-decoration,
 .pve-search input::-webkit-search-cancel-button {
@@ -2039,6 +2070,8 @@ a.guest-card:hover { color: inherit; }
 }
 
 @media (min-width: 1024px) {
+  .pve-header-start { transition: width 220ms ease; }
+  .pve-header-start.resizing { transition: none; }
   .pve-tree { transition: width 220ms ease; }
   .pve-tree.resizing { transition: none; }
   .pve-tree.collapsed {
@@ -2049,6 +2082,7 @@ a.guest-card:hover { color: inherit; }
 }
 
 @media (max-width: 1023px) {
+  .pve-header-start { width: auto !important; }
   .pve-tree {
     position: absolute;
     top: var(--topbar-h);
