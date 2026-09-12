@@ -933,6 +933,59 @@ a.guest-card:hover { color: inherit; }
 .guest-orb.running { background: var(--success); color: var(--success); }
 .guest-orb.created, .guest-orb.stopped { background: var(--warning); color: var(--warning); }
 .guest-orb.failed { background: var(--danger); color: var(--danger); }
+.cluster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.55rem;
+}
+.cluster-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem 0.7rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--color-card);
+  min-width: 0;
+}
+.cluster-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.cluster-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.cluster-card-addrs,
+.cluster-card-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.65rem;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+.cluster-card-addrs span,
+.cluster-card-usage span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.cluster-card-bar { margin-top: 0.15rem; }
 .guest-meta {
   display: flex;
   flex-direction: column;
