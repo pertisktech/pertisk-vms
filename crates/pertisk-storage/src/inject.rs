@@ -202,8 +202,12 @@ fn tempfile_mnt() -> Result<PathBuf> {
 fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     let hostname = sanitize_host(id.hostname);
     let user = sanitize_user(id.user);
-    fs::write(root.join("etc/hostname"), format!("{hostname}\n"))?;
+    write_hostname(root, &hostname)?;
     patch_hosts(root, &hostname)?;
+    // Cloned cloud images keep the template's cloud-init instance-id, so
+    // set_hostname never runs again. AlmaLinux then prefers IPv6 reverse DNS
+    // (e.g. 2405-9800-b900) over the VM name.
+    reset_cloud_init_instance(root);
     if id.password.filter(|p| !p.is_empty()).is_some() {
         patch_sshd(root);
     }
@@ -232,6 +236,89 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     let _ = fs::remove_file(root.join(".autorelabel"));
     schedule_selinux_restorecon(root);
     Ok(())
+}
+
+fn write_hostname(root: &Path, hostname: &str) -> Result<()> {
+    let path = root.join("etc/hostname");
+    // AlmaLinux hostnamed cannot rewrite this file when it is immutable
+    // or still labeled from the hypervisor mount (unlabeled_t / default_t).
+    let _ = Command::new("chattr").args(["-i"]).arg(&path).status();
+    fs::write(&path, format!("{hostname}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o644));
+        let _ = std::os::unix::fs::chown(&path, Some(0), Some(0));
+    }
+    let _ = Command::new("chattr").args(["-i"]).arg(&path).status();
+    let _ = Command::new("setfattr")
+        .args([
+            "-n",
+            "security.selinux",
+            "-v",
+            "system_u:object_r:etc_t:s0",
+        ])
+        .arg(&path)
+        .status();
+    let dir = root.join("etc/pertisk");
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join("hostname"), format!("{hostname}\n"))?;
+    schedule_hostname(root);
+    Ok(())
+}
+
+/// Write /etc/hostname with a shell (not hostnamectl). systemd-hostnamed on
+/// AlmaLinux is confined and returns "Not allowed to update /etc/hostname"
+/// after we inject from the host.
+fn schedule_hostname(root: &Path) {
+    let unit_dir = root.join("etc/systemd/system");
+    let _ = fs::create_dir_all(&unit_dir);
+    let unit = "\
+[Unit]\n\
+Description=Set hostname from pertisk clone\n\
+DefaultDependencies=no\n\
+After=local-fs.target pertisk-selinux-restorecon.service\n\
+Before=systemd-hostnamed.service NetworkManager.service sysinit.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=/bin/sh /usr/libexec/pertisk-set-hostname\n\
+RemainAfterExit=yes\n\
+\n\
+[Install]\n\
+WantedBy=sysinit.target\n";
+    let _ = fs::write(unit_dir.join("pertisk-hostname.service"), unit);
+    let wants = unit_dir.join("sysinit.target.wants");
+    let _ = fs::create_dir_all(&wants);
+    let link = wants.join("pertisk-hostname.service");
+    if !link.exists() {
+        let _ = std::os::unix::fs::symlink("../pertisk-hostname.service", &link);
+    }
+    let libexec = root.join("usr/libexec");
+    let _ = fs::create_dir_all(&libexec);
+    let script = "#!/bin/sh\n\
+set -eu\n\
+name=$(tr -d ' \\t\\n' </etc/pertisk/hostname 2>/dev/null || true)\n\
+[ -n \"$name\" ] || exit 0\n\
+chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true\n\
+printf '%s\\n' \"$name\" >/etc/hostname\n\
+hostname \"$name\" 2>/dev/null || true\n\
+hostnamectl set-hostname \"$name\" --transient 2>/dev/null || true\n\
+restorecon /etc/hostname /etc/hosts 2>/dev/null || true\n\
+exit 0\n";
+    let path = libexec.join("pertisk-set-hostname");
+    let _ = fs::write(&path, script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+    }
+}
+
+pub(crate) fn cloudinit_hostname_runcmd(hostname: &str) -> String {
+    format!(
+        "  - |\n    chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true\n    printf '%s\\n' '{hostname}' >/etc/hostname\n    hostname {hostname} 2>/dev/null || true\n    hostnamectl set-hostname {hostname} --transient 2>/dev/null || true\n    restorecon /etc/hostname /etc/hosts 2>/dev/null || true\n"
+    )
 }
 
 /// Run `restorecon` early without the reboot that `/.autorelabel` would trigger.
@@ -496,7 +583,8 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
         format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n"),
     )?;
     let mut user_data = format!(
-        "#cloud-config\nhostname: {hostname}\nfqdn: {hostname}\npreserve_hostname: false\nssh_pwauth: true\n"
+        "#cloud-config\nhostname: {hostname}\nfqdn: {hostname}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nmanage_etc_hosts: true\nssh_pwauth: true\nruncmd:\n{runcmd}",
+        runcmd = cloudinit_hostname_runcmd(hostname)
     );
     if let Some(password) = id.password.filter(|p| !p.is_empty()) {
         user_data.push_str("chpasswd:\n  expire: false\n  list: |\n    ");
@@ -521,9 +609,27 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
     let _ = fs::create_dir_all(&cfg);
     let _ = fs::write(
         cfg.join("99-pertisk.cfg"),
-        "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nnetwork: {config: disabled}\n",
+        format!(
+            "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nnetwork: {{config: disabled}}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nhostname: {hostname}\nfqdn: {hostname}\nmanage_etc_hosts: true\n"
+        ),
     );
     Ok(())
+}
+
+fn reset_cloud_init_instance(root: &Path) {
+    let cloud = root.join("var/lib/cloud");
+    for rel in [
+        "instance",
+        "instances",
+        "data",
+        "sem",
+        "scripts/instance",
+        "scripts/once-per-instance",
+    ] {
+        let _ = fs::remove_dir_all(cloud.join(rel));
+    }
+    let _ = fs::write(root.join("etc/machine-id"), "");
+    let _ = fs::remove_file(root.join("var/lib/dbus/machine-id"));
 }
 
 /// Let the guest OS own the NIC (same as an ISO install). Cloud-init network
@@ -556,7 +662,10 @@ fn write_ipv6_sysctl(root: &Path) {
 fn write_nm_connection(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     let conf = root.join("etc/NetworkManager/conf.d");
     fs::create_dir_all(&conf)?;
-    fs::write(conf.join("99-pertisk.conf"), "[main]\nno-auto-default=*\n")?;
+    fs::write(
+        conf.join("99-pertisk.conf"),
+        "[main]\nno-auto-default=*\nhostname-mode=none\n",
+    )?;
     let dir = root.join("etc/NetworkManager/system-connections");
     fs::create_dir_all(&dir)?;
     let mut body = String::from(
@@ -841,6 +950,8 @@ mod tests {
     #[test]
     fn creates_missing_cloud_user_in_passwd_and_shadow() {
         let root = fixture_root();
+        fs::create_dir_all(root.join("var/lib/cloud/instance")).unwrap();
+        fs::write(root.join("var/lib/cloud/instance/id"), "old-instance").unwrap();
         apply_identity(
             &root,
             &GuestIdentity {
@@ -881,6 +992,19 @@ mod tests {
         assert!(root.join("home/almalinux").is_dir());
         let cfg = fs::read_to_string(root.join("etc/cloud/cloud.cfg.d/99-pertisk.cfg")).unwrap();
         assert!(cfg.contains("network: {config: disabled}"), "{cfg}");
+        assert!(cfg.contains("prefer_fqdn_over_hostname: false"), "{cfg}");
+        assert!(cfg.contains("hostname: AlmaLinux-10-1"), "{cfg}");
+        let seed = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/user-data")).unwrap();
+        assert!(seed.contains("prefer_fqdn_over_hostname: false"), "{seed}");
+        assert!(
+            seed.contains("hostnamectl set-hostname AlmaLinux-10-1 --static"),
+            "{seed}"
+        );
+        assert!(!root.join("var/lib/cloud/instance").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("etc/machine-id")).unwrap(),
+            ""
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -914,6 +1038,7 @@ mod tests {
         let conf =
             fs::read_to_string(root.join("etc/NetworkManager/conf.d/99-pertisk.conf")).unwrap();
         assert!(conf.contains("no-auto-default=*"), "{conf}");
+        assert!(conf.contains("hostname-mode=none"), "{conf}");
         let _ = fs::remove_dir_all(&root);
     }
 
