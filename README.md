@@ -5,6 +5,8 @@ Default driver on macOS is `mock`. Real guests need Linux KVM + Cloud Hypervisor
 
 Operators use the HTTP API, CLI, or web UI. Do not SSH onto the hypervisor for day-to-day VM work.
 
+Architecture, component, and flow diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ```bash
 cargo test --workspace
 PERTISK_ADMIN_PASSWORD=admin cargo run -p pertisk-daemon
