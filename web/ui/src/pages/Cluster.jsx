@@ -1,11 +1,19 @@
-import { useOutletContext } from 'react-router-dom'
+import { Link, useLocation, useOutletContext } from 'react-router-dom'
 import { asList, formatBytes, publicIpv6 } from '../api'
 import { Icon } from '../components/Icons'
+import { parseResourceRoute, resourceLink } from '../resourceRoutes'
+
+function meterTone(pct) {
+  if (pct >= 90) return 'hot'
+  if (pct >= 75) return 'warm'
+  return ''
+}
 
 export default function Cluster() {
   const { inv } = useOutletContext()
   const { cluster, error, setError } = inv
   const members = asList(cluster?.members)
+  const currentRoute = parseResourceRoute(useLocation().pathname)
 
   return (
     <div className="dash-page">
@@ -36,42 +44,54 @@ export default function Cluster() {
           const cpuPct = m.cpus ? Math.round((m.used_vcpus / m.cpus) * 100) : 0
           const memPct = m.memory_mib ? Math.round((m.used_memory_mib / m.memory_mib) * 100) : 0
           const v6 = publicIpv6(m.ipv6)
+          const addr = m.ipv4?.[0] || v6[0] || m.peer_url || '—'
           return (
-            <article key={m.id} className="cluster-card">
+            <Link
+              key={m.id}
+              to={resourceLink('node', m.id, currentRoute)}
+              className={`cluster-card${m.online ? '' : ' offline'}`}
+              title={m.name}
+            >
               <div className="cluster-card-head">
-                <span className={`guest-orb ${m.online ? 'running' : 'stopped'}`} />
-                <strong className="cluster-card-name" title={m.name}>
-                  {m.name || m.id}
-                </strong>
-              </div>
-              <div className="cluster-card-badges">
-                {m.id === cluster?.self_id && <span className="badge pending">this node</span>}
-                {m.id === cluster?.leader_id && <span className="badge ready">leader</span>}
-                <span className={`badge ${m.online ? 'online' : 'offline'}`}>
+                <span className={`cluster-card-dot ${m.online ? 'on' : 'off'}`} />
+                <strong className="cluster-card-name">{m.name || m.id}</strong>
+                <span className={`cluster-card-state ${m.online ? 'on' : 'off'}`}>
                   {m.online ? 'online' : 'offline'}
                 </span>
               </div>
-              {(m.ipv4?.length || v6.length) ? (
-                <div className="cluster-card-addrs" title={[...(m.ipv4 || []), ...v6].join(', ')}>
-                  {m.ipv4?.length > 0 && <span>{m.ipv4[0]}</span>}
-                  {v6.length > 0 && <span>{v6[0]}</span>}
+              <div className="cluster-card-meta">
+                {m.id === cluster?.self_id && <span>this</span>}
+                {m.id === cluster?.leader_id && <span>leader</span>}
+                <span className="cluster-card-ip">{addr}</span>
+              </div>
+              <div className="cluster-card-meters">
+                <div className="cluster-card-meter">
+                  <span>CPU</span>
+                  <div className="cluster-card-track">
+                    <div
+                      className={`cluster-card-fill cpu ${meterTone(cpuPct)}`}
+                      style={{ width: `${cpuPct}%` }}
+                    />
+                  </div>
+                  <em>
+                    {m.used_vcpus}/{m.cpus}
+                  </em>
                 </div>
-              ) : (
-                <div className="cluster-card-addrs muted">{m.peer_url}</div>
-              )}
-              <div className="metric-tile-track cluster-card-bar">
-                <div className="metric-tile-fill usage-bar-cpu" style={{ width: `${cpuPct}%` }} />
+                <div className="cluster-card-meter">
+                  <span>Mem</span>
+                  <div className="cluster-card-track">
+                    <div
+                      className={`cluster-card-fill mem ${meterTone(memPct)}`}
+                      style={{ width: `${memPct}%` }}
+                    />
+                  </div>
+                  <em>
+                    {formatBytes((m.used_memory_mib || 0) * 1024 * 1024)}/
+                    {formatBytes((m.memory_mib || 0) * 1024 * 1024)}
+                  </em>
+                </div>
               </div>
-              <div className="cluster-card-usage">
-                <span>
-                  CPU {m.used_vcpus}/{m.cpus}
-                </span>
-                <span>
-                  {formatBytes((m.used_memory_mib || 0) * 1024 * 1024)} /{' '}
-                  {formatBytes((m.memory_mib || 0) * 1024 * 1024)} · {memPct}%
-                </span>
-              </div>
-            </article>
+            </Link>
           )
         })}
       </div>
