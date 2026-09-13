@@ -46,14 +46,16 @@ Cloud templates have no NIC. Omit `nic` to attach the cluster's default NAT netw
 
 ## Build
 
-The provider is not on the Terraform Registry yet. Build it from this repo:
+The provider is not on the Terraform Registry yet. Build and install a local plugin copy:
 
 ```bash
 cd terraform-provider-pertisk-vms
-go build -o terraform-provider-pertisk-vms
+make install
 ```
 
-Point Terraform at the **directory that contains the binary** (not the binary itself) with a [CLI config](https://developer.hashicorp.com/terraform/cli/config/config-file) `dev_overrides` block (`~/.terraformrc` on macOS/Linux):
+That places the binary under `~/.terraform.d/plugins/registry.terraform.io/pertisktech/pertisk-vms/…`. Then run `terraform init` in your root module.
+
+For a quicker edit/test loop, you can instead point Terraform at the **directory that contains the binary** with a [CLI config](https://developer.hashicorp.com/terraform/cli/config/config-file) `dev_overrides` block (`~/.terraformrc` on macOS/Linux):
 
 ```hcl
 provider_installation {
