@@ -1403,17 +1403,11 @@ impl Service {
         Ok(format!("{base}-{}", VolumeId::new()))
     }
 
-    pub(crate) fn unique_vm_name(&self, base: &str) -> Result<String, DaemonError> {
-        if !self.store.name_taken(base, None)? {
-            return Ok(base.to_string());
+    pub(crate) fn require_vm_name_free(&self, name: &str) -> Result<(), DaemonError> {
+        if self.store.name_taken(name, None)? {
+            return Err(DaemonError::NameTaken(name.to_string()));
         }
-        for i in 2..10_000 {
-            let name = format!("{base}-{i}");
-            if !self.store.name_taken(&name, None)? {
-                return Ok(name);
-            }
-        }
-        Ok(format!("{base}-{}", VmId::new()))
+        Ok(())
     }
 
     fn iso_users(&self, name: &str) -> Result<Vec<VmId>, DaemonError> {

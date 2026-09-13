@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -192,6 +193,22 @@ func (r *templateResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
+	if existing, err := r.api.FindTemplate(plan.Name.ValueString()); err == nil && existing != nil {
+		resp.Diagnostics.AddError(
+			"Template name already exists",
+			fmt.Sprintf(
+				"A template named %q already exists (id %s). Delete it in the UI, or:\n  terraform import pertisk_vms_template.ubuntu %s",
+				plan.Name.ValueString(),
+				existing.ID.String(),
+				existing.ID.String(),
+			),
+		)
+		return
+	} else if err != nil && !client.IsNotFound(err) {
+		resp.Diagnostics.AddError("Lookup template failed", err.Error())
+		return
+	}
+
 	var vm *client.VM
 	var err error
 	vcpus := int(plan.VCPUs.ValueInt64())
@@ -239,6 +256,14 @@ func (r *templateResource) Create(ctx context.Context, req resource.CreateReques
 	}
 	if err != nil {
 		resp.Diagnostics.AddError("Create template failed", err.Error())
+		return
+	}
+	if vm != nil && plan.Name.ValueString() != "" && vm.Spec.Name != plan.Name.ValueString() {
+		_ = r.api.DeleteVM(vm.ID.String())
+		resp.Diagnostics.AddError(
+			"Create template failed",
+			fmt.Sprintf("API stored the template as %q instead of %q. Delete leftover %q in the UI and apply again.", vm.Spec.Name, plan.Name.ValueString(), plan.Name.ValueString()),
+		)
 		return
 	}
 	state := templateToModel(vm, plan)

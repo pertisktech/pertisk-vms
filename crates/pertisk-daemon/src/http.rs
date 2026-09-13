@@ -908,6 +908,7 @@ async fn import_template(
         .clone()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
+    service.require_vm_name_free(&name)?;
     let ext = format.extension();
     let tmp = service.upload_tmp_path("pertisk-tpl", ext)?;
     let mut file = tokio::fs::File::create(&tmp)
@@ -946,18 +947,17 @@ async fn import_template(
         return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
     }
     let vol_name = service.unique_volume_name(&format!("{name}-disk"))?;
-    let tpl_name = service.unique_vm_name(&name)?;
     let result = tracked(
         &service,
         &user,
         "template.import",
-        tpl_name.clone(),
+        name.clone(),
         async {
             let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
             match service
                 .create_template(CreateTemplateRequest {
                     id: None,
-                    name: tpl_name.clone(),
+                    name: name.clone(),
                     volume_id: volume.id,
                     vcpus: q.vcpus,
                     memory_mib: q.memory_mib,
@@ -1987,7 +1987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn template_import_unique_name_on_conflict() {
+    async fn template_import_conflict_keeps_requested_name() {
         let (svc, _dir) = service();
         let app = router(svc);
         let (status, login) = send(
@@ -2027,9 +2027,14 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{first}");
         assert_eq!(first["spec"]["name"], "AlmaLinux-10");
         let (status, second) = import_named(&app, token, "AlmaLinux-10", payload).await;
-        assert_eq!(status, StatusCode::CREATED, "{second}");
-        assert_eq!(second["spec"]["name"], "AlmaLinux-10-2");
-        assert_ne!(first["id"], second["id"]);
+        assert_eq!(status, StatusCode::CONFLICT, "{second}");
+        assert!(
+            second["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("AlmaLinux-10"),
+            "{second}"
+        );
     }
 
     #[tokio::test]
