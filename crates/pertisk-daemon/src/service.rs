@@ -127,7 +127,7 @@ impl Service {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
-            start_gate: Arc::new(tokio::sync::Semaphore::new(2)),
+            start_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             config,
             data_dir,
             started_at: Instant::now(),
@@ -867,6 +867,12 @@ impl Service {
                 self.spawn_exit_watch(&record);
                 self.cluster.bump()?;
                 self.replicate().await;
+                // QMP comes up in <1s; without a cooldown every Terraform
+                // clone releases the gate and the next guest boots immediately.
+                // Parallel first-boot I/O has rebooted the appliance.
+                if matches!(self.driver(), DriverKind::Qemu | DriverKind::CloudHypervisor) {
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                }
                 Ok(record)
             }
             Err(err) => {
@@ -2436,7 +2442,8 @@ impl Service {
                 tracing::warn!(vm = %vm.id, error = %err, "autostart failed");
             }
             // Stagger heavy boots so qcow2 growth / memory pressure don't pile up.
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // start_local already holds a 20s gate cooldown on real hypervisors.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
 
