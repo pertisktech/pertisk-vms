@@ -226,7 +226,7 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				},
 			},
 			"nic": schema.ListNestedBlock{
-				MarkdownDescription: "Guest NICs. On clone, the first NIC is passed to the clone API.",
+				MarkdownDescription: "Guest NICs. On clone, the first NIC is passed to the clone API. If omitted, the cluster's default NAT network is attached.",
 				PlanModifiers: []planmodifier.List{
 					useStateIfConfigEmpty(),
 					listplanmodifier.UseStateForUnknown(),
@@ -386,6 +386,11 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	if len(nics) > 0 {
 		body.NetworkID = nics[0].NetworkID.ValueString()
 		body.IP = nics[0].IP.ValueString()
+	} else if id, err := r.defaultCloneNetworkID(); err != nil {
+		return nil, err
+	} else if id != "" {
+		body.NetworkID = id
+		tflog.Info(ctx, "clone using default network", map[string]any{"network_id": id})
 	}
 	if !plan.Clone.DiskSize.IsNull() && plan.Clone.DiskSize.ValueString() != "" {
 		n, err := client.ParseSize(plan.Clone.DiskSize.ValueString())
@@ -764,6 +769,26 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 
 func listKnownEmpty(v types.List) bool {
 	return !v.IsUnknown() && (v.IsNull() || len(v.Elements()) == 0)
+}
+
+func (r *vmResource) defaultCloneNetworkID() (string, error) {
+	nets, err := r.api.ListNetworks()
+	if err != nil {
+		return "", err
+	}
+	return pickDefaultNetworkID(nets), nil
+}
+
+func pickDefaultNetworkID(nets []client.Network) string {
+	for _, n := range nets {
+		if strings.EqualFold(n.Mode, "nat") {
+			return n.ID
+		}
+	}
+	if len(nets) > 0 {
+		return nets[0].ID
+	}
+	return ""
 }
 
 // Nested blocks cannot appear after apply unless they were in the plan.

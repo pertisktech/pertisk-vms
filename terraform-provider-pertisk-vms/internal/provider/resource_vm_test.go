@@ -39,6 +39,19 @@ func TestListKnownEmpty(t *testing.T) {
 	}
 }
 
+func TestPickDefaultNetworkPrefersNAT(t *testing.T) {
+	nets := []client.Network{
+		{ID: "br1", Name: "uplink", Mode: "bridge"},
+		{ID: "nat1", Name: "lan", Mode: "nat"},
+	}
+	if got := pickDefaultNetworkID(nets); got != "nat1" {
+		t.Fatalf("got %s", got)
+	}
+	if got := pickDefaultNetworkID(nil); got != "" {
+		t.Fatalf("empty=%s", got)
+	}
+}
+
 func TestKeepPlannedBlocksDropsCloneDisks(t *testing.T) {
 	plan := vmModel{
 		Disks: types.ListValueMust(diskObjectType, []attr.Value{}),

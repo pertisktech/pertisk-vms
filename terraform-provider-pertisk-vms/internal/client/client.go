@@ -46,6 +46,35 @@ func IsNotFound(err error) bool {
 	return ok && api.Status == http.StatusNotFound
 }
 
+func isLookupMiss(err error) bool {
+	api, ok := err.(*APIError)
+	if !ok {
+		return false
+	}
+	return api.Status == http.StatusNotFound || api.Status == http.StatusBadRequest
+}
+
+func isUUID(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func New(cfg Config) (*Client, error) {
 	endpoint := strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/")
 	if endpoint == "" {
@@ -281,10 +310,12 @@ func (c *Client) ImportTemplate(name, format, imagePath string, vcpus, memory in
 }
 
 func (c *Client) FindVM(idOrName string) (*VM, error) {
-	if vm, err := c.GetVM(idOrName); err == nil {
-		return vm, nil
-	} else if !IsNotFound(err) {
-		return nil, err
+	if _, err := strconv.ParseUint(strings.TrimSpace(idOrName), 10, 64); err == nil {
+		if vm, err := c.GetVM(idOrName); err == nil {
+			return vm, nil
+		} else if !isLookupMiss(err) {
+			return nil, err
+		}
 	}
 	vms, err := c.ListVMs()
 	if err != nil {
@@ -359,10 +390,12 @@ func (c *Client) DeleteNetwork(id string) error {
 }
 
 func (c *Client) FindNetwork(idOrName string) (*Network, error) {
-	if net, err := c.GetNetwork(idOrName); err == nil {
-		return net, nil
-	} else if !IsNotFound(err) {
-		return nil, err
+	if isUUID(idOrName) {
+		if net, err := c.GetNetwork(idOrName); err == nil {
+			return net, nil
+		} else if !isLookupMiss(err) {
+			return nil, err
+		}
 	}
 	nets, err := c.ListNetworks()
 	if err != nil {
@@ -421,10 +454,12 @@ func (c *Client) DeleteVolume(id string) error {
 }
 
 func (c *Client) FindVolume(idOrName string) (*Volume, error) {
-	if vol, err := c.GetVolume(idOrName); err == nil {
-		return vol, nil
-	} else if !IsNotFound(err) {
-		return nil, err
+	if isUUID(idOrName) {
+		if vol, err := c.GetVolume(idOrName); err == nil {
+			return vol, nil
+		} else if !isLookupMiss(err) {
+			return nil, err
+		}
 	}
 	vols, err := c.ListVolumes()
 	if err != nil {

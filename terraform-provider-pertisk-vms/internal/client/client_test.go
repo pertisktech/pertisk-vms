@@ -251,3 +251,37 @@ func TestImportTemplate(t *testing.T) {
 		t.Fatalf("clone: %v %+v", err, guest)
 	}
 }
+
+func TestFindNetworkByName(t *testing.T) {
+	if isUUID("lan") || isUUID("vmnet") {
+		t.Fatal("names are not UUIDs")
+	}
+	if !isUUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
+		t.Fatal("uuid")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/login":
+			_ = json.NewEncoder(w).Encode(TokenResponse{Token: "tok-1", Username: "admin", Role: "admin"})
+		case r.URL.Path == "/v1/session":
+			_ = json.NewEncoder(w).Encode(Session{ID: "u1", Username: "admin", Role: "admin"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/networks/lan":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(ErrorBody{Error: "Invalid URL: Cannot parse `id` with value `lan`: UUID parsing failed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/networks":
+			_ = json.NewEncoder(w).Encode([]Network{{ID: "net-1", Name: "lan", Mode: "nat"}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(ErrorBody{Error: r.URL.Path})
+		}
+	}))
+	defer srv.Close()
+	c, err := New(Config{Endpoint: srv.URL, Username: "admin", Password: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	net, err := c.FindNetwork("lan")
+	if err != nil || net.ID != "net-1" {
+		t.Fatalf("by name: %v %+v", err, net)
+	}
+}

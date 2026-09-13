@@ -10,7 +10,8 @@ use pertisk_types::{
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
     CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult,
-    ImportIsoRequest, IsoRecord, NetworkId, NetworkRecord, NodeMetrics, ResizeVolumeRequest,
+    ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeMetrics,
+    ResizeVolumeRequest,
     SerialChunk, SetRepositoryRequest, SnapshotRequest, StorageBackend, UpdateVmRequest,
     UpdatesStatus, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
     VolumeRecord, default_cloud_user, probe_host,
@@ -631,7 +632,8 @@ impl Service {
         }
         let network_id = req
             .network_id
-            .or_else(|| source.spec.nets.first().and_then(|nic| nic.network_id));
+            .or_else(|| source.spec.nets.first().and_then(|nic| nic.network_id))
+            .or_else(|| self.default_clone_network_id());
         if let Some(network_id) = network_id {
             self.attach_nic(
                 new_id,
@@ -1442,6 +1444,14 @@ impl Service {
 
     pub fn list_networks(&self) -> Result<Vec<NetworkRecord>, DaemonError> {
         Ok(self.networks.list()?)
+    }
+
+    fn default_clone_network_id(&self) -> Option<NetworkId> {
+        let nets = self.networks.list().ok()?;
+        nets.iter()
+            .find(|n| n.mode == NetworkMode::Nat)
+            .or_else(|| nets.first())
+            .map(|n| n.id)
     }
 
     pub fn get_network(&self, id: NetworkId) -> Result<NetworkRecord, DaemonError> {
@@ -3104,6 +3114,46 @@ mod tests {
         assert_eq!(guest.spec.memory_mib, 4096);
         assert_ne!(guest.state, VmState::Running);
         assert!(!guest.template);
+    }
+
+    #[tokio::test]
+    async fn clone_attaches_default_nat_when_template_has_no_nic() {
+        let (svc, _dir) = service();
+        let net = svc
+            .create_network(CreateNetworkRequest {
+                name: "lan".into(),
+                cidr: "10.88.0.0/24".into(),
+                gateway: None,
+                bridge: Some("vmbr0".into()),
+                dhcp: true,
+                isolate: true,
+                mode: Default::default(),
+            })
+            .unwrap();
+        let tpl = svc.create(vm_id(100), spec("cloud-tpl")).await.unwrap();
+        let tpl = svc.convert_to_template(tpl.id).await.unwrap();
+        let guest = svc
+            .clone_vm(
+                tpl.id,
+                CloneVmRequest {
+                    id: Some(vm_id(101)),
+                    name: "web-1".into(),
+                    linked: false,
+                    vcpus: None,
+                    memory_mib: None,
+                    ha: Some(false),
+                    autostart: Some(false),
+                    network_id: None,
+                    ip: None,
+                    cloud_init: None,
+                    disk_size_bytes: None,
+                    start: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(guest.spec.nets.len(), 1);
+        assert_eq!(guest.spec.nets[0].network_id, Some(net.id));
     }
 
     #[tokio::test]

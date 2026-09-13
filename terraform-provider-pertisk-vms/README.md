@@ -41,6 +41,8 @@ resource "pertisk_vms_vm" "web" {
 }
 ```
 
+Cloud templates have no NIC. Omit `nic` to attach the cluster's default NAT network, or set `nic { network_id = ... }` to choose one. DHCP/SLAAC then assigns IPv4/IPv6.
+
 ## Build
 
 The provider is not on the Terraform Registry yet. Build it from this repo:
