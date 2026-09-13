@@ -516,6 +516,35 @@ pub struct VolumeSnapshot {
     pub path: Option<PathBuf>,
 }
 
+/// One disk image inside a guest backup archive.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmBackupDisk {
+    pub volume_id: VolumeId,
+    pub name: String,
+    pub path: PathBuf,
+    pub size_bytes: u64,
+}
+
+/// Manual guest disk export (list/create/delete; restore is out of scope).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmBackupRecord {
+    pub id: String,
+    pub vm_id: VmId,
+    pub name: String,
+    pub created_unix: u64,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<VmBackupDisk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CreateVmBackupRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {

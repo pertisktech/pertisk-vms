@@ -99,6 +99,9 @@ export default function GuestView() {
           { to: 'summary', label: 'Summary', icon: 'gauge' },
           !template && { to: 'console', label: 'Console', icon: 'terminal' },
           { to: 'hardware', label: 'Hardware', icon: 'hardware' },
+          !template && { to: 'snapshots', label: 'Snapshots', icon: 'camera' },
+          !template && { to: 'backup', label: 'Backup', icon: 'archive' },
+          { to: 'tasks', label: 'Task History', icon: 'activity' },
           { to: 'options', label: 'Options', icon: 'options' },
         ].filter(Boolean)}
         actions={

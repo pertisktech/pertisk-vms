@@ -50,6 +50,10 @@ import {
   LuCircleHelp,
   LuPanelLeft,
   LuGauge,
+  LuCamera,
+  LuArchive,
+  LuCircleDot,
+  LuPencil,
 } from 'react-icons/lu'
 
 const ICONS = {
@@ -104,6 +108,10 @@ const ICONS = {
   help: LuCircleHelp,
   'panel-left': LuPanelLeft,
   gauge: LuGauge,
+  camera: LuCamera,
+  archive: LuArchive,
+  'circle-dot': LuCircleDot,
+  pencil: LuPencil,
 }
 
 export function Icon({ name, size = 18, className = '' }) {

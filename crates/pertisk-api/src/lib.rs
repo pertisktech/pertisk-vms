@@ -231,6 +231,11 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/vms/{id}/migrate": { "post": { "summary": "Migrate VM to another node" } },
             "/v1/vms/{id}/clone": { "post": { "summary": "Clone a VM or cloud template" } },
             "/v1/vms/{id}/template": { "post": { "summary": "Convert a stopped VM into a cloud template" } },
+            "/v1/vms/{id}/backups": {
+                "get": { "summary": "List guest disk backups" },
+                "post": { "summary": "Export stopped guest disks (qemu-img convert)" }
+            },
+            "/v1/vms/{id}/backups/{backup_id}": { "delete": { "summary": "Delete a guest backup" } },
             "/v1/templates": {
                 "get": { "summary": "List cloud templates" },
                 "post": { "summary": "Create a cloud template from an imported volume" }

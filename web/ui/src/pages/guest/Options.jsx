@@ -1,13 +1,19 @@
-import { useState } from 'react'
-import { api, isTemplate } from '../../api'
+import { useMemo, useState } from 'react'
+import { api, asList, isTemplate, shortId } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/Confirm'
 import { useGuest } from '../GuestView'
 
+function nodeName(cluster, host, id) {
+  const members = asList(cluster?.members)
+  return members.find((m) => m.id === id)?.name || host?.hostname || (id ? shortId(id) : '—')
+}
+
 export default function GuestOptions() {
   const { vm, canWrite, inv } = useGuest()
   const confirm = useConfirm()
+  const [selected, setSelected] = useState(null)
   const [dialog, setDialog] = useState(null)
   const [form, setForm] = useState({})
   const [error, setError] = useState('')
@@ -15,7 +21,86 @@ export default function GuestOptions() {
   const template = isTemplate(vm)
   const running = vm?.state === 'running'
 
+  const rows = useMemo(() => {
+    const editable = canWrite
+    return [
+      {
+        key: 'name',
+        label: 'Name',
+        value: vm.spec?.name || '—',
+        edit: 'name',
+        editable,
+      },
+      {
+        key: 'state',
+        label: 'State',
+        value: template ? 'template' : vm.state || '—',
+      },
+      {
+        key: 'node',
+        label: 'Node',
+        value: nodeName(inv.cluster, inv.host, vm.node_id),
+      },
+      {
+        key: 'vcpus',
+        label: 'vCPUs',
+        value: String(vm.spec?.vcpus || 1),
+      },
+      {
+        key: 'memory',
+        label: 'Memory',
+        value: `${vm.spec?.memory_mib || 0} MiB`,
+      },
+      {
+        key: 'console',
+        label: 'Console',
+        value: vm.spec?.console_type || 'serial',
+      },
+      {
+        key: 'ha',
+        label: 'High Availability',
+        value: vm.spec?.ha !== false ? 'restart on node loss' : 'off',
+        edit: 'ha',
+        editable: editable && !template,
+      },
+      {
+        key: 'autostart',
+        label: 'Start at boot',
+        value: vm.spec?.autostart ? 'yes' : 'no',
+        edit: 'autostart',
+        editable: editable && !template,
+      },
+      {
+        key: 'autostart-order',
+        label: 'Start order',
+        value: String(vm.spec?.autostart_order || 0),
+        edit: 'autostart',
+        editable: editable && !template,
+      },
+      {
+        key: 'autostart-delay',
+        label: 'Startup delay',
+        value: `${vm.spec?.autostart_delay || 0} s`,
+        edit: 'autostart',
+        editable: editable && !template,
+      },
+      {
+        key: 'disks',
+        label: 'Disks',
+        value: String((vm.spec?.disks || []).filter((d) => !d.cdrom).length),
+      },
+      {
+        key: 'id',
+        label: 'Guest ID',
+        value: String(vm.id),
+      },
+    ]
+  }, [vm, canWrite, template, inv.cluster, inv.host])
+
+  const selectedRow = rows.find((r) => r.key === selected) || null
+
   function openDialog(kind) {
+    if (!kind) return
     setError('')
     if (kind === 'name') setForm({ name: vm.spec?.name || '' })
     if (kind === 'ha') setForm({ ha: vm.spec?.ha !== false })
@@ -26,6 +111,11 @@ export default function GuestOptions() {
         autostart_order: vm.spec?.autostart_order || 0,
       })
     setDialog(kind)
+  }
+
+  function editSelected() {
+    if (!selectedRow?.editable || !selectedRow.edit) return
+    openDialog(selectedRow.edit)
   }
 
   async function submit(e) {
@@ -57,46 +147,8 @@ export default function GuestOptions() {
     }
   }
 
-  const rows = [
-    {
-      key: 'name',
-      icon: 'guests',
-      label: 'Name',
-      value: vm.spec?.name || '—',
-      edit: 'name',
-    },
-    {
-      key: 'ha',
-      icon: 'cluster',
-      label: 'High Availability',
-      value: vm.spec?.ha !== false ? 'restart on node loss' : 'off',
-      edit: 'ha',
-    },
-    {
-      key: 'autostart',
-      icon: 'play',
-      label: 'Start at boot',
-      value: vm.spec?.autostart ? 'yes' : 'no',
-      edit: 'autostart',
-    },
-    {
-      key: 'autostart-order',
-      icon: 'options',
-      label: 'Start order',
-      value: String(vm.spec?.autostart_order || 0),
-      edit: 'autostart',
-    },
-    {
-      key: 'autostart-delay',
-      icon: 'clock',
-      label: 'Startup delay',
-      value: `${vm.spec?.autostart_delay || 0} s`,
-      edit: 'autostart',
-    },
-  ]
-
   return (
-    <div className="pve-hw">
+    <div className="pve-tab-page">
       <div className="pve-hw-bar">
         <span className="muted">
           {template
@@ -123,34 +175,53 @@ export default function GuestOptions() {
         )}
       </div>
 
-      <div className="table-shell">
-        <table className="pve-hw-table">
-          <tbody>
-            {rows.map((row) => (
-              <tr
-                key={row.key}
-                className={canWrite ? 'pve-hw-row-edit' : undefined}
-                onClick={canWrite ? () => openDialog(row.edit) : undefined}
-              >
-                <td className="pve-hw-label">
-                  <span>
-                    <Icon name={row.icon} size={15} />
-                    {row.label}
-                  </span>
-                </td>
-                <td className="pve-hw-value">{row.value}</td>
-                <td className="pve-hw-act">
-                  {canWrite && (
-                    <Btn variant="secondary" onClick={() => openDialog(row.edit)}>
-                      Edit
-                    </Btn>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <section className="pve-options-panel">
+        <div className="pve-options-head" role="row">
+          <span>Name</span>
+          <span>Value</span>
+          <span className="sr-only">Actions</span>
+        </div>
+        {rows.map((row) => {
+          const active = selected === row.key
+          return (
+            <button
+              type="button"
+              key={row.key}
+              role="row"
+              className={`pve-options-row ${active ? 'active' : ''}`}
+              onClick={() => setSelected(row.key)}
+              onDoubleClick={() => row.editable && openDialog(row.edit)}
+            >
+              <span className="pve-options-name">{row.label}</span>
+              <span className="pve-options-value mono-inline">{row.value}</span>
+              <span className={`pve-options-edit ${row.editable && active ? 'show' : ''}`}>
+                {row.editable ? <Icon name="pencil" size={14} /> : null}
+              </span>
+            </button>
+          )
+        })}
+        <footer className="pve-options-foot">
+          <Btn
+            icon="pencil"
+            disabled={!selectedRow?.editable}
+            onClick={editSelected}
+          >
+            Edit
+          </Btn>
+          <Btn
+            icon="x"
+            variant="secondary"
+            disabled={!selected}
+            onClick={() => setSelected(null)}
+          >
+            Clear
+          </Btn>
+          <span className="pve-options-sync muted">
+            <Icon name="check" size={14} />
+            Configuration in sync
+          </span>
+        </footer>
+      </section>
 
       {dialog && (
         <Modal

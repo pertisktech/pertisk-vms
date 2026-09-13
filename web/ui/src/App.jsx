@@ -20,6 +20,9 @@ import NodeShell from './pages/node/Shell'
 import GuestSummary from './pages/guest/Summary'
 import GuestConsoleRoute from './pages/guest/ConsoleRoute'
 import GuestHardware from './pages/guest/Hardware'
+import GuestSnapshots from './pages/guest/Snapshots'
+import GuestBackup from './pages/guest/Backup'
+import GuestHistory from './pages/guest/History'
 import GuestOptions from './pages/guest/Options'
 import Templates from './pages/Templates'
 import Terraform from './pages/Terraform'
@@ -57,6 +60,9 @@ export default function App() {
                 <Route path="summary" element={<GuestSummary />} />
                 <Route path="console" element={<GuestConsoleRoute />} />
                 <Route path="hardware" element={<GuestHardware />} />
+                <Route path="snapshots" element={<GuestSnapshots />} />
+                <Route path="backup" element={<GuestBackup />} />
+                <Route path="tasks" element={<GuestHistory />} />
                 <Route path="options" element={<GuestOptions />} />
               </Route>
             </Route>

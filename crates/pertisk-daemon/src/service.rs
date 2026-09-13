@@ -9,11 +9,12 @@ use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
-    CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult,
-    ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeMetrics,
-    ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SnapshotRequest, StorageBackend,
-    UpdateVmRequest, UpdatesStatus, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat,
-    VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
+    CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
+    HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord,
+    NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SnapshotRequest,
+    StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics,
+    VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user,
+    is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -42,6 +43,8 @@ pub enum DaemonError {
     IsoBusy(String),
     #[error("network {0} is attached to a vm")]
     NetworkBusy(NetworkId),
+    #[error("backup not found: {0}")]
+    BackupNotFound(String),
     #[error("no cluster quorum")]
     NoQuorum,
     #[error("node is fenced (lost quorum)")]
@@ -469,6 +472,185 @@ impl Service {
         self.cluster.bump()?;
         self.replicate().await;
         Ok(vm)
+    }
+
+    pub fn list_vm_backups(&self, id: VmId) -> Result<Vec<VmBackupRecord>, DaemonError> {
+        let _ = self.store.get(id)?;
+        let mut list = self
+            .load_backups()?
+            .into_iter()
+            .filter(|b| b.vm_id == id)
+            .collect::<Vec<_>>();
+        list.sort_by(|a, b| b.created_unix.cmp(&a.created_unix).then(b.id.cmp(&a.id)));
+        Ok(list)
+    }
+
+    pub async fn create_vm_backup(
+        &self,
+        id: VmId,
+        req: CreateVmBackupRequest,
+    ) -> Result<VmBackupRecord, DaemonError> {
+        let vm = self.store.get(id)?;
+        self.require_not_template(&vm, "backup")?;
+        self.require_stopped(&vm, "backup")?;
+
+        let mut sources = Vec::new();
+        for disk in vm.spec.disks.iter().filter(|d| !d.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let vol = self.volumes.get_volume(volume_id)?;
+            if vol.backend == StorageBackend::Rbd {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "RBD volumes cannot be backed up with the local export path yet".into(),
+                )
+                .into());
+            }
+            if !vol.path.is_file() {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "volume {} has no local image to export",
+                    vol.name
+                ))
+                .into());
+            }
+            sources.push(vol);
+        }
+        if sources.is_empty() {
+            return Err(pertisk_types::TypesError::InvalidSpec(
+                "guest has no disks to back up".into(),
+            )
+            .into());
+        }
+
+        let backup_id = uuid::Uuid::new_v4().to_string();
+        let created_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = format!("{}-{}", vm.spec.name, &backup_id[..8.min(backup_id.len())]);
+        let backup_dir = self
+            .config
+            .storage
+            .root
+            .join("backups")
+            .join(id.to_string())
+            .join(&backup_id);
+        std::fs::create_dir_all(&backup_dir)?;
+
+        let jobs: Vec<(VolumeRecord, PathBuf)> = sources
+            .iter()
+            .map(|vol| {
+                let dest = backup_dir.join(format!(
+                    "{}.{}",
+                    vol.id,
+                    vol.format.extension()
+                ));
+                (vol.clone(), dest)
+            })
+            .collect();
+
+        let volumes = Arc::clone(&self.volumes);
+        let export = tokio::task::spawn_blocking(move || -> Result<(), DaemonError> {
+            for (vol, dest) in &jobs {
+                volumes.export_image(&vol.path, dest, vol.format)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| {
+            DaemonError::Storage(StorageError::Message(format!(
+                "backup export task failed: {err}"
+            )))
+        })?;
+        if let Err(err) = export {
+            let _ = std::fs::remove_dir_all(&backup_dir);
+            return Err(err);
+        }
+
+        let mut disks = Vec::new();
+        let mut size_bytes = 0u64;
+        for vol in &sources {
+            let path = backup_dir.join(format!("{}.{}", vol.id, vol.format.extension()));
+            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            size_bytes = size_bytes.saturating_add(file_size);
+            disks.push(VmBackupDisk {
+                volume_id: vol.id,
+                name: vol.name.clone(),
+                path,
+                size_bytes: file_size,
+            });
+        }
+
+        let notes = req
+            .notes
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let record = VmBackupRecord {
+            id: backup_id,
+            vm_id: id,
+            name,
+            created_unix,
+            size_bytes,
+            disks,
+            notes,
+        };
+        let mut all = self.load_backups()?;
+        all.push(record.clone());
+        self.save_backups(&all)?;
+        Ok(record)
+    }
+
+    pub fn delete_vm_backup(&self, id: VmId, backup_id: &str) -> Result<(), DaemonError> {
+        let _ = self.store.get(id)?;
+        let mut all = self.load_backups()?;
+        let Some(idx) = all.iter().position(|b| b.vm_id == id && b.id == backup_id) else {
+            return Err(DaemonError::BackupNotFound(backup_id.to_string()));
+        };
+        let removed = all.remove(idx);
+        self.save_backups(&all)?;
+        let dir = self
+            .config
+            .storage
+            .root
+            .join("backups")
+            .join(id.to_string())
+            .join(backup_id);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Also remove any legacy paths recorded on disk entries.
+        for disk in removed.disks {
+            if disk.path.exists() {
+                let _ = std::fs::remove_file(&disk.path);
+            }
+        }
+        Ok(())
+    }
+
+    fn backups_path(&self) -> PathBuf {
+        self.data_dir.join("state/backups.json")
+    }
+
+    fn load_backups(&self) -> Result<Vec<VmBackupRecord>, DaemonError> {
+        let path = self.backups_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = std::fs::read_to_string(&path)?;
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    fn save_backups(&self, records: &[VmBackupRecord]) -> Result<(), DaemonError> {
+        let path = self.backups_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_vec_pretty(records)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(tmp, path)?;
+        Ok(())
     }
 
     pub async fn create_template(

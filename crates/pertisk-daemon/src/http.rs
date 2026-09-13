@@ -22,10 +22,10 @@ use pertisk_api::{
 use pertisk_types::{
     AddRepositoryRequest, AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest,
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVolumeRequest, HeartbeatMessage, ImportIsoRequest,
-    JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest, SetRepositoryRequest,
-    SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId,
-    VolumeRecord,
+    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, HeartbeatMessage,
+    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
+    SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
+    VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -65,6 +65,11 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/migrate", post(migrate))
         .route("/v1/vms/{id}/clone", post(clone_vm))
         .route("/v1/vms/{id}/template", post(convert_to_template))
+        .route("/v1/vms/{id}/backups", get(list_vm_backups).post(create_vm_backup))
+        .route(
+            "/v1/vms/{id}/backups/{backup_id}",
+            axum::routing::delete(delete_vm_backup),
+        )
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
             "/v1/vms/{id}/disks/{volume_id}",
@@ -710,6 +715,53 @@ async fn convert_to_template(
         )
         .await?,
     ))
+}
+
+async fn list_vm_backups(
+    State(service): State<Service>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.list_vm_backups(id)?))
+}
+
+async fn create_vm_backup(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<CreateVmBackupRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            tracked(
+                &service,
+                &user,
+                "vm.backup",
+                id.to_string(),
+                service.create_vm_backup(id, req),
+            )
+            .await?,
+        ),
+    ))
+}
+
+async fn delete_vm_backup(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, backup_id)): Path<(VmId, String)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    tracked(
+        &service,
+        &user,
+        "vm.backup.delete",
+        format!("{id}/{backup_id}"),
+        async {
+            service.delete_vm_backup(id, &backup_id)?;
+            Ok(())
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_templates(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
@@ -1530,6 +1582,7 @@ impl IntoResponse for DaemonError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::BackupNotFound(_) => StatusCode::NOT_FOUND,
             Self::NameTaken(_) | Self::IdTaken(_) => StatusCode::CONFLICT,
             Self::MustBeStopped(_, _)
             | Self::IsTemplate(_, _)

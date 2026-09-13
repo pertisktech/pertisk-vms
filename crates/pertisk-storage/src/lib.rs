@@ -158,6 +158,7 @@ impl VolumePool {
         std::fs::create_dir_all(root.join("disks"))?;
         std::fs::create_dir_all(root.join("iso"))?;
         std::fs::create_dir_all(root.join("snapshots"))?;
+        std::fs::create_dir_all(root.join("backups"))?;
         let inventory_path = root.join("inventory.json");
         let mut inner = if inventory_path.exists() {
             let text = std::fs::read_to_string(&inventory_path)?;
@@ -203,6 +204,19 @@ impl VolumePool {
 
     pub fn qemu_img(&self) -> Option<&Path> {
         self.qemu.binary()
+    }
+
+    /// Export a volume image to `dest` (same format). Prefers `qemu-img convert`.
+    pub fn export_image(&self, source: &Path, dest: &Path, format: VolumeFormat) -> Result<()> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if self.qemu.available() {
+            self.qemu.convert(source, dest, format, format)
+        } else {
+            std::fs::copy(source, dest)?;
+            Ok(())
+        }
     }
 
     pub fn local_path(&self, id: VolumeId, format: VolumeFormat) -> PathBuf {
