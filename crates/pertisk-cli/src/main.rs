@@ -1274,6 +1274,8 @@ async fn run() -> Result<()> {
                         memory_mib: memory,
                         ha: None,
                         autostart: None,
+                        autostart_delay: None,
+                        autostart_order: None,
                         network_id,
                         ip,
                         cloud_init,
