@@ -100,12 +100,12 @@ export default function StatusPanel({ host, tasks, audit }) {
       <button
         type="button"
         className={`pve-icon-btn ghost${open ? ' open' : ''}`}
-        title="Uptime and notifications"
-        aria-label="Uptime and notifications"
+        title="Notifications"
+        aria-label="Notifications"
         aria-expanded={open}
         onClick={toggle}
       >
-        <Icon name="help" size={16} />
+        <Icon name={unread > 0 ? 'bell-ring' : 'bell'} size={16} />
         {unread > 0 && (
           <span className={`status-panel-badge${errors ? ' hot' : ''}`} aria-hidden>
             {unread > 9 ? '9+' : unread}
