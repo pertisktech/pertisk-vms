@@ -541,8 +541,8 @@ impl Service {
         spec.serial_log = None;
         spec.autostart = req.autostart.unwrap_or(false);
         spec.ha = req.ha.unwrap_or(true);
-        spec.autostart_delay = 0;
-        spec.autostart_order = 0;
+        spec.autostart_delay = req.autostart_delay.unwrap_or(0);
+        spec.autostart_order = req.autostart_order.unwrap_or(0);
         if let Some(vcpus) = req.vcpus {
             spec.vcpus = vcpus;
         }
@@ -779,11 +779,12 @@ impl Service {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
         }
-        // Hold the permit for the whole start so parallel Terraform clones
-        // queue instead of booting every guest at once.
-        let _start_permit = self
+        // Hold an owned permit for the start; release after a cooldown so the
+        // HTTP /start response is not blocked for 20s (Terraform http2 timeouts).
+        let start_permit = self
             .start_gate
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .expect("start_gate semaphore is never closed");
         // Re-read after waiting: another start may have changed capacity/state.
@@ -867,11 +868,13 @@ impl Service {
                 self.spawn_exit_watch(&record);
                 self.cluster.bump()?;
                 self.replicate().await;
-                // QMP comes up in <1s; without a cooldown every Terraform
-                // clone releases the gate and the next guest boots immediately.
-                // Parallel first-boot I/O has rebooted the appliance.
+                // QMP comes up in <1s; keep the gate held in the background so
+                // the next guest does not boot immediately (disk storm / reboot).
                 if matches!(self.driver(), DriverKind::Qemu | DriverKind::CloudHypervisor) {
-                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                        drop(start_permit);
+                    });
                 }
                 Ok(record)
             }
@@ -3201,6 +3204,8 @@ mod tests {
                     memory_mib: Some(4096),
                     ha: Some(false),
                     autostart: Some(false),
+                    autostart_delay: None,
+                    autostart_order: None,
                     network_id: None,
                     ip: None,
                     cloud_init: None,
@@ -3243,6 +3248,8 @@ mod tests {
                     memory_mib: None,
                     ha: Some(false),
                     autostart: Some(false),
+                    autostart_delay: None,
+                    autostart_order: None,
                     network_id: None,
                     ip: None,
                     cloud_init: None,

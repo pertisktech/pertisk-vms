@@ -385,6 +385,14 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	body.VCPUs = &vcpus
 	body.MemoryMiB = &mem
 	body.Autostart = boolPtr(plan.Autostart.ValueBool())
+	if !plan.AutostartDelay.IsNull() && !plan.AutostartDelay.IsUnknown() {
+		v := uint64(plan.AutostartDelay.ValueInt64())
+		body.AutostartDelay = &v
+	}
+	if !plan.AutostartOrder.IsNull() && !plan.AutostartOrder.IsUnknown() {
+		v := uint32(plan.AutostartOrder.ValueInt64())
+		body.AutostartOrder = &v
+	}
 	nics := expandNics(ctx, plan.Nics)
 	if len(nics) > 0 {
 		body.NetworkID = nics[0].NetworkID.ValueString()
@@ -905,6 +913,12 @@ func keepPlannedBlocks(plan, state vmModel) vmModel {
 	}
 	if !plan.Started.IsNull() && !plan.Started.IsUnknown() {
 		state.Started = plan.Started
+	}
+	if !plan.AutostartDelay.IsNull() && !plan.AutostartDelay.IsUnknown() {
+		state.AutostartDelay = plan.AutostartDelay
+	}
+	if !plan.AutostartOrder.IsNull() && !plan.AutostartOrder.IsUnknown() {
+		state.AutostartOrder = plan.AutostartOrder
 	}
 	return state
 }

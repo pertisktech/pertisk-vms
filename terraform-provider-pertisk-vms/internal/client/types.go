@@ -155,6 +155,8 @@ type CloneVMRequest struct {
 	MemoryMiB     *int       `json:"memory_mib,omitempty"`
 	HA            *bool      `json:"ha,omitempty"`
 	Autostart     *bool      `json:"autostart,omitempty"`
+	AutostartDelay *uint64   `json:"autostart_delay,omitempty"`
+	AutostartOrder *uint32   `json:"autostart_order,omitempty"`
 	NetworkID     string     `json:"network_id,omitempty"`
 	IP            string     `json:"ip,omitempty"`
 	CloudInit     *CloudInit `json:"cloud_init,omitempty"`

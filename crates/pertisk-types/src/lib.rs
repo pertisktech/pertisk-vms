@@ -736,6 +736,10 @@ pub struct CloneVmRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autostart: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart_delay: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autostart_order: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_id: Option<NetworkId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,

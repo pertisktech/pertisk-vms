@@ -93,7 +93,8 @@ func New(cfg Config) (*Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
 	transport.TLSHandshakeTimeout = 5 * time.Second
-	transport.ResponseHeaderTimeout = 30 * time.Second
+	// Start can wait on the start_gate + QMP; keep headers open long enough.
+	transport.ResponseHeaderTimeout = 120 * time.Second
 	if cfg.Insecure {
 		if transport.TLSClientConfig == nil {
 			transport.TLSClientConfig = &tls.Config{}
