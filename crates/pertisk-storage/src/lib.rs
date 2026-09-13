@@ -714,7 +714,13 @@ impl VolumePool {
     fn flush(&self) -> Result<()> {
         let inner = self.inner.lock().expect("storage lock");
         let json = serde_json::to_vec_pretty(&*inner)?;
-        let tmp = self.inventory_path.with_extension("json.tmp");
+        let tmp = self.inventory_path.with_extension(format!(
+            "json.tmp.{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::write(&tmp, json)?;
         std::fs::rename(tmp, &self.inventory_path)?;
         Ok(())

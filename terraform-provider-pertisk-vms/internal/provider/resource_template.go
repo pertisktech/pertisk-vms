@@ -327,7 +327,8 @@ func (r *templateResource) Delete(ctx context.Context, req resource.DeleteReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.api.DeleteVM(state.ID.ValueString()); err != nil && !client.IsNotFound(err) {
+	id := state.ID.ValueString()
+	if err := ignoreGone(r.api, id, r.api.DeleteVM(id)); err != nil {
 		resp.Diagnostics.AddError("Delete template failed", err.Error())
 	}
 }

@@ -972,7 +972,11 @@ impl Service {
 
     pub async fn destroy(&self, id: VmId) -> Result<(), DaemonError> {
         self.require_quorum()?;
-        let record = self.store.get(id)?;
+        let record = match self.store.get(id) {
+            Ok(record) => record,
+            Err(DaemonError::NotFound(_)) => return Ok(()),
+            Err(err) => return Err(err),
+        };
         let disks: Vec<VolumeId> = record
             .spec
             .disks

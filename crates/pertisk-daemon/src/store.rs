@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use pertisk_types::{VmId, VmRecord};
 
@@ -143,7 +144,11 @@ fn quarantine_corrupt(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
 }
 
 fn atomic_write(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
-    let tmp = path.with_extension("json.tmp");
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&tmp)?;
@@ -223,5 +228,54 @@ mod tests {
         std::fs::write(&path, vec![0u8; 128]).unwrap();
         assert!(Store::open(&path).unwrap().list().unwrap().is_empty());
         assert!(path.with_extension("json.corrupt").exists());
+    }
+
+    #[test]
+    fn concurrent_removes_do_not_fail_on_tmp_rename() {
+        let (store, _dir) = tmp_store();
+        let ids: Vec<_> = (0..20)
+            .map(|i| {
+                let id = VmId::Numeric(200 + i);
+                store
+                    .upsert(VmRecord {
+                        id,
+                        spec: VmSpec {
+                            name: format!("vm-{i}"),
+                            vcpus: 1,
+                            memory_mib: 512,
+                            kernel: None,
+                            cmdline: None,
+                            initramfs: None,
+                            firmware: None,
+                            disks: vec![],
+                            nets: vec![],
+                            serial_log: None,
+                            console_type: Default::default(),
+                            ha: true,
+                            autostart: false,
+                            autostart_delay: 0,
+                            autostart_order: 0,
+                        },
+                        state: VmState::Created,
+                        pid: None,
+                        api_socket: None,
+                        serial_log: None,
+                        console_socket: None,
+                        graphics_socket: None,
+                        last_error: None,
+                        node_id: None,
+                        template: false,
+                    })
+                    .unwrap();
+                id
+            })
+            .collect();
+        std::thread::scope(|s| {
+            for id in ids {
+                let store = &store;
+                s.spawn(move || store.remove(id).unwrap());
+            }
+        });
+        assert!(store.list().unwrap().is_empty());
     }
 }

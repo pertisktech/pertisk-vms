@@ -328,9 +328,14 @@ impl QemuDriver {
         if let Some(mut child) = children.remove(&record.id) {
             match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(Ok(_)) => Ok(()),
+                Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Ok(Err(err)) => Err(err.into()),
                 Err(_) => {
-                    child.start_kill()?;
+                    if let Err(err) = child.start_kill()
+                        && err.kind() != std::io::ErrorKind::NotFound
+                    {
+                        return Err(err.into());
+                    }
                     let _ = child.wait().await;
                     Ok(())
                 }

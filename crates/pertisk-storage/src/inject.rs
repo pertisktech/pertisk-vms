@@ -1,6 +1,7 @@
 //! Write hostname / SSH login onto a cloned guest disk so AlmaLinux still works
 //! when cloud-init finishes as DataSourceNone.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -47,6 +48,9 @@ pub fn inject_guest_identity(disk: &Path, id: &GuestIdentity<'_>) -> Result<()> 
         gateway: id.gateway,
         prefix: id.prefix,
     };
+    // Hold the NBD lock for attach + LVM + mount. Linked clones share VG
+    // UUIDs; activating two at once makes vgchange refuse the second disk.
+    let _guard = NBD_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let attached = attach_guest_disk(disk)?;
     let result = inject_on_loop(attached.dev(), &id);
     attached.detach();
@@ -103,7 +107,6 @@ fn nbd_connect(disk: &Path) -> Result<AttachedDisk> {
             "qemu-nbd is required to inject SSH keys into a qcow2 linked clone".into(),
         )
     })?;
-    let _guard = NBD_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let _ = Command::new("modprobe")
         .args(["nbd", "max_part=16"])
         .status();
@@ -122,7 +125,8 @@ fn nbd_connect(disk: &Path) -> Result<AttachedDisk> {
         let _ = Command::new("udevadm")
             .args(["settle", "--timeout=5"])
             .status();
-        for _ in 0..15 {
+        let _ = Command::new("partprobe").arg(&dev).status();
+        for _ in 0..25 {
             if !partitions(&dev).is_empty() {
                 break;
             }
@@ -233,8 +237,15 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
         return Err(StorageError::Message(format!("no partitions on {loopdev}")));
     }
     let mnt = tempfile_mnt()?;
+    // Rocky/RHEL Generic Cloud keeps / on LVM (XFS). Plain partitions are
+    // BIOS boot + ESP + P-V; none of those contain /etc/os-release.
+    let lvm = activate_lvm(&parts);
+    let mut candidates = parts.clone();
+    if let Some(ref lvm) = lvm {
+        candidates.extend(lvm.volumes.iter().cloned());
+    }
     let mut mounted = None;
-    for part in &parts {
+    for part in &candidates {
         if try_mount(part, &mnt) {
             if mnt.join("etc/os-release").is_file() {
                 mounted = Some(part.clone());
@@ -244,6 +255,7 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
         }
     }
     if mounted.is_none() {
+        drop(lvm);
         let _ = fs::remove_dir_all(&mnt);
         return Err(StorageError::Message(
             "could not mount a guest root filesystem to inject login".into(),
@@ -255,6 +267,7 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
     let _ = fs::remove_file(mnt.join(".autorelabel"));
     schedule_selinux_restorecon(&mnt);
     let _ = Command::new("umount").arg(&mnt).status();
+    drop(lvm);
     let _ = fs::remove_dir_all(&mnt);
     written
 }
@@ -288,11 +301,14 @@ fn partitions(loopdev: &str) -> Vec<PathBuf> {
 }
 
 fn try_mount(dev: &Path, mnt: &Path) -> bool {
-    for extra in [Some("nouuid"), None] {
+    let attempts: &[&[&str]] = &[
+        &["-t", "xfs", "-o", "nouuid"],
+        &["-o", "nouuid"],
+        &[],
+    ];
+    for extra in attempts {
         let mut cmd = Command::new("mount");
-        if let Some(opt) = extra {
-            cmd.args(["-o", opt]);
-        }
+        cmd.args(*extra);
         if cmd
             .arg(dev)
             .arg(mnt)
@@ -304,6 +320,95 @@ fn try_mount(dev: &Path, mnt: &Path) -> bool {
         }
     }
     false
+}
+
+struct LvmSession {
+    pvs: Vec<PathBuf>,
+    volumes: Vec<PathBuf>,
+}
+
+impl Drop for LvmSession {
+    fn drop(&mut self) {
+        for pv in &self.pvs {
+            lvm_vgchange(pv, false);
+        }
+    }
+}
+
+fn activate_lvm(parts: &[PathBuf]) -> Option<LvmSession> {
+    let pvs: Vec<PathBuf> = parts
+        .iter()
+        .filter(|p| blkid_type(p).as_deref() == Some("LVM2_member"))
+        .cloned()
+        .collect();
+    if pvs.is_empty() {
+        return None;
+    }
+    let before = mapper_devices();
+    for pv in &pvs {
+        let _ = Command::new("pvscan").args(["--cache"]).arg(pv).status();
+        lvm_vgchange(pv, true);
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    let volumes: Vec<PathBuf> = mapper_devices()
+        .difference(&before)
+        .cloned()
+        .collect();
+    Some(LvmSession { pvs, volumes })
+}
+
+fn mapper_devices() -> HashSet<PathBuf> {
+    let mut out = HashSet::new();
+    if let Ok(entries) = fs::read_dir("/dev/mapper") {
+        for ent in entries.flatten() {
+            if ent.file_name() == "control" {
+                continue;
+            }
+            out.insert(ent.path());
+        }
+    }
+    out
+}
+
+fn lvm_vgchange(pv: &Path, activate: bool) -> bool {
+    let flag = if activate { "-ay" } else { "-an" };
+    let pv_s = pv.to_string_lossy();
+    if Command::new("vgchange")
+        .args([flag, "--devices"])
+        .arg(pv)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let filter = format!(r#"devices {{ filter = [ "a|^{pv_s}$|", "r|.*|" ] }}"#);
+    Command::new("vgchange")
+        .args([flag, "--config", &filter])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn blkid_type(dev: &Path) -> Option<String> {
+    let output = Command::new("blkid")
+        .args(["-o", "value", "-s", "TYPE"])
+        .arg(dev)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn tempfile_mnt() -> Result<PathBuf> {
@@ -1448,5 +1553,10 @@ mod tests {
         assert!(meta.contains("public-keys:"), "{meta}");
         assert!(meta.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{meta}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn blkid_type_missing_device_is_none() {
+        assert_eq!(blkid_type(Path::new("/dev/does-not-exist-pertisk")), None);
     }
 }

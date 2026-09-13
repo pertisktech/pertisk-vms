@@ -600,13 +600,24 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
+func ignoreGone(api *client.Client, id string, err error) error {
+	if err == nil || client.IsNotFound(err) {
+		return nil
+	}
+	if _, getErr := api.GetVM(id); client.IsNotFound(getErr) {
+		return nil
+	}
+	return err
+}
+
 func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state vmModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.api.DeleteVM(state.ID.ValueString()); err != nil && !client.IsNotFound(err) {
+	id := state.ID.ValueString()
+	if err := ignoreGone(r.api, id, r.api.DeleteVM(id)); err != nil {
 		resp.Diagnostics.AddError("Delete guest failed", err.Error())
 	}
 }

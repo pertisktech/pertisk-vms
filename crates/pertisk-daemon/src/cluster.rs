@@ -832,7 +832,11 @@ fn quarantine_corrupt_json(path: &Path, bytes: &[u8]) {
 }
 
 fn atomic_write_json(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
-    let tmp = path.with_extension("json.tmp");
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&tmp)?;
