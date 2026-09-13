@@ -764,6 +764,14 @@ impl Service {
             }
         }
         self.ensure_start_capacity(&record)?;
+        if let Some(path) = record
+            .serial_log
+            .as_ref()
+            .or(record.spec.serial_log.as_ref())
+        {
+            // Drop leftover ci-info from a previous guest that reused this VM id.
+            let _ = std::fs::write(path, b"");
+        }
         let boot_spec = self.prefer_disk_boot_spec(&self.iso_linux_boot_spec(&record.spec)?);
         for nic in &record.spec.nets {
             self.networks.ensure_host_links(nic)?;
@@ -2734,10 +2742,7 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
     } else {
         Default::default()
     };
-    let serial_v4 = vm
-        .serial_log
-        .as_deref()
-        .and_then(ipv4_from_serial_log);
+    let serial_path = vm.serial_log.as_deref();
     let blocked = host_blocked_ipv4s();
     let mut changed = false;
     for nic in &mut vm.spec.nets {
@@ -2755,7 +2760,7 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                     .map(|(_, ip)| ip.clone())
             })
             .or_else(|| pertisk_net::ipv4_for_mac(mac))
-            .or_else(|| serial_v4.clone())
+            .or_else(|| serial_path.and_then(|path| ipv4_from_serial_log(path, Some(mac))))
             .filter(|ip| is_guest_ipv4(ip) && !blocked.contains(ip));
         if nic
             .ip
@@ -2808,7 +2813,7 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
 
 /// Cloud images often print `https://A.B.C.D:9090/` (Cockpit) on the serial console.
 /// Useful when ARP/neigh is cold (no ping on the host).
-fn ipv4_from_serial_log(path: &Path) -> Option<String> {
+fn ipv4_from_serial_log(path: &Path, mac: Option<&str>) -> Option<String> {
     let data = std::fs::read(path).ok()?;
     let start = data.len().saturating_sub(64 * 1024);
     let text = String::from_utf8_lossy(&data[start..]);
@@ -2822,6 +2827,11 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
         if !lower.contains("global") {
             continue;
         }
+        if let Some(mac) = mac {
+            if !serial_line_has_mac(line, mac) {
+                continue;
+            }
+        }
         for token in ipv4_tokens(line) {
             if is_guest_ipv4(token) {
                 from_device = Some(token.to_string());
@@ -2830,6 +2840,11 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
     }
     if from_device.is_some() {
         return from_device;
+    }
+    // Cockpit URLs have no MAC. Skip them when we know which NIC we want so a
+    // previous guest's serial log cannot pin the wrong address.
+    if mac.is_some() {
+        return None;
     }
     let mut last = None;
     let mut rest = text.as_ref();
@@ -2848,6 +2863,17 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
         }
     }
     last
+}
+
+fn serial_line_has_mac(line: &str, mac: &str) -> bool {
+    let Some(want) = pertisk_net::normalize_mac(mac) else {
+        return false;
+    };
+    let lower = line.to_ascii_lowercase();
+    if lower.contains(&want) {
+        return true;
+    }
+    lower.contains(&want.replace(':', "-"))
 }
 
 fn ipv4_tokens(line: &str) -> impl Iterator<Item = &str> {
@@ -3206,8 +3232,30 @@ ci-info: |   0   |   0.0.0.0   | 10.1.1.10 |   ens3    |
         )
         .unwrap();
         assert_eq!(
-            ipv4_from_serial_log(&path).as_deref(),
+            ipv4_from_serial_log(&path, Some("52:54:00:2e:3b:6a")).as_deref(),
             Some("10.1.1.42")
+        );
+        assert_eq!(
+            ipv4_from_serial_log(&path, Some("52:54:00:00:00:01")),
+            None
+        );
+    }
+
+    #[test]
+    fn serial_log_ignores_previous_guest_mac() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(
+            &path,
+            "\
+ci-info: |  ens3  | True |  10.1.1.168  | 255.255.255.0 | global | 52:54:00:11:11:11 |
+ci-info: |  ens3  | True |  10.1.1.169  | 255.255.255.0 | global | 52:54:00:2e:3b:6a |
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ipv4_from_serial_log(&path, Some("52:54:00:2e:3b:6a")).as_deref(),
+            Some("10.1.1.169")
         );
     }
 

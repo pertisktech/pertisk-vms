@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -333,6 +334,9 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			vm = started
 		}
 	}
+	if plan.Started.ValueBool() && vm != nil && vm.State == "running" {
+		vm = r.waitGuestIP(ctx, vm)
+	}
 	state := keepPlannedBlocks(plan, vmToModel(ctx, vm, plan))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -580,6 +584,9 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		}
 		vm = started
 	}
+	if plan.Started.ValueBool() && vm != nil && vm.State == "running" {
+		vm = r.waitGuestIP(ctx, vm)
+	}
 	if !plan.Started.ValueBool() && vm.State == "running" {
 		stopped, err := r.api.StopVM(id)
 		if err != nil {
@@ -605,6 +612,53 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 
 func (r *vmResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func guestIPv4(vm *client.VM) string {
+	if vm == nil {
+		return ""
+	}
+	for _, nic := range vm.Spec.Nets {
+		if ip := strings.TrimSpace(nic.IP); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func (r *vmResource) waitGuestIP(ctx context.Context, vm *client.VM) *client.VM {
+	if r.api == nil || vm == nil || vm.State != "running" {
+		return vm
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	last := vm
+	var seenAt time.Time
+	prevIP := ""
+	for {
+		ip := guestIPv4(last)
+		if ip != "" {
+			if seenAt.IsZero() || ip != prevIP {
+				tflog.Info(ctx, "observed guest IPv4", map[string]any{"id": last.ID.String(), "ip": ip})
+				seenAt = time.Now()
+				prevIP = ip
+			} else if time.Since(seenAt) >= 3*time.Second {
+				return last
+			}
+		}
+		if time.Now().After(deadline) {
+			return last
+		}
+		select {
+		case <-ctx.Done():
+			return last
+		case <-time.After(2 * time.Second):
+		}
+		got, err := r.api.GetVM(last.ID.String())
+		if err != nil {
+			return last
+		}
+		last = got
+	}
 }
 
 func cloneConfigured(m *cloneModel) bool {

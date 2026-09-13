@@ -1053,14 +1053,14 @@ fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
         yaml.push_str("    ssh_authorized_keys:\n");
         for key in &keys {
             yaml.push_str("      - ");
-            yaml.push_str(key);
+            yaml.push_str(&yaml_double_quote(key));
             yaml.push('\n');
         }
         // Top-level keys also land on the image default user (almalinux, rocky, …).
         yaml.push_str("ssh_authorized_keys:\n");
         for key in &keys {
             yaml.push_str("  - ");
-            yaml.push_str(key);
+            yaml.push_str(&yaml_double_quote(key));
             yaml.push('\n');
         }
     }

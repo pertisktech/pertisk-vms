@@ -2,11 +2,15 @@
 //! when cloud-init finishes as DataSourceNone.
 
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{Result, StorageError};
+
+static NBD_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct GuestIdentity<'a> {
     pub hostname: &'a str,
@@ -19,10 +23,10 @@ pub struct GuestIdentity<'a> {
     pub prefix: Option<u8>,
 }
 
-/// No-op for tiny test images. On a real cloud disk, mounts the root FS and
-/// writes hostname, sshd password auth, optional password/keys.
+/// No-op for tiny raw test images. Linked qcow2 overlays are small on disk but
+/// still a full guest — those are attached with qemu-nbd, not skipped.
 pub fn inject_guest_identity(disk: &Path, id: &GuestIdentity<'_>) -> Result<()> {
-    if disk.metadata()?.len() < 64 * 1024 * 1024 {
+    if skip_tiny_raw_fixture(disk) {
         return Ok(());
     }
     let extra = operator_ssh_keys();
@@ -43,10 +47,119 @@ pub fn inject_guest_identity(disk: &Path, id: &GuestIdentity<'_>) -> Result<()> 
         gateway: id.gateway,
         prefix: id.prefix,
     };
-    let loopdev = losetup(disk)?;
-    let result = inject_on_loop(&loopdev, &id);
-    let _ = Command::new("losetup").args(["-d", &loopdev]).status();
+    let attached = attach_guest_disk(disk)?;
+    let result = inject_on_loop(attached.dev(), &id);
+    attached.detach();
     result
+}
+
+fn skip_tiny_raw_fixture(disk: &Path) -> bool {
+    let Ok(meta) = disk.metadata() else {
+        return false;
+    };
+    meta.len() < 64 * 1024 * 1024 && !looks_like_qcow2(disk)
+}
+
+fn looks_like_qcow2(disk: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    let Ok(mut file) = File::open(disk) else {
+        return false;
+    };
+    file.read_exact(&mut magic).is_ok() && magic == *b"QFI\xfb"
+}
+
+struct AttachedDisk {
+    dev: String,
+    nbd: bool,
+}
+
+impl AttachedDisk {
+    fn dev(&self) -> &str {
+        &self.dev
+    }
+
+    fn detach(self) {
+        if self.nbd {
+            nbd_disconnect(&self.dev);
+        } else {
+            let _ = Command::new("losetup").args(["-d", &self.dev]).status();
+        }
+    }
+}
+
+fn attach_guest_disk(disk: &Path) -> Result<AttachedDisk> {
+    if looks_like_qcow2(disk) {
+        return nbd_connect(disk);
+    }
+    Ok(AttachedDisk {
+        dev: losetup(disk)?,
+        nbd: false,
+    })
+}
+
+fn nbd_connect(disk: &Path) -> Result<AttachedDisk> {
+    let bin = pertisk_types::find_in_path("qemu-nbd").ok_or_else(|| {
+        StorageError::Message(
+            "qemu-nbd is required to inject SSH keys into a qcow2 linked clone".into(),
+        )
+    })?;
+    let _guard = NBD_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let _ = Command::new("modprobe")
+        .args(["nbd", "max_part=16"])
+        .status();
+    for i in 0..16 {
+        let dev = format!("/dev/nbd{i}");
+        if nbd_in_use(&dev) {
+            continue;
+        }
+        let output = Command::new(&bin)
+            .args(["--connect", &dev, "-f", "qcow2"])
+            .arg(disk)
+            .output()?;
+        if !output.status.success() {
+            continue;
+        }
+        let _ = Command::new("udevadm")
+            .args(["settle", "--timeout=5"])
+            .status();
+        for _ in 0..15 {
+            if !partitions(&dev).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        return Ok(AttachedDisk { dev, nbd: true });
+    }
+    Err(StorageError::Message(
+        "no free nbd device to inject SSH keys into qcow2 clone".into(),
+    ))
+}
+
+fn nbd_in_use(dev: &str) -> bool {
+    let Some(name) = Path::new(dev).file_name().and_then(|n| n.to_str()) else {
+        return true;
+    };
+    if !Path::new(dev).exists() {
+        return true;
+    }
+    if let Ok(pid) = fs::read_to_string(format!("/sys/block/{name}/pid")) {
+        if !pid.trim().is_empty() {
+            return true;
+        }
+    }
+    if let Ok(size) = fs::read_to_string(format!("/sys/block/{name}/size")) {
+        if size.trim().parse::<u64>().unwrap_or(0) > 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn nbd_disconnect(dev: &str) {
+    if let Some(bin) = pertisk_types::find_in_path("qemu-nbd") {
+        let _ = Command::new(bin).args(["--disconnect", dev]).status();
+    }
+    std::thread::sleep(Duration::from_millis(200));
 }
 
 /// Operator keys cloned into every cloud guest (same as a standard cloud VM).
@@ -194,7 +307,14 @@ fn try_mount(dev: &Path, mnt: &Path) -> bool {
 }
 
 fn tempfile_mnt() -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("pertisk-inject-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "pertisk-inject-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -648,35 +768,73 @@ fn sshd_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::from('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Result<()> {
     let dir = root.join("var/lib/cloud/seed/nocloud");
     fs::create_dir_all(&dir)?;
-    fs::write(
-        dir.join("meta-data"),
-        format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n"),
-    )?;
-    let mut user_data = format!(
-        "#cloud-config\nhostname: {hostname}\nfqdn: {hostname}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nmanage_etc_hosts: true\nssh_pwauth: true\nruncmd:\n{runcmd}",
-        runcmd = cloudinit_hostname_runcmd(hostname)
+    let keys: Vec<&str> = id
+        .ssh_authorized_keys
+        .iter()
+        .map(|k| k.trim())
+        .filter(|k| !k.is_empty())
+        .collect();
+    let mut meta = format!(
+        "instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n"
     );
-    if let Some(password) = id.password.filter(|p| !p.is_empty()) {
-        user_data.push_str("chpasswd:\n  expire: false\n  list: |\n    ");
+    if !keys.is_empty() {
+        meta.push_str("public-keys:\n");
+        for (i, key) in keys.iter().enumerate() {
+            meta.push_str("  ");
+            meta.push_str(&i.to_string());
+            meta.push_str(": ");
+            meta.push_str(key);
+            meta.push('\n');
+        }
+    }
+    fs::write(dir.join("meta-data"), meta)?;
+    let password = id.password.filter(|p| !p.is_empty());
+    let mut user_data = format!(
+        "#cloud-config\nhostname: {hostname}\nfqdn: {hostname}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nmanage_etc_hosts: true\nusers:\n  - default\n  - name: {user}\n    sudo: \"ALL=(ALL) NOPASSWD:ALL\"\n    groups: [adm, wheel, sudo]\n    shell: /bin/bash\n    lock_passwd: {lock}\n",
+        user = id.user,
+        lock = if password.is_some() { "false" } else { "true" },
+    );
+    if !keys.is_empty() {
+        user_data.push_str("    ssh_authorized_keys:\n");
+        for key in &keys {
+            user_data.push_str("      - ");
+            user_data.push_str(&yaml_quote(key));
+            user_data.push('\n');
+        }
+        user_data.push_str("ssh_authorized_keys:\n");
+        for key in &keys {
+            user_data.push_str("  - ");
+            user_data.push_str(&yaml_quote(key));
+            user_data.push('\n');
+        }
+    }
+    if let Some(password) = password {
+        user_data.push_str("ssh_pwauth: true\nchpasswd:\n  expire: false\n  list: |\n    ");
         user_data.push_str(id.user);
         user_data.push(':');
         user_data.push_str(password);
         user_data.push('\n');
     }
-    if !id.ssh_authorized_keys.is_empty() {
-        user_data.push_str("ssh_authorized_keys:\n");
-        for key in id.ssh_authorized_keys {
-            let key = key.trim();
-            if !key.is_empty() {
-                user_data.push_str("  - ");
-                user_data.push_str(key);
-                user_data.push('\n');
-            }
-        }
-    }
+    user_data.push_str("runcmd:\n");
+    user_data.push_str(&cloudinit_hostname_runcmd(hostname));
     fs::write(dir.join("user-data"), user_data)?;
     let cfg = root.join("etc/cloud/cloud.cfg.d");
     let _ = fs::create_dir_all(&cfg);
@@ -1153,5 +1311,57 @@ mod tests {
             keys,
             vec!["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKey user@host"]
         );
+    }
+
+    #[test]
+    fn skip_tiny_raw_but_not_qcow2_overlay() {
+        let dir = std::env::temp_dir().join(format!(
+            "pertisk-inject-skip-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let raw = dir.join("tiny.raw");
+        fs::write(&raw, vec![0u8; 1024]).unwrap();
+        assert!(skip_tiny_raw_fixture(&raw));
+        let qcow = dir.join("overlay.qcow2");
+        let mut bytes = b"QFI\xfb".to_vec();
+        bytes.resize(4096, 0);
+        fs::write(&qcow, bytes).unwrap();
+        assert!(!skip_tiny_raw_fixture(&qcow));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_ssh_keys_for_named_user() {
+        let root = fixture_root();
+        let key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC root@pve";
+        apply_identity(
+            &root,
+            &GuestIdentity {
+                hostname: "ubuntu-1",
+                user: "ubuntu",
+                password: None,
+                ssh_authorized_keys: &[key.to_string()],
+                mac: None,
+                ipv4: None,
+                gateway: None,
+                prefix: None,
+            },
+        )
+        .unwrap();
+        let auth = fs::read_to_string(root.join("home/ubuntu/.ssh/authorized_keys")).unwrap();
+        assert!(auth.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{auth}");
+        let seed = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/user-data")).unwrap();
+        assert!(seed.contains("name: ubuntu"), "{seed}");
+        assert!(seed.contains("ssh_authorized_keys:"), "{seed}");
+        assert!(seed.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{seed}");
+        let meta = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/meta-data")).unwrap();
+        assert!(meta.contains("public-keys:"), "{meta}");
+        assert!(meta.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{meta}");
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -56,6 +56,16 @@ func TestPickDefaultNetworkPrefersNAT(t *testing.T) {
 	}
 }
 
+func TestGuestIPv4(t *testing.T) {
+	if guestIPv4(nil) != "" {
+		t.Fatal("nil vm")
+	}
+	vm := &client.VM{Spec: client.VMSpec{Nets: []client.Nic{{IP: " 10.1.1.169 "}}}}
+	if got := guestIPv4(vm); got != "10.1.1.169" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestKeepPlannedBlocksDropsCloneDisks(t *testing.T) {
 	plan := vmModel{
 		Disks: types.ListValueMust(diskObjectType, []attr.Value{}),
