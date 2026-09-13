@@ -529,7 +529,9 @@ pub fn probe_bridge_neighbors() {
         static LAST: Mutex<Option<Instant>> = Mutex::new(None);
         {
             let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
-            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(45)) {
+            // Terraform polls GetVM for ~90s; 45s meant the first (stale) DHCP
+            // lease stayed in inventory until after apply had already returned.
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(8)) {
                 return;
             }
             *last = Some(Instant::now());
@@ -582,46 +584,59 @@ pub fn probe_bridge_neighbors() {
             }
             let mut addr = first;
             let mut launched = 0u32;
+            let sock = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).ok();
+            if let Some(sock) = sock.as_ref() {
+                let _ = sock.set_nonblocking(true);
+            }
             while addr <= last && launched < 256 {
                 let ip = crate::ipam::ipv4_string(addr);
-                spawn_neigh_probe(&dev, &ip);
+                spawn_neigh_probe(&dev, &ip, sock.as_ref(), addr);
                 launched += 1;
                 addr = addr.saturating_add(1);
             }
             // Wait for probes to fill the neighbour table.
-            std::thread::sleep(Duration::from_millis(2200));
+            std::thread::sleep(Duration::from_millis(1500));
         }
     }
 }
 
-/// Prefer `ping -I <bridge>`; fall back to `arping` when iputils-ping is missing.
+/// Trigger kernel ARP. Appliance images often have neither `ping` nor `arping`;
+/// a UDP datagram to the on-link address is enough for the neigh table.
 #[cfg(target_os = "linux")]
-fn spawn_neigh_probe(dev: &str, ip: &str) {
-    let ping = ["ping", "/bin/ping", "/usr/bin/ping"]
-        .into_iter()
-        .find(|bin| std::path::Path::new(bin).exists() || *bin == "ping");
-    if let Some(bin) = ping {
-        let spawned = Command::new(bin)
-            .args(["-c", "1", "-W", "1", "-I", dev, ip])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok();
-        if spawned {
-            return;
-        }
-    }
-    for bin in ["arping", "/usr/sbin/arping", "/usr/bin/arping"] {
-        if Command::new(bin)
-            .args(["-c", "1", "-w", "1", "-I", dev, ip])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
+fn spawn_neigh_probe(dev: &str, ip: &str, sock: Option<&std::net::UdpSocket>, addr: u32) {
+    for bin in ["/bin/ping", "/usr/bin/ping"] {
+        if std::path::Path::new(bin).is_file()
+            && Command::new(bin)
+                .args(["-c", "1", "-W", "1", "-I", dev, ip])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok()
         {
             return;
         }
     }
+    for bin in ["/usr/sbin/arping", "/usr/bin/arping"] {
+        if std::path::Path::new(bin).is_file()
+            && Command::new(bin)
+                .args(["-c", "1", "-w", "1", "-I", dev, ip])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok()
+        {
+            return;
+        }
+    }
+    if let Some(sock) = sock {
+        let dest = std::net::SocketAddrV4::new(std::net::Ipv4Addr::from(addr.to_be_bytes()), 9);
+        let _ = sock.send_to(&[0u8], dest);
+    }
+    let _ = Command::new("ip")
+        .args(["neigh", "replace", ip, "dev", dev, "nud", "incomplete"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 pub fn overlaps_existing_ipv4(network: Ipv4Net, except_interface: Option<&str>) -> Result<bool> {

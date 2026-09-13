@@ -348,6 +348,7 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
         &hostname,
     )?;
     write_guest_network(root, id)?;
+    schedule_netinfo(root);
     if let Some(password) = id.password.filter(|p| !p.is_empty()) {
         let hash = hash_password(password)?;
         set_shadow_hash(root, &user, &hash)?;
@@ -358,6 +359,57 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     relabel_injected(root);
     schedule_selinux_restorecon(root);
     Ok(())
+}
+
+/// Reprint the live IPv4 on serial after DHCP settles. Cloud-init ci-info runs
+/// too early; the first lease is what Terraform used to capture.
+fn schedule_netinfo(root: &Path) {
+    let unit_dir = root.join("etc/systemd/system");
+    let _ = fs::create_dir_all(&unit_dir);
+    let unit = "\
+[Unit]\n\
+Description=Print settled guest IPv4 on serial for pertisk\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=/bin/sh /usr/libexec/pertisk-netinfo\n\
+\n\
+[Install]\n\
+WantedBy=multi-user.target\n";
+    let _ = fs::write(unit_dir.join("pertisk-netinfo.service"), unit);
+    let wants = unit_dir.join("multi-user.target.wants");
+    let _ = fs::create_dir_all(&wants);
+    let link = wants.join("pertisk-netinfo.service");
+    if !link.exists() {
+        let _ = std::os::unix::fs::symlink("../pertisk-netinfo.service", &link);
+    }
+    let libexec = root.join("usr/libexec");
+    let _ = fs::create_dir_all(&libexec);
+    let script = r#"#!/bin/sh
+sleep 8
+{
+  echo
+  for nic in /sys/class/net/*; do
+    name=$(basename "$nic")
+    [ "$name" = lo ] && continue
+    mac=$(cat "$nic/address" 2>/dev/null) || continue
+    cidr=$(ip -4 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4}' | head -1)
+    [ -n "$cidr" ] || continue
+    addr=${cidr%/*}
+    echo "ci-info: | $name | True |         $addr         | 255.255.255.0 | global | $mac |"
+  done
+} >/dev/ttyS0 2>/dev/null || true
+exit 0
+"#;
+    let path = libexec.join("pertisk-netinfo");
+    let _ = fs::write(&path, script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+    }
 }
 
 fn write_hostname(root: &Path, hostname: &str) -> Result<()> {
@@ -1274,6 +1326,10 @@ mod tests {
             cfg.contains("network: {config: disabled}"),
             "ubuntu netplan guests must not let cloud-init fight netplan: {cfg}"
         );
+        assert!(root
+            .join("etc/systemd/system/pertisk-netinfo.service")
+            .is_file());
+        assert!(root.join("usr/libexec/pertisk-netinfo").is_file());
         let _ = fs::remove_dir_all(&root);
     }
 

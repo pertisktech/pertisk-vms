@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -626,24 +627,31 @@ func guestIPv4(vm *client.VM) string {
 	return ""
 }
 
+func tcpOpen(host, port string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func (r *vmResource) waitGuestIP(ctx context.Context, vm *client.VM) *client.VM {
 	if r.api == nil || vm == nil || vm.State != "running" {
 		return vm
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	last := vm
-	var seenAt time.Time
-	prevIP := ""
 	for {
 		ip := guestIPv4(last)
+		// Early cloud-init ci-info is often a lease the guest then drops.
+		// Only accept an address that answers SSH from this host.
+		if ip != "" && tcpOpen(ip, "22", 2*time.Second) {
+			tflog.Info(ctx, "guest IPv4 reachable", map[string]any{"id": last.ID.String(), "ip": ip})
+			return last
+		}
 		if ip != "" {
-			if seenAt.IsZero() || ip != prevIP {
-				tflog.Info(ctx, "observed guest IPv4", map[string]any{"id": last.ID.String(), "ip": ip})
-				seenAt = time.Now()
-				prevIP = ip
-			} else if time.Since(seenAt) >= 3*time.Second {
-				return last
-			}
+			tflog.Info(ctx, "guest IPv4 not reachable yet", map[string]any{"id": last.ID.String(), "ip": ip})
 		}
 		if time.Now().After(deadline) {
 			return last

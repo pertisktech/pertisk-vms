@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"net"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -63,6 +65,30 @@ func TestGuestIPv4(t *testing.T) {
 	vm := &client.VM{Spec: client.VMSpec{Nets: []client.Nic{{IP: " 10.1.1.169 "}}}}
 	if got := guestIPv4(vm); got != "10.1.1.169" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestTcpOpen(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tcpOpen("127.0.0.1", port, time.Second) {
+		t.Fatal("listener must be reachable")
+	}
+	if tcpOpen("127.0.0.1", "1", 200*time.Millisecond) {
+		t.Fatal("closed port must not look reachable")
 	}
 }
 

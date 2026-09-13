@@ -3259,6 +3259,24 @@ ci-info: |  ens3  | True |  10.1.1.169  | 255.255.255.0 | global | 52:54:00:2e:3
         );
     }
 
+    #[test]
+    fn serial_log_prefers_later_ci_info_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(
+            &path,
+            "\
+ci-info: |  ens3  | True |  10.1.1.173  | 255.255.255.0 | global | 52:54:00:2e:3b:6a |
+ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3b:6a |
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ipv4_from_serial_log(&path, Some("52:54:00:2e:3b:6a")).as_deref(),
+            Some("10.1.1.162")
+        );
+    }
+
     #[tokio::test]
     async fn update_spec_when_stopped() {
         let (svc, _dir) = service();
