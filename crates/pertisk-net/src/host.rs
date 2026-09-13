@@ -515,128 +515,36 @@ fn ipv4_for_mac_from_proc_arp(want_mac: &str) -> Option<String> {
     None
 }
 
-/// Probe IPv4 neighbors on host bridges so DHCP guest MACs appear in the neigh table.
-/// Cheap enough to call when listing VMs that are missing IPs (internally rate-limited).
+/// Refresh ARP for IPs we already know. Do **not** scan the LAN or mark
+/// neighbors incomplete — that drops the default gateway and takes the UI offline.
 pub fn probe_bridge_neighbors() {
     #[cfg(not(target_os = "linux"))]
     {
         return;
     }
-    #[cfg(target_os = "linux")]
-    {
-        use std::sync::Mutex;
-        use std::time::{Duration, Instant};
-        static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-        {
-            let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
-            // Terraform polls GetVM for ~90s; 45s meant the first (stale) DHCP
-            // lease stayed in inventory until after apply had already returned.
-            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(8)) {
-                return;
-            }
-            *last = Some(Instant::now());
-        }
-        let mut bridges: Vec<(String, String)> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !valid_ifname(&name) || !is_bridge(&name) {
-                    continue;
-                }
-                let output = Command::new("ip")
-                    .args(["-o", "-4", "addr", "show", "dev", &name])
-                    .output();
-                let Ok(output) = output else {
-                    continue;
-                };
-                if !output.status.success() {
-                    continue;
-                }
-                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                    let fields: Vec<_> = line.split_whitespace().collect();
-                    let Some(inet) = fields.iter().position(|f| *f == "inet") else {
-                        continue;
-                    };
-                    if let Some(cidr) = fields.get(inet + 1) {
-                        bridges.push((name.clone(), (*cidr).to_string()));
-                    }
-                }
-            }
-        }
-        for (dev, cidr) in bridges {
-            let Some((base, prefix)) = cidr.split_once('/') else {
-                continue;
-            };
-            let Ok(prefix) = prefix.parse::<u8>() else {
-                continue;
-            };
-            // Only probe typical LAN sizes; skip tiny/huge nets.
-            if !(16..=24).contains(&prefix) {
-                continue;
-            }
-            let Ok(net) = crate::Ipv4Net::parse(&format!("{base}/{prefix}")) else {
-                continue;
-            };
-            let first = net.nth(1);
-            let last = net.broadcast().saturating_sub(1);
-            if first > last {
-                continue;
-            }
-            let mut addr = first;
-            let mut launched = 0u32;
-            let sock = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).ok();
-            if let Some(sock) = sock.as_ref() {
-                let _ = sock.set_nonblocking(true);
-            }
-            while addr <= last && launched < 256 {
-                let ip = crate::ipam::ipv4_string(addr);
-                spawn_neigh_probe(&dev, &ip, sock.as_ref(), addr);
-                launched += 1;
-                addr = addr.saturating_add(1);
-            }
-            // Wait for probes to fill the neighbour table.
-            std::thread::sleep(Duration::from_millis(1500));
-        }
-    }
 }
 
-/// Trigger kernel ARP. Appliance images often have neither `ping` nor `arping`;
-/// a UDP datagram to the on-link address is enough for the neigh table.
-#[cfg(target_os = "linux")]
-fn spawn_neigh_probe(dev: &str, ip: &str, sock: Option<&std::net::UdpSocket>, addr: u32) {
-    for bin in ["/bin/ping", "/usr/bin/ping"] {
-        if std::path::Path::new(bin).is_file()
-            && Command::new(bin)
-                .args(["-c", "1", "-W", "1", "-I", dev, ip])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .is_ok()
+/// Send one UDP packet so the kernel ARPs this on-link address.
+pub fn probe_ipv4(ip: &str) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ip;
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() else {
+            return;
+        };
+        if addr.is_unspecified() || addr.is_broadcast() || addr.is_loopback() || addr.is_link_local()
         {
             return;
         }
-    }
-    for bin in ["/usr/sbin/arping", "/usr/bin/arping"] {
-        if std::path::Path::new(bin).is_file()
-            && Command::new(bin)
-                .args(["-c", "1", "-w", "1", "-I", dev, ip])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .is_ok()
-        {
-            return;
+        if let Ok(sock) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)) {
+            let _ = sock.set_nonblocking(true);
+            let _ = sock.send_to(&[0u8], std::net::SocketAddrV4::new(addr, 9));
         }
     }
-    if let Some(sock) = sock {
-        let dest = std::net::SocketAddrV4::new(std::net::Ipv4Addr::from(addr.to_be_bytes()), 9);
-        let _ = sock.send_to(&[0u8], dest);
-    }
-    let _ = Command::new("ip")
-        .args(["neigh", "replace", ip, "dev", dev, "nud", "incomplete"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
 }
 
 pub fn overlaps_existing_ipv4(network: Ipv4Net, except_interface: Option<&str>) -> Result<bool> {

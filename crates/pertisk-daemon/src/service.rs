@@ -337,7 +337,13 @@ impl Service {
         let mut vms = self.store.list()?;
         let run_dir = &self.config.vmm.run_dir;
         if vms.iter().any(vm_needs_ip_probe) {
-            pertisk_net::probe_bridge_neighbors();
+            for vm in &vms {
+                for nic in &vm.spec.nets {
+                    if let Some(ip) = nic.ip.as_deref() {
+                        pertisk_net::probe_ipv4(ip);
+                    }
+                }
+            }
         }
         for vm in &mut vms {
             if enrich_observed_ips(vm, run_dir) {
@@ -351,7 +357,11 @@ impl Service {
     pub fn get(&self, id: VmId) -> Result<VmRecord, DaemonError> {
         let mut vm = self.store.get(id)?;
         if vm_needs_ip_probe(&vm) {
-            pertisk_net::probe_bridge_neighbors();
+            for nic in &vm.spec.nets {
+                if let Some(ip) = nic.ip.as_deref() {
+                    pertisk_net::probe_ipv4(ip);
+                }
+            }
         }
         if enrich_observed_ips(&mut vm, &self.config.vmm.run_dir) {
             let _ = self.store.upsert(vm.clone());

@@ -11,8 +11,8 @@ use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, Netwo
 use serde::{Deserialize, Serialize};
 
 pub use host::{
-    delete_tap, ipv4_for_mac, ipv6_for_mac, normalize_mac, probe_bridge_neighbors, provision_nic,
-    probe_guest_ipv6_ll,
+    delete_tap, ipv4_for_mac, ipv6_for_mac, normalize_mac, probe_bridge_neighbors, probe_ipv4,
+    provision_nic, probe_guest_ipv6_ll,
 };
 pub use ipam::{Ipv4Net, parse_cidr, parse_ipv4};
 
