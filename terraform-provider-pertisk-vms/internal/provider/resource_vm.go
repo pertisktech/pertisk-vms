@@ -330,6 +330,11 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 	if plan.Started.ValueBool() && vm.State != "running" {
 		started, startErr := r.api.StartVM(vm.ID.String())
 		if startErr != nil {
+			// One retry after a short pause — often the start_gate cooldown.
+			time.Sleep(5 * time.Second)
+			started, startErr = r.api.StartVM(vm.ID.String())
+		}
+		if startErr != nil {
 			resp.Diagnostics.AddWarning("Guest defined but start failed", startErr.Error())
 		} else {
 			vm = started

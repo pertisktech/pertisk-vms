@@ -86,9 +86,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
-		// Keep API calls short so Terraform fails fast when the node dies mid-boot.
-		// Upload helpers raise this separately.
-		timeout = 60 * time.Second
+		// Start waits on the start_gate cooldown of the previous guest.
+		timeout = 120 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext

@@ -744,20 +744,41 @@ async fn qmp_query_status(path: &Path) -> Result<String> {
 }
 
 async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
-    let mut stream = UnixStream::connect(path)
+    let mut stream = tokio::time::timeout(Duration::from_secs(3), UnixStream::connect(path))
         .await
+        .map_err(|_| {
+            VmmError::Message(format!("qmp connect {}: timed out", path.display()))
+        })?
         .map_err(|err| VmmError::Message(format!("qmp connect {}: {err}", path.display())))?;
     let mut buf = vec![0u8; 65536];
-    let _ = stream.read(&mut buf).await?;
+    let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
+        .await
+        .map_err(|_| VmmError::Message(format!("qmp greeting {}: timed out", path.display())))?
+        .map_err(|err| VmmError::Message(format!("qmp greeting {}: {err}", path.display())))?;
+    let _ = n;
     let cap = serde_json::json!({"execute": "qmp_capabilities"});
     stream.write_all(cap.to_string().as_bytes()).await?;
     stream.write_all(b"\n").await?;
-    let _ = stream.read(&mut buf).await?;
+    let _ = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
+        .await
+        .map_err(|_| {
+            VmmError::Message(format!("qmp capabilities {}: timed out", path.display()))
+        })?
+        .map_err(|err| {
+            VmmError::Message(format!("qmp capabilities {}: {err}", path.display()))
+        })?;
     if execute != "qmp_capabilities" {
         let cmd = serde_json::json!({"execute": execute});
         stream.write_all(cmd.to_string().as_bytes()).await?;
         stream.write_all(b"\n").await?;
-        let n = stream.read(&mut buf).await?;
+        let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
+            .await
+            .map_err(|_| {
+                VmmError::Message(format!("qmp {execute} {}: timed out", path.display()))
+            })?
+            .map_err(|err| {
+                VmmError::Message(format!("qmp {execute} {}: {err}", path.display()))
+            })?;
         let text = std::str::from_utf8(&buf[..n]).unwrap_or("");
         for line in text.lines() {
             if line.trim().is_empty() {
