@@ -11,6 +11,7 @@ import ChangePassword from './components/ChangePassword'
 import Modal from './components/Modal'
 import { reconnectLive } from './live'
 import { parseResourceRoute, resourceLink } from './resourceRoutes'
+import StatusPanel from './components/StatusPanel'
 
 const TREE_KEY = 'pertisk_vm_tree_collapsed'
 const TREE_WIDTH_KEY = 'pertisk_vm_tree_width'
@@ -316,9 +317,7 @@ export default function Layout() {
             >
               <Icon name="refresh" size={16} />
             </button>
-            <button type="button" className="pve-icon-btn ghost" title="Help" aria-label="Help">
-              <Icon name="help" size={16} />
-            </button>
+            <StatusPanel host={inv.host} tasks={inv.tasks} audit={inv.audit} />
             <button
               type="button"
               className="pve-icon-btn"

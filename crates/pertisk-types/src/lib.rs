@@ -1258,6 +1258,12 @@ pub struct HostInfo {
     /// Operator public keys injected into cloud clones (`/etc/pertisk/ssh/authorized_keys`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ssh_authorized_keys: Vec<String>,
+    /// Seconds since this hypervisor last booted (`/proc/uptime`).
+    #[serde(default)]
+    pub uptime_secs: u64,
+    /// Seconds since `pertiskd` started on this node.
+    #[serde(default)]
+    pub daemon_uptime_secs: u64,
 }
 
 /// One host package that apt can upgrade (Proxmox-style Updates view).
@@ -1426,7 +1432,21 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         rbd: find_in_path("rbd").is_some(),
         version: VERSION.to_string(),
         ssh_authorized_keys: Vec::new(),
+        uptime_secs: host_uptime_secs(),
+        daemon_uptime_secs: 0,
     }
+}
+
+fn host_uptime_secs() -> u64 {
+    parse_proc_uptime(&std::fs::read_to_string("/proc/uptime").unwrap_or_default())
+}
+
+fn parse_proc_uptime(text: &str) -> u64 {
+    text.split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|s| s.max(0.0) as u64)
+        .unwrap_or(0)
 }
 
 pub fn parse_size(input: &str) -> Result<u64, TypesError> {
@@ -1561,5 +1581,12 @@ mod tests {
         let rec: NodeRecord = serde_json::from_str(raw).unwrap();
         assert!(rec.ipv4.is_empty());
         assert!(rec.ipv6.is_empty());
+    }
+
+    #[test]
+    fn proc_uptime_parses_seconds() {
+        assert_eq!(parse_proc_uptime("12345.67 88888.00\n"), 12345);
+        assert_eq!(parse_proc_uptime(""), 0);
+        assert_eq!(parse_proc_uptime("not-a-number"), 0);
     }
 }
