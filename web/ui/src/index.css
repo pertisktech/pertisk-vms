@@ -538,13 +538,18 @@ th {
   padding: 1rem;
   box-shadow: none;
 }
+.metric-card.metric-card-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
 .metric-card-icon,
 .stat-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   border-radius: var(--radius-md);
   background: var(--accent-soft);
   color: var(--accent);
@@ -568,11 +573,18 @@ th {
   letter-spacing: 0;
   text-transform: none;
 }
-.stat .value,
-.metric-card-value {
+.stat .value {
   font-size: var(--fs-lg);
   font-weight: 600;
   margin-top: 0.1rem;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.metric-card-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-top: 0.65rem;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
@@ -583,13 +595,20 @@ th {
   justify-content: space-between;
   gap: 0.6rem;
 }
+.metric-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
 .metric-card-hint {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-family: var(--mono);
+  font-weight: 500;
   color: var(--text-muted);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border-radius: 999px;
-  padding: 0.15rem 0.5rem;
+  background: var(--muted);
+  border-radius: 4px;
+  padding: 0.12rem 0.4rem;
   white-space: nowrap;
 }
 .metric-card-hint.ok {
@@ -598,10 +617,10 @@ th {
 }
 .metric-card-track {
   width: 100%;
-  height: 8px;
-  margin-top: 0.9rem;
+  height: 6px;
+  margin-top: 0.75rem;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  background: var(--muted);
   overflow: hidden;
 }
 .metric-card-fill {
@@ -2028,6 +2047,11 @@ a.guest-card:hover { color: inherit; }
   text-decoration: none;
 }
 .pve-link:hover { color: var(--accent); }
+
+.pve-nodes-panel .table-shell { overflow-x: auto; }
+.pve-nodes-panel .pve-dense-table th {
+  background: transparent;
+}
 
 /* Key/value + meters */
 

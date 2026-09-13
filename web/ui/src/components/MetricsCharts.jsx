@@ -10,13 +10,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { asList } from '../api'
+import { asList, formatUptime } from '../api'
 import { Icon } from './Icons'
 
 const CHART = {
   cpu: 'var(--chart-1)',
   mem: 'var(--chart-3)',
-  disk: 'var(--chart-4)',
+  disk: 'var(--chart-2)',
   rx: 'var(--chart-2)',
   tx: 'var(--chart-5)',
 }
@@ -122,9 +122,18 @@ function UsageChart({ data, metrics, domain }) {
   )
 }
 
+function samplePct(live, usedKey, totalKey) {
+  const total = Number(live?.[totalKey]) || 0
+  if (total <= 0) return 0
+  return Math.round(((Number(live?.[usedKey]) || 0) / total) * 1000) / 10
+}
+
 export default function MetricsCharts({
   history,
   nodes,
+  members,
+  host,
+  selfId,
   live,
   setLive,
   loading,
@@ -138,6 +147,7 @@ export default function MetricsCharts({
     empty || (loading ? 'Loading…' : 'No time-series data yet — wait for the next sample.')
   const gid = (name) => `${scope}-${name}`
   const nodeRows = asList(nodes)
+  const memberById = new Map(asList(members).map((m) => [String(m.id), m]))
 
   const cpuMemMetrics = [
     { key: 'cpu', label: 'CPU', color: CHART.cpu, unit: '%', gradient: gid('cpuFill') },
@@ -150,19 +160,11 @@ export default function MetricsCharts({
 
   const nodeBars = nodeRows.map((n) => {
     const liveSample = n.live || {}
-    const memPct =
-      liveSample.mem_total_bytes > 0
-        ? Math.round((liveSample.mem_used_bytes / liveSample.mem_total_bytes) * 1000) / 10
-        : 0
-    const diskPct =
-      liveSample.disk_total_bytes > 0
-        ? Math.round((liveSample.disk_used_bytes / liveSample.disk_total_bytes) * 1000) / 10
-        : 0
     return {
       name: n.name || n.node_id,
       cpu: Math.round((liveSample.cpu_pct || 0) * 10) / 10,
-      mem: memPct,
-      disk: diskPct,
+      mem: samplePct(liveSample, 'mem_used_bytes', 'mem_total_bytes'),
+      disk: samplePct(liveSample, 'disk_used_bytes', 'disk_total_bytes'),
       running: n.running_vms ?? 0,
       node_id: n.node_id,
     }
@@ -245,50 +247,59 @@ export default function MetricsCharts({
                   name === 'cpu' ? 'CPU' : name === 'mem' ? 'Memory' : 'Disk',
                 ]}
               />
-              <Bar dataKey="cpu" fill={CHART.cpu} radius={[4, 4, 0, 0]} isAnimationActive={false} />
-              <Bar dataKey="mem" fill={CHART.mem} radius={[4, 4, 0, 0]} isAnimationActive={false} />
-              <Bar dataKey="disk" fill={CHART.disk} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+              <Bar dataKey="cpu" fill={CHART.cpu} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false} />
+              <Bar dataKey="mem" fill={CHART.mem} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false} />
+              <Bar dataKey="disk" fill={CHART.disk} radius={[3, 3, 0, 0]} maxBarSize={34} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
       )}
 
       {nodeRows.length > 0 && (
-        <section className="card table-card">
+        <section className="card table-card pve-nodes-panel">
           <div className="table-meta">Nodes</div>
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Status</th>
                   <th>CPU</th>
                   <th>Memory</th>
                   <th>Disk</th>
                   <th>Running</th>
+                  <th>Uptime</th>
                 </tr>
               </thead>
               <tbody>
                 {nodeRows.map((n) => {
                   const liveSample = n.live || {}
-                  const memPct =
-                    liveSample.mem_total_bytes > 0
-                      ? Math.round((liveSample.mem_used_bytes / liveSample.mem_total_bytes) * 100)
-                      : 0
-                  const diskPct =
-                    liveSample.disk_total_bytes > 0
-                      ? Math.round((liveSample.disk_used_bytes / liveSample.disk_total_bytes) * 100)
-                      : 0
+                  const memPct = Math.round(samplePct(liveSample, 'mem_used_bytes', 'mem_total_bytes'))
+                  const diskPct = Math.round(samplePct(liveSample, 'disk_used_bytes', 'disk_total_bytes'))
+                  const member = memberById.get(String(n.node_id))
+                  const online = member ? member.online !== false : true
+                  const status = online ? 'online' : 'offline'
+                  const isSelf =
+                    selfId != null
+                      ? String(n.node_id) === String(selfId)
+                      : host && String(n.node_id) === String(host.node_id)
+                  const uptime = isSelf && host?.uptime_secs ? formatUptime(host.uptime_secs) : '—'
                   return (
                     <tr key={n.node_id}>
                       <td>
                         <Link to={`/node/${n.node_id}/summary`} className="pve-link">
+                          <Icon name="worker" size={14} />
                           {n.name}
                         </Link>
                       </td>
-                      <td>{Math.round(liveSample.cpu_pct || 0)}%</td>
-                      <td>{memPct}%</td>
-                      <td>{diskPct}%</td>
-                      <td>{n.running_vms ?? 0}</td>
+                      <td>
+                        <span className={`badge ${status}`}>{status}</span>
+                      </td>
+                      <td className="mono-inline">{Math.round(liveSample.cpu_pct || 0)}%</td>
+                      <td className="mono-inline">{memPct}%</td>
+                      <td className="mono-inline">{diskPct}%</td>
+                      <td className="mono-inline">{n.running_vms ?? 0}</td>
+                      <td className="mono-inline muted">{uptime}</td>
                     </tr>
                   )
                 })}

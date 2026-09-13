@@ -1,5 +1,5 @@
-import { Link, useOutletContext } from 'react-router-dom'
-import { asList, disksOf, formatBytes, isTemplate } from '../api'
+import { useOutletContext } from 'react-router-dom'
+import { asList, formatBytes, isTemplate } from '../api'
 import MetricCard from '../components/MetricCard'
 import MetricsCharts from '../components/MetricsCharts'
 import { useMetrics } from '../useMetrics'
@@ -9,21 +9,28 @@ function pctLabel(n) {
   return `${n >= 10 ? n.toFixed(0) : n.toFixed(1)}%`
 }
 
-function stateClass(state) {
-  if (state === 'running') return 'ready'
-  if (state === 'failed') return 'error'
-  if (state === 'created') return 'pending'
-  return 'unknown'
+function cpuTone(pct) {
+  if (!Number.isFinite(pct)) return { hint: undefined, hintTone: undefined, barTone: undefined }
+  if (pct >= 80) return { hint: 'High', hintTone: undefined, barTone: 'hot' }
+  if (pct >= 60) return { hint: 'Elevated', hintTone: undefined, barTone: 'warm' }
+  return { hint: 'Normal', hintTone: 'ok', barTone: undefined }
 }
 
 export default function Overview() {
   const { inv } = useOutletContext()
-  const { host, cluster, vms, error, loading } = inv
+  const { cluster, vms, error } = inv
   const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
-  const online = members.filter((m) => m.online).length
+  const online = members.filter((m) => m.online).length || (members.length ? 0 : 1)
+  const nodeCount = members.length || 1
   const guests = vms.filter((vm) => !isTemplate(vm))
   const running = guests.filter((vm) => vm.state === 'running').length
+
+  const cpuPct = Number(metrics.data?.live?.cpu_pct)
+  const memTotal = Number(metrics.data?.live?.mem_total_bytes)
+  const memUsed = Number(metrics.data?.live?.mem_used_bytes)
+  const memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : null
+  const cpu = cpuTone(cpuPct)
 
   return (
     <div className="pve-stack">
@@ -33,35 +40,18 @@ export default function Overview() {
         <MetricCard
           icon="cpu"
           label="CPU load"
-          value={pctLabel(Number(metrics.data?.live?.cpu_pct))}
-          hint={
-            Number.isFinite(Number(metrics.data?.live?.cpu_pct))
-              ? Number(metrics.data.live.cpu_pct) < 70
-                ? 'Normal'
-                : 'High'
-              : undefined
-          }
-          hintTone={Number(metrics.data?.live?.cpu_pct) < 70 ? 'ok' : undefined}
-          pct={Number(metrics.data?.live?.cpu_pct)}
+          value={pctLabel(cpuPct)}
+          hint={cpu.hint}
+          hintTone={cpu.hintTone}
+          pct={cpuPct}
+          barTone={cpu.barTone}
         />
         <MetricCard
           icon="memory"
           label="Memory"
-          value={pctLabel(
-            Number(metrics.data?.live?.mem_total_bytes) > 0
-              ? (Number(metrics.data.live.mem_used_bytes) / Number(metrics.data.live.mem_total_bytes)) * 100
-              : null,
-          )}
-          hint={
-            Number(metrics.data?.live?.mem_total_bytes) > 0
-              ? `${formatBytes(metrics.data.live.mem_used_bytes)} / ${formatBytes(metrics.data.live.mem_total_bytes)}`
-              : undefined
-          }
-          pct={
-            Number(metrics.data?.live?.mem_total_bytes) > 0
-              ? (Number(metrics.data.live.mem_used_bytes) / Number(metrics.data.live.mem_total_bytes)) * 100
-              : null
-          }
+          value={pctLabel(memPct)}
+          hint={memTotal > 0 ? `${formatBytes(memUsed)} / ${formatBytes(memTotal)}` : undefined}
+          pct={memPct}
         />
         <MetricCard
           icon="guests"
@@ -75,10 +65,10 @@ export default function Overview() {
         <MetricCard
           icon="worker"
           label="Nodes"
-          value={`${online} / ${members.length || 1}`}
+          value={`${online} / ${nodeCount}`}
           hint={cluster?.quorum ? 'Quorum held' : 'No quorum'}
           hintTone={cluster?.quorum ? 'ok' : undefined}
-          pct={(online / (members.length || 1)) * 100}
+          pct={(online / nodeCount) * 100}
           barTone={cluster?.quorum ? 'ok' : 'hot'}
         />
       </div>
@@ -89,52 +79,14 @@ export default function Overview() {
         history={metrics.history}
         latest={metrics.data}
         nodes={asList(metrics.data?.nodes)}
+        members={members}
+        host={inv.host}
+        selfId={cluster?.self_id || inv.host?.node_id}
         live={metrics.live}
         setLive={metrics.setLive}
         loading={metrics.loading}
         onRefresh={() => metrics.refresh()}
       />
-
-      <section className="dash-panel">
-        <div className="dash-resources-head">
-          <div>
-            <h2 className="card-title">Guests</h2>
-            <p className="dash-section-sub muted">
-              {host
-                ? `${host.os}/${host.arch} · ${host.driver} · kvm ${host.kvm ? 'yes' : 'no'}`
-                : 'Loading host…'}
-            </p>
-          </div>
-        </div>
-        {loading && !guests.length ? (
-          <p className="muted">Loading…</p>
-        ) : guests.length === 0 ? (
-          <div className="dash-empty card">
-            <strong>No guests yet</strong>
-            <p className="muted">Use Create guest in the header to start a machine, or clone a cloud template.</p>
-          </div>
-        ) : (
-          <div className="guest-grid">
-            {guests.slice(0, 8).map((vm) => (
-              <Link key={vm.id} to={`/vm/${vm.id}/summary`} className="guest-card" title={vm.spec?.name || String(vm.id)}>
-                <div className="guest-card-top">
-                  <span className={`guest-orb ${vm.state}`} />
-                  <strong>{vm.spec?.name || vm.id}</strong>
-                </div>
-                <div className="guest-meta">
-                  <span className={`guest-card-state ${stateClass(vm.state)}`}>{vm.state}</span>
-                  <span>
-                    {vm.spec?.vcpus || 1} vCPU · {vm.spec?.memory_mib || 0} MiB
-                  </span>
-                  <span>
-                    {disksOf(vm).length} disk{disksOf(vm).length === 1 ? '' : 's'}
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
     </div>
   )
 }
