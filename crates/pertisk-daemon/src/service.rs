@@ -87,6 +87,10 @@ pub struct Service {
     console: ConsoleHub,
     http: reqwest::Client,
     rebuild: Arc<tokio::sync::Mutex<()>>,
+    /// Cap concurrent guest starts. Terraform `-parallelism` can fire many
+    /// clone+start calls at once; each qemu boot storms disk/RAM and has
+    /// crashed the appliance when 8–10 guests started together.
+    start_gate: Arc<tokio::sync::Semaphore>,
     config: HostConfig,
     data_dir: std::path::PathBuf,
     started_at: Instant,
@@ -123,6 +127,7 @@ impl Service {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
+            start_gate: Arc::new(tokio::sync::Semaphore::new(2)),
             config,
             data_dir,
             started_at: Instant::now(),
@@ -773,6 +778,21 @@ impl Service {
             state => {
                 return Err(pertisk_vmm::VmmError::InvalidState { state, op: "start" }.into());
             }
+        }
+        // Hold the permit for the whole start so parallel Terraform clones
+        // queue instead of booting every guest at once.
+        let _start_permit = self
+            .start_gate
+            .acquire()
+            .await
+            .expect("start_gate semaphore is never closed");
+        // Re-read after waiting: another start may have changed capacity/state.
+        record = self.store.get(id)?;
+        self.localize_disks(&mut record)?;
+        self.store.upsert(record.clone())?;
+        match record.state {
+            VmState::Created | VmState::Stopped | VmState::Failed => {}
+            VmState::Running => return Ok(record),
         }
         self.ensure_start_capacity(&record)?;
         if let Some(path) = record
