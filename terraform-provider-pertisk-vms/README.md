@@ -28,6 +28,7 @@ resource "pertisk_vms_vm" "web" {
   vcpus      = 2
   memory_mib = 2048
   started    = true
+  autostart  = true
 
   clone {
     template_id = pertisk_vms_template.ubuntu.id
@@ -129,6 +130,7 @@ resource "pertisk_vms_vm" "web" {
   vcpus      = 2
   memory_mib = 2048
   started    = true
+  autostart  = true
 
   clone {
     template_id = pertisk_vms_template.ubuntu.id
@@ -147,7 +149,7 @@ resource "pertisk_vms_vm" "web" {
 }
 ```
 
-`clone.template_id`, `clone.id`, or `clone.name` selects the source. `started` starts or stops the guest on apply. Name, vCPU, memory, HA, and autostart update in place. Disk, NIC, ISO, and clone changes replace the guest.
+`clone.template_id`, `clone.id`, or `clone.name` selects the source. `started` starts or stops the guest on apply. `autostart` starts the guest when the node boots. Name, vCPU, memory, HA, and autostart update in place. Disk, NIC, ISO, and clone changes replace the guest.
 
 Destroy deletes the guest. Exclusive disks (and cidata ISOs) are removed by the API.
 

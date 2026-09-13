@@ -54,6 +54,7 @@ resource "pertisk_vms_vm" "web" {
   vcpus      = 2
   memory_mib = 2048
   started    = true
+  autostart  = true
   ha         = true
 
   clone {
