@@ -836,14 +836,16 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
     user_data.push_str("runcmd:\n");
     user_data.push_str(&cloudinit_hostname_runcmd(hostname));
     fs::write(dir.join("user-data"), user_data)?;
-    let cfg = root.join("etc/cloud/cloud.cfg.d");
-    let _ = fs::create_dir_all(&cfg);
-    let _ = fs::write(
-        cfg.join("99-pertisk.cfg"),
-        format!(
-            "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nnetwork: {{config: disabled}}\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nhostname: {hostname}\nfqdn: {hostname}\nmanage_etc_hosts: true\n"
-        ),
+    let cfg_dir = root.join("etc/cloud/cloud.cfg.d");
+    let _ = fs::create_dir_all(&cfg_dir);
+    let mut cfg = format!(
+        "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nhostname: {hostname}\nfqdn: {hostname}\nmanage_etc_hosts: true\n"
     );
+    // Always disable cloud-init networking. AlmaLinux otherwise gets a second
+    // IPv6 from DHCP+NetworkManager (DAD drops SSH). Ubuntu 26.04 otherwise
+    // races netplan/networkd units we write below and can lose IPv4 after boot.
+    cfg.push_str("network: {config: disabled}\n");
+    let _ = fs::write(cfg_dir.join("99-pertisk.cfg"), cfg);
     Ok(())
 }
 
@@ -869,6 +871,9 @@ fn write_guest_network(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     write_ipv6_sysctl(root);
     if root.join("etc/netplan").is_dir() {
         write_netplan(root, id)?;
+        // Ubuntu 26.04 netplan generate can skip /etc/netplan; networkd still
+        // DHCP when a .network unit is present.
+        write_networkd(root, id)?;
     } else if root.join("etc/NetworkManager").is_dir()
         || root
             .join("usr/lib/systemd/system/NetworkManager.service")
@@ -945,16 +950,8 @@ fn write_netplan(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     for stale in ["50-cloud-init.yaml", "50-cloud-init.yml"] {
         let _ = fs::remove_file(dir.join(stale));
     }
-    let mut yaml = String::from("network:\n  version: 2\n  ethernets:\n    id0:\n");
-    if let Some(mac) = id.mac.map(str::trim).filter(|s| !s.is_empty()) {
-        yaml.push_str("      match:\n        macaddress: \"");
-        yaml.push_str(&mac.to_ascii_lowercase());
-        yaml.push_str("\"\n");
-    } else {
-        yaml.push_str("      match:\n        name: en* eth*\n");
-    }
-    yaml.push_str(
-        "      dhcp6: false\n      accept-ra: true\n      ipv6-address-generation: eui64\n",
+    let mut yaml = String::from(
+        "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    id0:\n      match:\n        name: en*\n",
     );
     if let Some(ip) = id.ipv4.map(str::trim).filter(|s| !s.is_empty()) {
         let prefix = id.prefix.filter(|p| *p > 0 && *p <= 32).unwrap_or(24);
@@ -1244,6 +1241,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("etc/machine-id")).unwrap(),
             ""
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ubuntu_netplan_also_writes_networkd_dhcp() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join("etc/netplan")).unwrap();
+        apply_identity(
+            &root,
+            &GuestIdentity {
+                hostname: "ubuntu-1",
+                user: "ubuntu",
+                password: None,
+                ssh_authorized_keys: &[],
+                mac: Some("52:54:00:2e:3b:6a"),
+                ipv4: None,
+                gateway: None,
+                prefix: None,
+            },
+        )
+        .unwrap();
+        let yaml = fs::read_to_string(root.join("etc/netplan/99-pertisk.yaml")).unwrap();
+        assert!(yaml.contains("dhcp4: true"), "{yaml}");
+        assert!(yaml.contains("renderer: networkd"), "{yaml}");
+        assert!(!yaml.contains("ipv6-address-generation"), "{yaml}");
+        let net = fs::read_to_string(root.join("etc/systemd/network/15-pertisk.network")).unwrap();
+        assert!(net.contains("DHCP=ipv4"), "{net}");
+        let cfg = fs::read_to_string(root.join("etc/cloud/cloud.cfg.d/99-pertisk.cfg")).unwrap();
+        assert!(
+            cfg.contains("network: {config: disabled}"),
+            "ubuntu netplan guests must not let cloud-init fight netplan: {cfg}"
         );
         let _ = fs::remove_dir_all(&root);
     }
