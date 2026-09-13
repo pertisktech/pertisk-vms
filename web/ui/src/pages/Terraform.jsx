@@ -71,13 +71,13 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
   const providerLines = [
     'terraform {',
     '  required_providers {',
-    '    pertisk_vms = {',
+    '    pertisk = {',
     '      source = "pertisktech/pertisk-vms"',
     '    }',
     '  }',
     '}',
     '',
-    'provider "pertisk_vms" {',
+    'provider "pertisk" {',
     `  endpoint = ${quote(url)}`,
     `  username = ${quote(user)}`,
     '  password = var.pertisk_password',
@@ -240,6 +240,7 @@ function CodeBlock({ value, label }) {
 
 const SETUP = `provider_installation {
   dev_overrides {
+    # Directory that contains the terraform-provider-pertisk-vms binary
     "pertisktech/pertisk-vms" = "/path/to/pertisk-vms/terraform-provider-pertisk-vms"
   }
   direct {}

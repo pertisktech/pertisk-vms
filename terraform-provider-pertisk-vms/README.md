@@ -5,13 +5,13 @@ Manage guests, templates, networks, and volumes through the Pertisk HTTP API.
 ```hcl
 terraform {
   required_providers {
-    pertisk_vms = {
+    pertisk = {
       source = "pertisktech/pertisk-vms"
     }
   }
 }
 
-provider "pertisk_vms" {
+provider "pertisk" {
   endpoint = "https://node:7480"
   username = "admin"
   password = var.pertisk_password
@@ -50,7 +50,7 @@ cd terraform-provider-pertisk-vms
 go build -o terraform-provider-pertisk-vms
 ```
 
-Point Terraform at the binary with a [CLI config](https://developer.hashicorp.com/terraform/cli/config/config-file) `dev_overrides` block (`~/.terraformrc` on macOS/Linux):
+Point Terraform at the **directory that contains the binary** (not the binary itself) with a [CLI config](https://developer.hashicorp.com/terraform/cli/config/config-file) `dev_overrides` block (`~/.terraformrc` on macOS/Linux):
 
 ```hcl
 provider_installation {

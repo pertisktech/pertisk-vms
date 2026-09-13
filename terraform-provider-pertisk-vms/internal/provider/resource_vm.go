@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -79,11 +80,30 @@ type vmModel struct {
 	ISO            types.String    `tfsdk:"iso"`
 	State          types.String    `tfsdk:"state"`
 	NodeID         types.String    `tfsdk:"node_id"`
-	Disks          []diskModel     `tfsdk:"disk"`
-	Nics           []nicModel      `tfsdk:"nic"`
+	Disks          types.List      `tfsdk:"disk"`
+	Nics           types.List      `tfsdk:"nic"`
 	Clone          *cloneModel     `tfsdk:"clone"`
 	CloudInit      *cloudInitModel `tfsdk:"cloud_init"`
 }
+
+var (
+	diskObjectType = types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"size":      types.StringType,
+			"name":      types.StringType,
+			"format":    types.StringType,
+			"volume_id": types.StringType,
+		},
+	}
+	nicObjectType = types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"network_id": types.StringType,
+			"ip":         types.StringType,
+			"tap":        types.StringType,
+			"mac":        types.StringType,
+		},
+	}
+)
 
 func (r *vmResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_vm"
@@ -175,6 +195,8 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 			"disk": schema.ListNestedBlock{
 				MarkdownDescription: "Disks to create or attach. Omit when cloning — cloned disks are stored in state.",
 				PlanModifiers: []planmodifier.List{
+					useStateIfConfigEmpty(),
+					listplanmodifier.UseStateForUnknown(),
 					listplanmodifier.RequiresReplace(),
 				},
 				NestedObject: schema.NestedBlockObject{
@@ -206,6 +228,8 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 			"nic": schema.ListNestedBlock{
 				MarkdownDescription: "Guest NICs. On clone, the first NIC is passed to the clone API.",
 				PlanModifiers: []planmodifier.List{
+					useStateIfConfigEmpty(),
+					listplanmodifier.UseStateForUnknown(),
 					listplanmodifier.RequiresReplace(),
 				},
 				NestedObject: schema.NestedBlockObject{
@@ -271,20 +295,37 @@ func (r *vmResource) Configure(_ context.Context, req resource.ConfigureRequest,
 }
 
 func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() {
 		return
 	}
-	var config, state, plan vmModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	var plan vmModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if len(config.Disks) == 0 && len(state.Disks) > 0 {
+	if req.State.Raw.IsNull() {
+		// Clone fills disks/nics from the API; mark them unknown so apply can store them.
+		if cloneConfigured(plan.Clone) {
+			if listKnownEmpty(plan.Disks) {
+				plan.Disks = types.ListUnknown(diskObjectType)
+			}
+			if listKnownEmpty(plan.Nics) {
+				plan.Nics = types.ListUnknown(nicObjectType)
+			}
+		}
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+		return
+	}
+	var config, state vmModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if listKnownEmpty(config.Disks) && !listKnownEmpty(state.Disks) {
 		plan.Disks = state.Disks
 	}
-	if len(config.Nics) == 0 && len(state.Nics) > 0 {
+	if listKnownEmpty(config.Nics) && !listKnownEmpty(state.Nics) {
 		plan.Nics = state.Nics
 	}
 	if config.Clone == nil && state.Clone != nil {
@@ -321,7 +362,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			vm = started
 		}
 	}
-	state := vmToModel(vm, plan)
+	state := vmToModel(ctx, vm, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -358,9 +399,10 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	body.VCPUs = &vcpus
 	body.MemoryMiB = &mem
 	body.Autostart = boolPtr(plan.Autostart.ValueBool())
-	if len(plan.Nics) > 0 {
-		body.NetworkID = plan.Nics[0].NetworkID.ValueString()
-		body.IP = plan.Nics[0].IP.ValueString()
+	nics := expandNics(ctx, plan.Nics)
+	if len(nics) > 0 {
+		body.NetworkID = nics[0].NetworkID.ValueString()
+		body.IP = nics[0].IP.ValueString()
 	}
 	if !plan.Clone.DiskSize.IsNull() && plan.Clone.DiskSize.ValueString() != "" {
 		n, err := client.ParseSize(plan.Clone.DiskSize.ValueString())
@@ -384,7 +426,7 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	if err != nil {
 		return nil, err
 	}
-	for i, nic := range plan.Nics {
+	for i, nic := range nics {
 		if i == 0 {
 			continue
 		}
@@ -417,7 +459,9 @@ func (r *vmResource) define(ctx context.Context, plan vmModel) (*client.VM, erro
 	}
 	id := vm.ID.String()
 	rollback := func() { _ = r.api.DeleteVM(id) }
-	for i, disk := range plan.Disks {
+	disks := expandDisks(ctx, plan.Disks)
+	nics := expandNics(ctx, plan.Nics)
+	for i, disk := range disks {
 		volID := disk.VolumeID.ValueString()
 		if volID == "" {
 			size := disk.Size.ValueString()
@@ -486,7 +530,7 @@ func (r *vmResource) define(ctx context.Context, plan vmModel) (*client.VM, erro
 			return nil, err
 		}
 	}
-	for _, nic := range plan.Nics {
+	for _, nic := range nics {
 		if _, err := r.api.AttachNic(id, nic.NetworkID.ValueString(), nic.IP.ValueString()); err != nil {
 			rollback()
 			return nil, err
@@ -510,7 +554,7 @@ func (r *vmResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 		resp.Diagnostics.AddError("Read guest failed", err.Error())
 		return
 	}
-	next := vmToModel(vm, state)
+	next := vmToModel(ctx, vm, state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -568,7 +612,7 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		}
 		vm = stopped
 	}
-	next := vmToModel(vm, plan)
+	next := vmToModel(ctx, vm, plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -624,7 +668,7 @@ func cloudInitFromModel(m *cloudInitModel) (*client.CloudInit, error) {
 	return ci, nil
 }
 
-func vmToModel(vm *client.VM, prev vmModel) vmModel {
+func vmToModel(ctx context.Context, vm *client.VM, prev vmModel) vmModel {
 	console := vm.Spec.ConsoleType
 	if console == "" {
 		console = "serial"
@@ -656,8 +700,8 @@ func vmToModel(vm *client.VM, prev vmModel) vmModel {
 	} else if prev.ISO.IsNull() {
 		m.ISO = types.StringNull()
 	}
-	m.Disks = disksToModel(vm, prev.Disks)
-	m.Nics = nicsToModel(vm, prev.Nics)
+	m.Disks = diskListValue(ctx, disksToModel(vm, expandDisks(ctx, prev.Disks)))
+	m.Nics = nicListValue(ctx, nicsToModel(vm, expandNics(ctx, prev.Nics)))
 	return m
 }
 
@@ -733,4 +777,75 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 		return prev
 	}
 	return out
+}
+
+func listKnownEmpty(v types.List) bool {
+	return !v.IsUnknown() && (v.IsNull() || len(v.Elements()) == 0)
+}
+
+func expandDisks(ctx context.Context, list types.List) []diskModel {
+	if list.IsNull() || list.IsUnknown() {
+		return nil
+	}
+	var out []diskModel
+	_ = list.ElementsAs(ctx, &out, false)
+	return out
+}
+
+func expandNics(ctx context.Context, list types.List) []nicModel {
+	if list.IsNull() || list.IsUnknown() {
+		return nil
+	}
+	var out []nicModel
+	_ = list.ElementsAs(ctx, &out, false)
+	return out
+}
+
+func diskListValue(ctx context.Context, disks []diskModel) types.List {
+	if disks == nil {
+		disks = []diskModel{}
+	}
+	l, diags := types.ListValueFrom(ctx, diskObjectType, disks)
+	if diags.HasError() {
+		return types.ListValueMust(diskObjectType, []attr.Value{})
+	}
+	return l
+}
+
+func nicListValue(ctx context.Context, nics []nicModel) types.List {
+	if nics == nil {
+		nics = []nicModel{}
+	}
+	l, diags := types.ListValueFrom(ctx, nicObjectType, nics)
+	if diags.HasError() {
+		return types.ListValueMust(nicObjectType, []attr.Value{})
+	}
+	return l
+}
+
+type useStateIfConfigEmptyModifier struct{}
+
+func useStateIfConfigEmpty() planmodifier.List {
+	return useStateIfConfigEmptyModifier{}
+}
+
+func (m useStateIfConfigEmptyModifier) Description(_ context.Context) string {
+	return "If this block is omitted, keep the value from state (for disks/NICs inherited from a clone)."
+}
+
+func (m useStateIfConfigEmptyModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m useStateIfConfigEmptyModifier) PlanModifyList(_ context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
+	if req.StateValue.IsNull() || req.StateValue.IsUnknown() {
+		return
+	}
+	if !listKnownEmpty(req.ConfigValue) {
+		return
+	}
+	if len(req.StateValue.Elements()) == 0 {
+		return
+	}
+	resp.PlanValue = req.StateValue
 }

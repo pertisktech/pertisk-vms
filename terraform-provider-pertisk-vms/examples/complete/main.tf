@@ -1,12 +1,12 @@
 terraform {
   required_providers {
-    pertisk_vms = {
+    pertisk = {
       source = "pertisktech/pertisk-vms"
     }
   }
 }
 
-provider "pertisk_vms" {
+provider "pertisk" {
   endpoint = var.endpoint
   username = var.username
   password = var.password
