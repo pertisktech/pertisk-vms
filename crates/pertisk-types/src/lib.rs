@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-pub use addrs::{HostAddrs, local_host_ips, prefer_ipv6, probe_host_addrs};
+pub use addrs::{HostAddrs, is_guest_ipv4, local_host_ips, prefer_ipv6, probe_host_addrs};
 
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

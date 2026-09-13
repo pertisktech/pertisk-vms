@@ -64,6 +64,16 @@ fn usable_ipv4(ip: Ipv4Addr) -> bool {
         && !ip.is_broadcast()
 }
 
+/// True for a unicast address a guest might own. Rejects netmasks (`255.x`),
+/// multicast/reserved (`224+`), and other non-host addresses from `ci-info`.
+pub fn is_guest_ipv4(s: &str) -> bool {
+    let Ok(ip) = s.trim().parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let o = ip.octets();
+    usable_ipv4(ip) && o[0] < 224 && o[0] != 255
+}
+
 fn usable_ipv6(ip: Ipv6Addr) -> bool {
     !ip.is_loopback()
         && !ip.is_unspecified()
@@ -181,6 +191,16 @@ mod tests {
         assert_eq!(addrs.ipv4, vec!["10.0.0.5"]);
         assert_eq!(addrs.ipv6, vec!["2001:db8::10"]);
         assert!(!addrs.ipv6.iter().any(|ip| ip.starts_with("fe80:")));
+    }
+
+    #[test]
+    fn is_guest_ipv4_rejects_netmask_and_gateway_class() {
+        assert!(is_guest_ipv4("10.1.1.42"));
+        assert!(!is_guest_ipv4("255.255.255.0"));
+        assert!(!is_guest_ipv4("255.0.0.0"));
+        assert!(!is_guest_ipv4("0.0.0.0"));
+        assert!(!is_guest_ipv4("127.0.0.1"));
+        assert!(!is_guest_ipv4("169.254.1.1"));
     }
 
     #[test]

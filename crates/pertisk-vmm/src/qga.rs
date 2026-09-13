@@ -68,7 +68,7 @@ fn parse_guest_addrs(raw: &Value) -> GuestAddrs {
 }
 
 fn usable_guest_ipv4(ip: &str) -> bool {
-    !ip.starts_with("127.") && !ip.starts_with("169.254.")
+    pertisk_types::is_guest_ipv4(ip)
 }
 
 fn usable_guest_ipv6(ip: &str) -> bool {

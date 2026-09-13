@@ -11,10 +11,9 @@ use pertisk_types::{
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
     CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo, HostPowerResult,
     ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeMetrics,
-    ResizeVolumeRequest,
-    SerialChunk, SetRepositoryRequest, SnapshotRequest, StorageBackend, UpdateVmRequest,
-    UpdatesStatus, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
-    VolumeRecord, default_cloud_user, probe_host,
+    ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SnapshotRequest, StorageBackend,
+    UpdateVmRequest, UpdatesStatus, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat,
+    VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -2739,6 +2738,7 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
         .serial_log
         .as_deref()
         .and_then(ipv4_from_serial_log);
+    let blocked = host_blocked_ipv4s();
     let mut changed = false;
     for nic in &mut vm.spec.nets {
         let Some(mac) = nic.mac.as_deref() else {
@@ -2755,7 +2755,16 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                     .map(|(_, ip)| ip.clone())
             })
             .or_else(|| pertisk_net::ipv4_for_mac(mac))
-            .or_else(|| serial_v4.clone());
+            .or_else(|| serial_v4.clone())
+            .filter(|ip| is_guest_ipv4(ip) && !blocked.contains(ip));
+        if nic
+            .ip
+            .as_deref()
+            .is_some_and(|ip| blocked.contains(ip) || !is_guest_ipv4(ip))
+        {
+            nic.ip = None;
+            changed = true;
+        }
         if let Some(ip) = observed_v4 {
             if nic.ip.as_deref() != Some(ip.as_str()) {
                 nic.ip = Some(ip);
@@ -2803,6 +2812,25 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
     let data = std::fs::read(path).ok()?;
     let start = data.len().saturating_sub(64 * 1024);
     let text = String::from_utf8_lossy(&data[start..]);
+    let mut from_device = None;
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains("ci-info") {
+            continue;
+        }
+        // Route dumps list the DHCP gateway; device rows use scope "global".
+        if !lower.contains("global") {
+            continue;
+        }
+        for token in ipv4_tokens(line) {
+            if is_guest_ipv4(token) {
+                from_device = Some(token.to_string());
+            }
+        }
+    }
+    if from_device.is_some() {
+        return from_device;
+    }
     let mut last = None;
     let mut rest = text.as_ref();
     while let Some(idx) = rest.find("://") {
@@ -2811,7 +2839,7 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
             .split(|c| c == '/' || c == ':' || c == ' ' || c == '\n' || c == '\r' || c == '\'')
             .next()
             .unwrap_or("");
-        if looks_like_lan_ipv4(host) {
+        if is_guest_ipv4(host) {
             last = Some(host.to_string());
         }
         rest = &after[host.len().min(after.len())..];
@@ -2819,38 +2847,43 @@ fn ipv4_from_serial_log(path: &Path) -> Option<String> {
             break;
         }
     }
-    if last.is_some() {
-        return last;
+    last
+}
+
+fn ipv4_tokens(line: &str) -> impl Iterator<Item = &str> {
+    line.split(|c: char| !c.is_ascii_digit() && c != '.')
+        .filter(|t| !t.is_empty())
+}
+
+fn host_blocked_ipv4s() -> HashSet<String> {
+    let mut out: HashSet<String> = probe_host_addrs().ipv4.into_iter().collect();
+    if let Some(gw) = default_ipv4_gateway() {
+        out.insert(gw);
     }
-    for line in text.lines().rev() {
-        if !(line.contains("ci-info") || line.contains('|')) {
+    out
+}
+
+fn default_ipv4_gateway() -> Option<String> {
+    let output = std::process::Command::new("ip")
+        .args(["-4", "route", "show", "default"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let Some(via) = fields.iter().position(|f| *f == "via") else {
             continue;
-        }
-        for token in line.split(|c: char| !c.is_ascii_digit() && c != '.') {
-            if looks_like_lan_ipv4(token) {
-                return Some(token.to_string());
-            }
+        };
+        let Some(ip) = fields.get(via + 1) else {
+            continue;
+        };
+        if is_guest_ipv4(ip) {
+            return Some((*ip).to_string());
         }
     }
     None
-}
-
-fn looks_like_lan_ipv4(s: &str) -> bool {
-    let parts: Vec<_> = s.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
-    let Ok(octets) = parts
-        .iter()
-        .map(|p| p.parse::<u8>())
-        .collect::<Result<Vec<_>, _>>()
-    else {
-        return false;
-    };
-    if octets[0] == 127 || (octets[0] == 169 && octets[1] == 254) || octets[0] == 0 {
-        return false;
-    }
-    true
 }
 
 fn vm_needs_ip_probe(vm: &VmRecord) -> bool {
@@ -3154,6 +3187,28 @@ mod tests {
             .unwrap();
         assert_eq!(guest.spec.nets.len(), 1);
         assert_eq!(guest.spec.nets[0].network_id, Some(net.id));
+    }
+
+    #[test]
+    fn serial_log_uses_ci_info_address_not_gateway_or_netmask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(
+            &path,
+            "\
+ci-info: +++++++++++++++++++++++++++++Net device info+++++++++++++++++++++++++++++
+ci-info: | Device |  Up  |   Address    |      Mask     | Scope  |     Hw-Address    |
+ci-info: |  ens3  | True |  10.1.1.42   | 255.255.255.0 | global | 52:54:00:2e:3b:6a |
+ci-info: ++++++++++++++++++++++++++++++++Route info+++++++++++++++++++++++++++++++
+ci-info: | Route | Destination |  Gateway  | Interface |
+ci-info: |   0   |   0.0.0.0   | 10.1.1.10 |   ens3    |
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ipv4_from_serial_log(&path).as_deref(),
+            Some("10.1.1.42")
+        );
     }
 
     #[tokio::test]
