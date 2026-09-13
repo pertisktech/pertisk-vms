@@ -208,9 +208,10 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     // set_hostname never runs again. AlmaLinux then prefers IPv6 reverse DNS
     // (e.g. 2405-9800-b900) over the VM name.
     reset_cloud_init_instance(root);
-    if id.password.filter(|p| !p.is_empty()).is_some() {
-        patch_sshd(root);
-    }
+    patch_sshd(
+        root,
+        id.password.filter(|p| !p.is_empty()).is_some(),
+    );
     ensure_user(root, &user)?;
     write_nocloud_seed(
         root,
@@ -234,6 +235,7 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     }
     write_authorized_keys(root, &user, id.ssh_authorized_keys)?;
     let _ = fs::remove_file(root.join(".autorelabel"));
+    relabel_injected(root);
     schedule_selinux_restorecon(root);
     Ok(())
 }
@@ -279,7 +281,7 @@ fn schedule_hostname(root: &Path) {
 [Unit]\n\
 Description=Set hostname from pertisk clone\n\
 DefaultDependencies=no\n\
-After=local-fs.target pertisk-selinux-restorecon.service\n\
+After=local-fs.target\n\
 Before=systemd-hostnamed.service NetworkManager.service sysinit.target\n\
 \n\
 [Service]\n\
@@ -306,7 +308,14 @@ chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true
 printf '%s\n' "$name" >/etc/hostname || true
 hostname "$name" 2>/dev/null || true
 hostnamectl set-hostname "$name" --transient 2>/dev/null || true
-restorecon /etc/hostname /etc/hosts 2>/dev/null || true
+if [ -f /etc/hosts ]; then
+  sed -i '/^127.0.1.1[[:space:]]/d' /etc/hosts 2>/dev/null || true
+  grep -q '^127.0.0.1[[:space:]]' /etc/hosts 2>/dev/null || printf '127.0.0.1 localhost\n' >>/etc/hosts
+  printf '127.0.1.1 %s\n' "$name" >>/etc/hosts
+fi
+mkdir -p /etc/ssh/sshd_config.d
+printf '%s\n' 'UseDNS no' 'GSSAPIAuthentication no' >/etc/ssh/sshd_config.d/01-pertisk-dns.conf
+restorecon -RF /etc /home /root /var/lib/cloud 2>/dev/null || true
 exit 0
 "#;
     let path = libexec.join("pertisk-set-hostname");
@@ -320,11 +329,12 @@ exit 0
 
 pub(crate) fn cloudinit_hostname_runcmd(hostname: &str) -> String {
     format!(
-        "  - |\n    chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true\n    printf '%s\\n' '{hostname}' >/etc/hostname\n    hostname {hostname} 2>/dev/null || true\n    hostnamectl set-hostname {hostname} --transient 2>/dev/null || true\n    restorecon /etc/hostname /etc/hosts 2>/dev/null || true\n"
+        "  - |\n    chattr -i /etc/hostname /etc/machine-info 2>/dev/null || true\n    printf '%s\\n' '{hostname}' >/etc/hostname\n    hostname {hostname} 2>/dev/null || true\n    hostnamectl set-hostname {hostname} --transient 2>/dev/null || true\n    sed -i '/^127.0.1.1[[:space:]]/d' /etc/hosts 2>/dev/null || true\n    grep -q '^127.0.0.1[[:space:]]' /etc/hosts 2>/dev/null || printf '127.0.0.1 localhost\\n' >>/etc/hosts\n    printf '127.0.1.1 {hostname}\\n' >>/etc/hosts\n    mkdir -p /etc/ssh/sshd_config.d\n    printf '%s\\n' 'UseDNS no' 'GSSAPIAuthentication no' >/etc/ssh/sshd_config.d/01-pertisk-dns.conf\n    restorecon -RF /etc /home /root /var/lib/cloud 2>/dev/null || true\n    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true\n"
     )
 }
 
-/// Run `restorecon` early without the reboot that `/.autorelabel` would trigger.
+/// Relabel after inject so sshd/PAM can read authorized_keys and shadow.
+/// `Before=sysinit.target` ran too early; SELinux was not loaded yet.
 fn schedule_selinux_restorecon(root: &Path) {
     let unit_dir = root.join("etc/systemd/system");
     let _ = fs::create_dir_all(&unit_dir);
@@ -332,26 +342,77 @@ fn schedule_selinux_restorecon(root: &Path) {
 [Unit]\n\
 Description=Restore SELinux labels after pertisk inject\n\
 DefaultDependencies=no\n\
-Before=sysinit.target NetworkManager.service network-pre.target\n\
+After=local-fs.target selinux-policy.service systemd-tmpfiles-setup.service\n\
+Before=sshd.service sshd.socket ssh.service systemd-user-sessions.service NetworkManager.service\n\
 ConditionPathExists=/etc/selinux/config\n\
 \n\
 [Service]\n\
 Type=oneshot\n\
-ExecStart=/bin/sh -c '/sbin/restorecon -R /etc /home /root /var/lib/cloud 2>/dev/null || true'\n\
+ExecStart=/sbin/restorecon -RF /etc /home /root /var/lib/cloud /usr/libexec\n\
 RemainAfterExit=yes\n\
 \n\
 [Install]\n\
-WantedBy=sysinit.target\n";
+WantedBy=multi-user.target\n";
     let _ = fs::write(unit_dir.join("pertisk-selinux-restorecon.service"), unit);
-    let wants = unit_dir.join("sysinit.target.wants");
-    let _ = fs::create_dir_all(&wants);
-    let link = wants.join("pertisk-selinux-restorecon.service");
-    if !link.exists() {
-        let _ = std::os::unix::fs::symlink(
-            "../pertisk-selinux-restorecon.service",
-            &link,
+    for wants_name in ["multi-user.target.wants", "sysinit.target.wants"] {
+        let wants = unit_dir.join(wants_name);
+        let _ = fs::create_dir_all(&wants);
+        let link = wants.join("pertisk-selinux-restorecon.service");
+        if wants_name == "sysinit.target.wants" {
+            let _ = fs::remove_file(&link);
+            continue;
+        }
+        if !link.exists() {
+            let _ = std::os::unix::fs::symlink(
+                "../pertisk-selinux-restorecon.service",
+                &link,
+            );
+        }
+    }
+    for ssh_unit in ["sshd.service", "sshd.socket", "ssh.service"] {
+        let dropin = unit_dir.join(format!("{ssh_unit}.d"));
+        let _ = fs::create_dir_all(&dropin);
+        let _ = fs::write(
+            dropin.join("pertisk-selinux.conf"),
+            "[Unit]\nAfter=pertisk-selinux-restorecon.service\nWants=pertisk-selinux-restorecon.service\n",
         );
     }
+}
+
+fn relabel_injected(root: &Path) {
+    let fc = root.join("etc/selinux/targeted/contexts/files/file_contexts");
+    if fc.is_file() {
+        let root_s = root.to_string_lossy().into_owned();
+        let fc_s = fc.to_string_lossy().into_owned();
+        for rel in ["etc", "home", "root", "var/lib/cloud", "usr/libexec"] {
+            let path = root.join(rel);
+            if path.exists() {
+                let _ = Command::new("setfiles")
+                    .args(["-F", "-r", &root_s, &fc_s])
+                    .arg(&path)
+                    .status();
+            }
+        }
+    }
+    set_selinux_attr(root.join("etc/shadow"), "system_u:object_r:shadow_t:s0");
+    set_selinux_attr(root.join("etc/passwd"), "system_u:object_r:passwd_file_t:s0");
+    set_selinux_attr(root.join("etc/group"), "system_u:object_r:etc_t:s0");
+    set_selinux_attr(root.join("etc/hostname"), "system_u:object_r:etc_t:s0");
+    set_selinux_attr(root.join("etc/hosts"), "system_u:object_r:etc_t:s0");
+    set_selinux_attr(
+        root.join("etc/ssh/sshd_config.d/00-pertisk.conf"),
+        "system_u:object_r:etc_t:s0",
+    );
+}
+
+fn set_selinux_attr(path: PathBuf, ctx: &str) {
+    if !path.exists() {
+        return;
+    }
+    let _ = Command::new("setfattr")
+        .args(["-n", "security.selinux", "-v", ctx])
+        .arg(path)
+        .status();
 }
 
 fn sanitize_user(raw: &str) -> String {
@@ -536,7 +597,7 @@ fn patch_hosts(root: &Path, hostname: &str) -> Result<()> {
     Ok(())
 }
 
-fn patch_sshd(root: &Path) {
+fn patch_sshd(root: &Path, password_auth: bool) {
     let dir = root.join("etc/ssh/sshd_config.d");
     let _ = fs::create_dir_all(&dir);
     for path in sshd_files(root) {
@@ -545,12 +606,20 @@ fn patch_sshd(root: &Path) {
                 .lines()
                 .map(|line| {
                     let trim = line.trim_start();
-                    if trim.starts_with("PasswordAuthentication")
-                        || trim.starts_with("#PasswordAuthentication")
+                    if trim.starts_with("UseDNS") || trim.starts_with("#UseDNS") {
+                        "UseDNS no".to_string()
+                    } else if trim.starts_with("GSSAPIAuthentication")
+                        || trim.starts_with("#GSSAPIAuthentication")
+                    {
+                        "GSSAPIAuthentication no".to_string()
+                    } else if password_auth
+                        && (trim.starts_with("PasswordAuthentication")
+                            || trim.starts_with("#PasswordAuthentication"))
                     {
                         "PasswordAuthentication yes".to_string()
-                    } else if trim.starts_with("KbdInteractiveAuthentication")
-                        || trim.starts_with("#KbdInteractiveAuthentication")
+                    } else if password_auth
+                        && (trim.starts_with("KbdInteractiveAuthentication")
+                            || trim.starts_with("#KbdInteractiveAuthentication"))
                     {
                         "KbdInteractiveAuthentication yes".to_string()
                     } else {
@@ -562,10 +631,11 @@ fn patch_sshd(root: &Path) {
             let _ = fs::write(&path, format!("{updated}\n"));
         }
     }
-    let _ = fs::write(
-        dir.join("99-pertisk.conf"),
-        "PasswordAuthentication yes\nKbdInteractiveAuthentication yes\nPubkeyAuthentication yes\n",
-    );
+    let mut conf = String::from("UseDNS no\nGSSAPIAuthentication no\nPubkeyAuthentication yes\n");
+    if password_auth {
+        conf.push_str("PasswordAuthentication yes\nKbdInteractiveAuthentication yes\n");
+    }
+    let _ = fs::write(dir.join("00-pertisk.conf"), conf);
 }
 
 fn sshd_files(root: &Path) -> Vec<PathBuf> {
@@ -897,17 +967,9 @@ fn write_authorized_keys(root: &Path, user: &str, keys: &[String]) -> Result<()>
         let _ = std::os::unix::fs::chown(&home, Some(uid), Some(gid));
         let _ = std::os::unix::fs::chown(&ssh, Some(uid), Some(gid));
         let _ = std::os::unix::fs::chown(&auth, Some(uid), Some(gid));
-        for path in [&ssh, &auth] {
-            let _ = Command::new("setfattr")
-                .args([
-                    "-n",
-                    "security.selinux",
-                    "-v",
-                    "unconfined_u:object_r:ssh_home_t:s0",
-                ])
-                .arg(path)
-                .status();
-        }
+        set_selinux_attr(home.clone(), "unconfined_u:object_r:user_home_dir_t:s0");
+        set_selinux_attr(ssh.clone(), "unconfined_u:object_r:ssh_home_t:s0");
+        set_selinux_attr(auth.clone(), "unconfined_u:object_r:ssh_home_t:s0");
     }
     Ok(())
 }
@@ -1011,6 +1073,15 @@ mod tests {
         assert!(root
             .join("etc/systemd/system/pertisk-hostname.service")
             .is_file());
+        let sshd = fs::read_to_string(root.join("etc/ssh/sshd_config.d/00-pertisk.conf")).unwrap();
+        assert!(sshd.contains("UseDNS no"), "{sshd}");
+        assert!(sshd.contains("GSSAPIAuthentication no"), "{sshd}");
+        let restore = fs::read_to_string(
+            root.join("etc/systemd/system/pertisk-selinux-restorecon.service"),
+        )
+        .unwrap();
+        assert!(restore.contains("Before=sshd.service"), "{restore}");
+        assert!(seed.contains("UseDNS no"), "{seed}");
         assert!(!root.join("var/lib/cloud/instance").exists());
         assert_eq!(
             fs::read_to_string(root.join("etc/machine-id")).unwrap(),

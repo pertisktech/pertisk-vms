@@ -1080,7 +1080,7 @@ fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
     if password.is_some() {
         // AlmaLinux / RHEL 9+ drop-ins set PasswordAuthentication no.
         yaml.push_str(
-            "  - |\n    for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do\n      [ -f \"$f\" ] || continue\n      sed -i -e 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' -e 's/^#\\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' \"$f\"\n    done\n    printf '%s\\n' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' > /etc/ssh/sshd_config.d/50-cloud-init.conf\n    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true\n",
+            "  - |\n    for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do\n      [ -f \"$f\" ] || continue\n      sed -i -e 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' -e 's/^#\\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' -e 's/^#\\?UseDNS.*/UseDNS no/' -e 's/^#\\?GSSAPIAuthentication.*/GSSAPIAuthentication no/' \"$f\"\n    done\n    printf '%s\\n' 'PasswordAuthentication yes' 'KbdInteractiveAuthentication yes' 'UseDNS no' 'GSSAPIAuthentication no' > /etc/ssh/sshd_config.d/00-pertisk.conf\n    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true\n",
         );
     }
     yaml
@@ -1287,6 +1287,8 @@ mod tests {
         assert!(text.contains("prefer_fqdn_over_hostname: false"));
         assert!(text.contains("chattr -i /etc/hostname"));
         assert!(text.contains("printf '%s\\n' 'web-1' >/etc/hostname"));
+        assert!(text.contains("UseDNS no"));
+        assert!(text.contains("GSSAPIAuthentication no"));
         assert!(text.contains("ubuntu:ubuntu"));
         assert!(text.contains("ssh_pwauth: true"));
         assert!(text.contains("groups: [adm, wheel, sudo]"));
