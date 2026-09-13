@@ -206,6 +206,26 @@ export function formatUnix(sec) {
   return d.toLocaleString()
 }
 
+export function formatUptime(secs, { long = false } = {}) {
+  const n = Math.max(0, Math.floor(Number(secs) || 0))
+  const d = Math.floor(n / 86400)
+  const h = Math.floor((n % 86400) / 3600)
+  const m = Math.floor((n % 3600) / 60)
+  const s = n % 60
+  if (long) {
+    const parts = []
+    if (d) parts.push(`${d}d`)
+    if (h) parts.push(`${h}h`)
+    if (m) parts.push(`${m}m`)
+    if (!d && !h) parts.push(`${s}s`)
+    return parts.join(' ') || '0s'
+  }
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m`
+  return `${s}s`
+}
+
 export function shortId(id) {
   const s = String(id || '')
   return s.length > 12 ? `${s.slice(0, 8)}…` : s

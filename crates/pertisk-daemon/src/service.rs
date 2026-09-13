@@ -226,6 +226,7 @@ impl Service {
         info.node_id = Some(self.cluster.self_id());
         info.quorum = self.cluster.has_quorum();
         info.ssh_authorized_keys = pertisk_storage::operator_ssh_keys();
+        info.daemon_uptime_secs = self.started_at.elapsed().as_secs();
         info
     }
 
