@@ -338,6 +338,16 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 	if plan.Started.ValueBool() && vm != nil && vm.State == "running" {
 		vm = r.waitGuestIP(ctx, vm)
 	}
+	if plan.Started.ValueBool() && (vm == nil || vm.State != "running") {
+		st := ""
+		if vm != nil {
+			st = vm.State
+		}
+		resp.Diagnostics.AddWarning(
+			"Guest is not running",
+			fmt.Sprintf("started=true but the guest is %q; terraform state still records started=true so the next apply will retry start", st),
+		)
+	}
 	state := keepPlannedBlocks(plan, vmToModel(ctx, vm, plan))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -883,12 +893,16 @@ func pickDefaultNetworkID(nets []client.Network) string {
 }
 
 // Nested blocks cannot appear after apply unless they were in the plan.
+// `started` is desired power state; the API `state` attribute is actual.
 func keepPlannedBlocks(plan, state vmModel) vmModel {
 	if !plan.Disks.IsUnknown() && listKnownEmpty(plan.Disks) {
 		state.Disks = plan.Disks
 	}
 	if !plan.Nics.IsUnknown() && listKnownEmpty(plan.Nics) {
 		state.Nics = plan.Nics
+	}
+	if !plan.Started.IsNull() && !plan.Started.IsUnknown() {
+		state.Started = plan.Started
 	}
 	return state
 }

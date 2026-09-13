@@ -111,3 +111,23 @@ func TestKeepPlannedBlocksDropsCloneDisks(t *testing.T) {
 		t.Fatalf("create/update must not add disk blocks: %#v", state.Disks)
 	}
 }
+
+func TestKeepPlannedBlocksPreservesStarted(t *testing.T) {
+	plan := vmModel{
+		Started: types.BoolValue(true),
+		Disks:   types.ListValueMust(diskObjectType, []attr.Value{}),
+		Nics:    types.ListValueMust(nicObjectType, []attr.Value{}),
+	}
+	vm := &client.VM{
+		ID:    "105",
+		Spec:  client.VMSpec{Name: "rocky-1", ConsoleType: "serial"},
+		State: "created",
+	}
+	state := keepPlannedBlocks(plan, vmToModel(t.Context(), vm, plan))
+	if !state.Started.ValueBool() {
+		t.Fatal("planned started=true must remain true after apply")
+	}
+	if state.State.ValueString() != "created" {
+		t.Fatalf("actual state should stay created, got %s", state.State.ValueString())
+	}
+}
