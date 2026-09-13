@@ -120,6 +120,7 @@ fn nbd_connect(disk: &Path) -> Result<AttachedDisk> {
             .arg(disk)
             .output()?;
         if !output.status.success() {
+            nbd_disconnect(&dev);
             continue;
         }
         let _ = Command::new("udevadm")
@@ -161,7 +162,13 @@ fn nbd_in_use(dev: &str) -> bool {
 
 fn nbd_disconnect(dev: &str) {
     if let Some(bin) = pertisk_types::find_in_path("qemu-nbd") {
-        let _ = Command::new(bin).args(["--disconnect", dev]).status();
+        for _ in 0..15 {
+            let _ = Command::new(&bin).args(["--disconnect", dev]).status();
+            if !nbd_in_use(dev) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
     std::thread::sleep(Duration::from_millis(200));
 }

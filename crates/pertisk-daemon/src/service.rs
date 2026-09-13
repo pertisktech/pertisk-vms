@@ -801,8 +801,13 @@ impl Service {
         } else {
             true
         };
-        let recreate = matches!(record.state, VmState::Created | VmState::Failed)
-            || (needs_vmm && (socket_missing || !vmm_alive));
+        // QEMU create is idempotent: it reuses a live QMP or reaps leftovers.
+        // Do not spawn a second qemu while the first still holds the qcow2 lock.
+        let recreate = if needs_vmm {
+            !vmm_alive || socket_missing
+        } else {
+            matches!(record.state, VmState::Created | VmState::Failed)
+        };
         if recreate {
             match self.vmm.create(record.id, &boot_spec).await {
                 Ok(created) => {

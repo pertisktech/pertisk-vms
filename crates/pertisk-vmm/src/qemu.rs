@@ -76,6 +76,29 @@ impl QemuDriver {
                 let _ = tokio::fs::write(&serial_log, []).await;
             }
         }
+        // A previous start can leave qemu running with -S after wait_qmp
+        // times out. Unlinking the socket and spawning again hits the qcow2
+        // write lock. Reuse a live QMP, otherwise reap leftovers first.
+        let leftover = qemu_pids_for(id);
+        if !leftover.is_empty() && wait_qmp(&qmp, Duration::from_secs(3)).await.is_ok() {
+            let pid = leftover.into_iter().next();
+            info!(vm = %id, pid = ?pid, "reusing qemu");
+            return Ok(CreateResult {
+                api_socket: Some(qmp),
+                pid,
+                serial_log: Some(serial_log),
+                console_socket: Some(serial_socket),
+                graphics_socket: Some(graphics_socket),
+            });
+        }
+        if !leftover.is_empty() {
+            warn!(vm = %id, pids = ?leftover, "stopping leftover qemu before start");
+            let _ = self.children.lock().await.remove(&id);
+            for pid in leftover {
+                kill_pid(pid);
+                wait_pid_gone(pid, Duration::from_secs(5)).await;
+            }
+        }
         for path in [&qmp, &serial_socket, &graphics_socket, &qga_socket] {
             if path.exists() {
                 let _ = tokio::fs::remove_file(path).await;
@@ -236,7 +259,7 @@ impl QemuDriver {
         let pid = child.id();
         self.children.lock().await.insert(id, child);
 
-        if let Err(err) = wait_qmp(&qmp, Duration::from_secs(8)).await {
+        if let Err(err) = wait_qmp(&qmp, Duration::from_secs(30)).await {
             let tail = std::fs::read_to_string(&stderr_log)
                 .ok()
                 .map(|s| {
@@ -250,6 +273,13 @@ impl QemuDriver {
                         .join("\n")
                 })
                 .filter(|s| !s.is_empty());
+            if let Some(mut child) = self.children.lock().await.remove(&id) {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+            } else if let Some(pid) = pid {
+                kill_pid(pid);
+                wait_pid_gone(pid, Duration::from_secs(3)).await;
+            }
             return Err(VmmError::Message(format!(
                 "{err}{}",
                 tail.map(|t| format!(": {t}")).unwrap_or_default()
@@ -357,22 +387,81 @@ impl QemuDriver {
 
     /// True while the guest OS is running (QEMU alive and QMP status not shutdown).
     pub async fn is_running(&self, record: &VmRecord) -> bool {
-        let Some(pid) = record.pid.filter(|pid| *pid > 0) else {
+        let pid = record
+            .pid
+            .filter(|pid| *pid > 0 && std::path::Path::new(&format!("/proc/{pid}")).exists())
+            .or_else(|| qemu_pids_for(record.id).into_iter().next());
+        let Some(pid) = pid else {
             return false;
         };
         if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
             return false;
         }
-        let Some(qmp) = record.api_socket.as_ref() else {
-            return true;
-        };
+        let qmp = record
+            .api_socket
+            .clone()
+            .unwrap_or_else(|| self.qmp_path(record.id));
         if !qmp.exists() {
             return false;
         }
-        match qmp_query_status(qmp).await {
+        match qmp_query_status(&qmp).await {
             Ok(status) => guest_qmp_running(&status),
             Err(_) => false,
         }
+    }
+}
+
+fn qemu_pids_for(id: VmId) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for ent in entries.flatten() {
+        let Ok(pid) = ent.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(ent.path().join("cmdline")) else {
+            continue;
+        };
+        if cmdline_has_qemu_id(&cmdline, id) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn cmdline_has_qemu_id(cmdline: &[u8], id: VmId) -> bool {
+    let needle = format!("process=pertisk-{id}");
+    String::from_utf8_lossy(cmdline)
+        .split('\0')
+        .any(|part| part == needle || part.ends_with(&format!(",{needle}")))
+}
+
+fn kill_pid(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+}
+
+async fn wait_pid_gone(pid: u32, timeout: Duration) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = std::process::Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status();
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -695,6 +784,15 @@ mod tests {
         assert!(guest_qmp_running("paused"));
         assert!(!guest_qmp_running("shutdown"));
         assert!(!guest_qmp_running("guest-panicked"));
+    }
+
+    #[test]
+    fn qemu_cmdline_matches_exact_vm_id() {
+        let cmd = b"qemu-system-x86_64\0-name\0rocky-1,process=pertisk-104\0-S\0";
+        assert!(cmdline_has_qemu_id(cmd, VmId::Numeric(104)));
+        assert!(!cmdline_has_qemu_id(cmd, VmId::Numeric(10)));
+        assert!(!cmdline_has_qemu_id(cmd, VmId::Numeric(1040)));
+        assert!(!cmdline_has_qemu_id(cmd, VmId::Numeric(105)));
     }
 
     #[test]
