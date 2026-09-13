@@ -21,10 +21,13 @@ func TestDisksToModelFromClone(t *testing.T) {
 	if got := disksToModel(vm, nil); len(got) != 0 {
 		t.Fatalf("omitted disk blocks must stay empty, got %d", len(got))
 	}
-	prev := []diskModel{{Size: types.StringValue("32G")}}
+	prev := []diskModel{{Size: types.StringValue("32G"), Name: types.StringUnknown()}}
 	got := disksToModel(vm, prev)
 	if len(got) != 1 || got[0].VolumeID.ValueString() != "vol-1" || got[0].Size.ValueString() != "32G" {
 		t.Fatalf("configured disk: %#v", got)
+	}
+	if got[0].Name.IsUnknown() {
+		t.Fatal("name must be known after apply")
 	}
 }
 

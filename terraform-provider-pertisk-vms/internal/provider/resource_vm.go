@@ -205,6 +205,9 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 						"name": schema.StringAttribute{
 							Optional: true,
 							Computed: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
 						},
 						"format": schema.StringAttribute{
 							Optional: true,
@@ -237,8 +240,18 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 								stringplanmodifier.UseStateForUnknown(),
 							},
 						},
-						"tap": schema.StringAttribute{Computed: true},
-						"mac": schema.StringAttribute{Computed: true},
+						"tap": schema.StringAttribute{
+							Computed: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
+						"mac": schema.StringAttribute{
+							Computed: true,
+							PlanModifiers: []planmodifier.String{
+								stringplanmodifier.UseStateForUnknown(),
+							},
+						},
 					},
 				},
 			},
@@ -367,8 +380,8 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 		body.NetworkID = id
 		tflog.Info(ctx, "clone using default network", map[string]any{"network_id": id})
 	}
-	if !plan.Clone.DiskSize.IsNull() && plan.Clone.DiskSize.ValueString() != "" {
-		n, err := client.ParseSize(plan.Clone.DiskSize.ValueString())
+	if size := firstKnownDiskSize(ctx, plan); size != "" {
+		n, err := client.ParseSize(size)
 		if err != nil {
 			return nil, err
 		}
@@ -695,15 +708,45 @@ func disksToModel(vm *client.VM, prev []diskModel) []diskModel {
 	out := make([]diskModel, len(prev))
 	copy(out, prev)
 	for i := range out {
-		if i >= len(api) {
-			break
+		if i < len(api) {
+			out[i].VolumeID = types.StringValue(api[i].VolumeID)
+		} else {
+			out[i].VolumeID = knownOrNull(out[i].VolumeID)
 		}
-		out[i].VolumeID = types.StringValue(api[i].VolumeID)
-		if out[i].Format.IsNull() || out[i].Format.ValueString() == "" {
+		out[i].Name = knownOrNull(out[i].Name)
+		out[i].Size = knownOrNull(out[i].Size)
+		if out[i].Format.IsUnknown() || out[i].Format.IsNull() || out[i].Format.ValueString() == "" {
 			out[i].Format = types.StringValue("qcow2")
 		}
 	}
 	return out
+}
+
+func knownOrNull(v types.String) types.String {
+	if v.IsUnknown() {
+		return types.StringNull()
+	}
+	return v
+}
+
+func firstKnownDiskSize(ctx context.Context, plan vmModel) string {
+	if plan.Clone != nil {
+		if s := knownString(plan.Clone.DiskSize); s != "" {
+			return s
+		}
+	}
+	disks := expandDisks(ctx, plan.Disks)
+	if len(disks) > 0 {
+		return knownString(disks[0].Size)
+	}
+	return ""
+}
+
+func knownString(v types.String) string {
+	if v.IsNull() || v.IsUnknown() {
+		return ""
+	}
+	return strings.TrimSpace(v.ValueString())
 }
 
 func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
@@ -714,7 +757,10 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 	copy(out, prev)
 	for i := range out {
 		if i >= len(vm.Spec.Nets) {
-			break
+			out[i].IP = knownOrNull(out[i].IP)
+			out[i].Tap = knownOrNull(out[i].Tap)
+			out[i].MAC = knownOrNull(out[i].MAC)
+			continue
 		}
 		n := vm.Spec.Nets[i]
 		if n.NetworkID != "" {
@@ -722,18 +768,18 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 		}
 		if n.IP != "" {
 			out[i].IP = types.StringValue(n.IP)
-		} else if out[i].IP.IsUnknown() {
-			out[i].IP = types.StringNull()
+		} else {
+			out[i].IP = knownOrNull(out[i].IP)
 		}
 		if n.Tap != "" {
 			out[i].Tap = types.StringValue(n.Tap)
-		} else if out[i].Tap.IsNull() || out[i].Tap.IsUnknown() {
-			out[i].Tap = types.StringNull()
+		} else {
+			out[i].Tap = knownOrNull(out[i].Tap)
 		}
 		if n.MAC != "" {
 			out[i].MAC = types.StringValue(n.MAC)
-		} else if out[i].MAC.IsNull() || out[i].MAC.IsUnknown() {
-			out[i].MAC = types.StringNull()
+		} else {
+			out[i].MAC = knownOrNull(out[i].MAC)
 		}
 	}
 	return out
