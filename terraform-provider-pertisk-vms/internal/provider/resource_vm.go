@@ -193,7 +193,7 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 		},
 		Blocks: map[string]schema.Block{
 			"disk": schema.ListNestedBlock{
-				MarkdownDescription: "Disks to create or attach. Omit when cloning — cloned disks are stored in state.",
+				MarkdownDescription: "Disks to create or attach. Omit when cloning — the clone API still attaches the template disk.",
 				PlanModifiers: []planmodifier.List{
 					useStateIfConfigEmpty(),
 					listplanmodifier.UseStateForUnknown(),
@@ -295,30 +295,13 @@ func (r *vmResource) Configure(_ context.Context, req resource.ConfigureRequest,
 }
 
 func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
 		return
 	}
-	var plan vmModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	if req.State.Raw.IsNull() {
-		// Clone fills disks/nics from the API; mark them unknown so apply can store them.
-		if cloneConfigured(plan.Clone) {
-			if listKnownEmpty(plan.Disks) {
-				plan.Disks = types.ListUnknown(diskObjectType)
-			}
-			if listKnownEmpty(plan.Nics) {
-				plan.Nics = types.ListUnknown(nicObjectType)
-			}
-		}
-		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-		return
-	}
-	var config, state vmModel
+	var config, state, plan vmModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -362,7 +345,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 			vm = started
 		}
 	}
-	state := vmToModel(ctx, vm, plan)
+	state := keepPlannedBlocks(plan, vmToModel(ctx, vm, plan))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -612,7 +595,7 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		}
 		vm = stopped
 	}
-	next := vmToModel(ctx, vm, plan)
+	next := keepPlannedBlocks(plan, vmToModel(ctx, vm, plan))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -781,6 +764,17 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 
 func listKnownEmpty(v types.List) bool {
 	return !v.IsUnknown() && (v.IsNull() || len(v.Elements()) == 0)
+}
+
+// Nested blocks cannot appear after apply unless they were in the plan.
+func keepPlannedBlocks(plan, state vmModel) vmModel {
+	if !plan.Disks.IsUnknown() && listKnownEmpty(plan.Disks) {
+		state.Disks = plan.Disks
+	}
+	if !plan.Nics.IsUnknown() && listKnownEmpty(plan.Nics) {
+		state.Nics = plan.Nics
+	}
+	return state
 }
 
 func expandDisks(ctx context.Context, list types.List) []diskModel {

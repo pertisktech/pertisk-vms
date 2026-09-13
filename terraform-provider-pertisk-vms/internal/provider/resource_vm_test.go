@@ -38,3 +38,23 @@ func TestListKnownEmpty(t *testing.T) {
 		t.Fatal("unknown should not be known-empty")
 	}
 }
+
+func TestKeepPlannedBlocksDropsCloneDisks(t *testing.T) {
+	plan := vmModel{
+		Disks: types.ListValueMust(diskObjectType, []attr.Value{}),
+		Nics:  types.ListValueMust(nicObjectType, []attr.Value{}),
+	}
+	vm := &client.VM{
+		ID: "110",
+		Spec: client.VMSpec{
+			Name:      "ubuntu-1",
+			Disks:     []client.Disk{{VolumeID: "vol-1"}},
+			ConsoleType: "serial",
+		},
+		State: "running",
+	}
+	state := keepPlannedBlocks(plan, vmToModel(t.Context(), vm, plan))
+	if !listKnownEmpty(state.Disks) {
+		t.Fatalf("create/update must not add disk blocks: %#v", state.Disks)
+	}
+}
