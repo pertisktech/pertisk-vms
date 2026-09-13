@@ -661,13 +661,13 @@ func (r *vmResource) waitGuestIP(ctx context.Context, vm *client.VM) *client.VM 
 	if r.api == nil || vm == nil || vm.State != "running" {
 		return vm
 	}
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	last := vm
 	for {
 		ip := guestIPv4(last)
 		// Early cloud-init ci-info is often a lease the guest then drops.
 		// Only accept an address that answers SSH from this host.
-		if ip != "" && tcpOpen(ip, "22", 2*time.Second) {
+		if ip != "" && tcpOpen(ip, "22", 1500*time.Millisecond) {
 			tflog.Info(ctx, "guest IPv4 reachable", map[string]any{"id": last.ID.String(), "ip": ip})
 			return last
 		}
@@ -684,6 +684,8 @@ func (r *vmResource) waitGuestIP(ctx context.Context, vm *client.VM) *client.VM 
 		}
 		got, err := r.api.GetVM(last.ID.String())
 		if err != nil {
+			// Node often drops mid-boot; do not sit on a 15m HTTP timeout.
+			tflog.Warn(ctx, "guest poll failed", map[string]any{"id": last.ID.String(), "err": err.Error()})
 			return last
 		}
 		last = got

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,9 +86,14 @@ func New(cfg Config) (*Client, error) {
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
-		timeout = 15 * time.Minute
+		// Keep API calls short so Terraform fails fast when the node dies mid-boot.
+		// Upload helpers raise this separately.
+		timeout = 60 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = 5 * time.Second
+	transport.ResponseHeaderTimeout = 30 * time.Second
 	if cfg.Insecure {
 		if transport.TLSClientConfig == nil {
 			transport.TLSClientConfig = &tls.Config{}
