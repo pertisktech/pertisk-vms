@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::iso9660::cidata_files;
 use crate::qemu::QemuImg;
-pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
 pub use disk_boot::prepare_shim_disk_boot;
+pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
 pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
 pub use rbd::Rbd;
 
@@ -123,7 +123,11 @@ fn recover_orphan_disks(root: &Path, inv: &mut Inventory) -> usize {
             if !path.is_file() {
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|s| s.to_str()).map(str::to_string) else {
+            let Some(name) = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
                 continue;
             };
             if inv.isos.contains_key(&name) {
@@ -191,9 +195,7 @@ impl VolumePool {
         };
         if recovered > 0 {
             let _ = pool.flush();
-            eprintln!(
-                "pertisk-storage: re-registered {recovered} orphan disk(s) into inventory"
-            );
+            eprintln!("pertisk-storage: re-registered {recovered} orphan disk(s) into inventory");
         }
         Ok(pool)
     }

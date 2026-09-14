@@ -67,7 +67,10 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/migrate", post(migrate))
         .route("/v1/vms/{id}/clone", post(clone_vm))
         .route("/v1/vms/{id}/template", post(convert_to_template))
-        .route("/v1/vms/{id}/backups", get(list_vm_backups).post(create_vm_backup))
+        .route(
+            "/v1/vms/{id}/backups",
+            get(list_vm_backups).post(create_vm_backup),
+        )
         .route(
             "/v1/vms/{id}/backups/{backup_id}",
             axum::routing::delete(delete_vm_backup),
@@ -1034,32 +1037,26 @@ async fn import_template(
         return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
     }
     let vol_name = service.unique_volume_name(&format!("{name}-disk"))?;
-    let result = tracked(
-        &service,
-        &user,
-        "template.import",
-        name.clone(),
-        async {
-            let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
-            match service
-                .create_template(CreateTemplateRequest {
-                    id: None,
-                    name: name.clone(),
-                    volume_id: volume.id,
-                    vcpus: q.vcpus,
-                    memory_mib: q.memory_mib,
-                    console_type: None,
-                })
-                .await
-            {
-                Ok(record) => Ok(record),
-                Err(err) => {
-                    let _ = service.delete_volume(volume.id).await;
-                    Err(err)
-                }
+    let result = tracked(&service, &user, "template.import", name.clone(), async {
+        let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
+        match service
+            .create_template(CreateTemplateRequest {
+                id: None,
+                name: name.clone(),
+                volume_id: volume.id,
+                vcpus: q.vcpus,
+                memory_mib: q.memory_mib,
+                console_type: None,
+            })
+            .await
+        {
+            Ok(record) => Ok(record),
+            Err(err) => {
+                let _ = service.delete_volume(volume.id).await;
+                Err(err)
             }
-        },
-    )
+        }
+    })
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     Ok((StatusCode::CREATED, Json(result?)))

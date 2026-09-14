@@ -10,11 +10,11 @@ use pertisk_types::{
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
     CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
-    HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord,
-    NodeId, NodeMetrics, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
-    SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk,
-    VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
-    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
+    HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeId,
+    NodeMetrics, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SmtpTls,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord,
+    VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord,
+    default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -252,7 +252,11 @@ impl Service {
     }
 
     pub fn settings(&self) -> pertisk_api::SettingsResponse {
-        let notify = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let notify = self
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         pertisk_api::SettingsResponse {
             node_name: self.node_display_name(),
             notify: pertisk_api::NotifySettingsView {
@@ -328,7 +332,11 @@ impl Service {
     }
 
     pub async fn send_test_mail(&self) -> Result<(), DaemonError> {
-        let cfg = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let cfg = self
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let node = self.node_display_name();
         crate::notify::send_test(&cfg, &node)
             .await
@@ -336,7 +344,11 @@ impl Service {
     }
 
     pub fn notify_event(&self, kind: &str, subject: &str, body: &str) {
-        let cfg = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let cfg = self
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let node = self.node_display_name();
         let kind = kind.to_string();
         let subject = subject.to_string();
@@ -363,7 +375,11 @@ impl Service {
         } else {
             self.config.clone()
         };
-        cfg.notify = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        cfg.notify = self
+            .notify
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         cfg.cluster.node_name = Some(self.node_display_name());
         crate::save_config(&self.config_path, &cfg)
     }
@@ -373,10 +389,7 @@ impl Service {
         let Ok(status) = self.cluster_status() else {
             return;
         };
-        let mut prev = self
-            .node_online
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut prev = self.node_online.lock().unwrap_or_else(|e| e.into_inner());
         for m in &status.members {
             if m.id == status.self_id {
                 prev.insert(m.id, true);
@@ -700,11 +713,7 @@ impl Service {
         let jobs: Vec<(VolumeRecord, PathBuf)> = sources
             .iter()
             .map(|vol| {
-                let dest = backup_dir.join(format!(
-                    "{}.{}",
-                    vol.id,
-                    vol.format.extension()
-                ));
+                let dest = backup_dir.join(format!("{}.{}", vol.id, vol.format.extension()));
                 (vol.clone(), dest)
             })
             .collect();
@@ -1195,11 +1204,7 @@ impl Service {
                     record.state = VmState::Failed;
                     record.last_error = Some(err.to_string());
                     self.store.upsert(record.clone())?;
-                    self.notify_vm(
-                        "vm.failed",
-                        &record,
-                        &format!("VMM create failed: {err}"),
-                    );
+                    self.notify_vm("vm.failed", &record, &format!("VMM create failed: {err}"));
                     return Err(err.into());
                 }
             }
@@ -1221,7 +1226,10 @@ impl Service {
                 self.replicate().await;
                 // QMP comes up in <1s; keep the gate held in the background so
                 // the next guest does not boot immediately (disk storm / reboot).
-                if matches!(self.driver(), DriverKind::Qemu | DriverKind::CloudHypervisor) {
+                if matches!(
+                    self.driver(),
+                    DriverKind::Qemu | DriverKind::CloudHypervisor
+                ) {
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                         drop(start_permit);
@@ -1631,8 +1639,7 @@ impl Service {
             configured
         };
         record.replica_count = want;
-        record.replicas =
-            cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
+        record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record = self.volumes.put_record(record)?;
         self.ensure_replicas(&record).await;
         self.sync_volume_replicas(&record).await;
@@ -1985,7 +1992,9 @@ impl Service {
                         nic.ipv6
                             .as_deref()
                             .map(str::trim)
-                            .filter(|s| !s.is_empty() && !s.to_ascii_lowercase().starts_with("fe80:"))
+                            .filter(|s| {
+                                !s.is_empty() && !s.to_ascii_lowercase().starts_with("fe80:")
+                            })
                             .map(|s| s.to_string())
                     })
             })
@@ -2006,9 +2015,7 @@ impl Service {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
-            });
+            .unwrap_or_else(|| default_cloud_user(hints.iter().map(|s| s.as_str())).to_string());
         Ok(crate::guest_ssh::GuestSshTarget {
             host,
             user,
@@ -2092,18 +2099,18 @@ impl Service {
         // Cloud Hypervisor firmware cannot load it — kernel-boot from the BLS /boot FS.
         if matches!(self.driver(), DriverKind::CloudHypervisor) {
             if let Some(os_disk) = spec.disks.iter().find(|disk| !disk.cdrom) {
-                let dest = self
-                    .config
-                    .storage
-                    .root
-                    .join("disk-boot")
-                    .join(os_disk.volume_id.map(|id| id.to_string()).unwrap_or_else(|| {
-                        os_disk
-                            .path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "disk".into())
-                    }));
+                let dest = self.config.storage.root.join("disk-boot").join(
+                    os_disk
+                        .volume_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| {
+                            os_disk
+                                .path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "disk".into())
+                        }),
+                );
                 if let Some(boot) = pertisk_storage::prepare_shim_disk_boot(&os_disk.path, &dest)? {
                     tracing::info!(
                         disk = %os_disk.path.display(),
@@ -2856,11 +2863,7 @@ impl Service {
                     vm.state = VmState::Failed;
                     vm.last_error = Some(err.to_string());
                     let _ = self.store.upsert(vm.clone());
-                    self.notify_vm(
-                        "vm.failed",
-                        &vm,
-                        &format!("HA restart failed: {err}"),
-                    );
+                    self.notify_vm("vm.failed", &vm, &format!("HA restart failed: {err}"));
                 }
             }
             self.cluster.bump()?;
@@ -3211,8 +3214,7 @@ impl Service {
                     Ok(()) => {
                         if !vol.replicas.contains(&self_id) {
                             vol.replicas.push(self_id);
-                            vol.replica_count =
-                                (vol.replicas.len() as u8).max(vol.replica_count);
+                            vol.replica_count = (vol.replicas.len() as u8).max(vol.replica_count);
                             let _ = self.volumes.put_record(vol.clone());
                         }
                         pulled = true;
@@ -3339,7 +3341,7 @@ impl Service {
         if !path.is_file() {
             return Err(DaemonError::Peer(format!("local volume {id} missing")));
         }
-        let local_len = std::fs::metadata(&path)?.len();
+        let local_len = tokio::fs::metadata(&path).await?.len();
         if local_len > 0
             && let Ok(stat) = self.peer_volume_stat_remote(dest, id).await
             && stat.0
@@ -3347,7 +3349,7 @@ impl Service {
         {
             return Ok(());
         }
-        let file = std::fs::File::open(&path)?;
+        let file = tokio::fs::File::open(&path).await?;
         let url = self
             .cluster
             .member_url(dest)
@@ -3404,7 +3406,10 @@ impl Service {
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
         Ok((
-            value.get("exists").and_then(|v| v.as_bool()).unwrap_or(false),
+            value
+                .get("exists")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             value.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
         ))
     }
@@ -4005,10 +4010,7 @@ ci-info: |   0   |   0.0.0.0   | 10.1.1.10 |   ens3    |
             ipv4_from_serial_log(&path, Some("52:54:00:2e:3b:6a")).as_deref(),
             Some("10.1.1.42")
         );
-        assert_eq!(
-            ipv4_from_serial_log(&path, Some("52:54:00:00:00:01")),
-            None
-        );
+        assert_eq!(ipv4_from_serial_log(&path, Some("52:54:00:00:00:01")), None);
     }
 
     #[test]

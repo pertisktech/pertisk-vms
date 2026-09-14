@@ -620,8 +620,7 @@ impl Cluster {
         let now = now_ms();
         if let Some(mut record) = record {
             if let Some(existing) = inner.members.get(&id) {
-                record.peer_url =
-                    prefer_peer_url(&existing.record.peer_url, &record.peer_url);
+                record.peer_url = prefer_peer_url(&existing.record.peer_url, &record.peer_url);
             }
             inner.members.insert(
                 id,
@@ -764,8 +763,7 @@ impl Cluster {
                 };
                 let mut record = record.clone();
                 if let Some(existing) = inner.members.get(&record.id) {
-                    record.peer_url =
-                        prefer_peer_url(&existing.record.peer_url, &record.peer_url);
+                    record.peer_url = prefer_peer_url(&existing.record.peer_url, &record.peer_url);
                 }
                 next.insert(
                     record.id,
