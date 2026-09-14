@@ -392,11 +392,9 @@ impl Cluster {
         let inner = if let Some(persisted) = existing {
             let mut members = BTreeMap::new();
             for record in persisted.members {
-                let last_seen_ms = if record.id == persisted.self_id {
-                    now
-                } else {
-                    0
-                };
+                // Treat known peers as briefly online after restart so a 2-node
+                // cluster is not immediately fenced before the first heartbeat.
+                let last_seen_ms = now;
                 members.insert(
                     record.id,
                     MemberState {
@@ -729,9 +727,23 @@ impl Cluster {
     }
 
     pub fn apply_membership(&self, snap: &ClusterSnapshot) -> Result<(), DaemonError> {
+        self.apply_membership_inner(snap, false)
+    }
+
+    /// Replace membership from a join accept even when our generation is higher
+    /// (busy solo node joining a quieter seed must adopt the seed's secret).
+    pub fn apply_membership_forced(&self, snap: &ClusterSnapshot) -> Result<(), DaemonError> {
+        self.apply_membership_inner(snap, true)
+    }
+
+    fn apply_membership_inner(
+        &self,
+        snap: &ClusterSnapshot,
+        force: bool,
+    ) -> Result<(), DaemonError> {
         {
             let mut inner = self.inner.lock().expect("cluster lock");
-            if snap.generation < inner.generation {
+            if !force && snap.generation < inner.generation {
                 return Ok(());
             }
             inner.name = snap.name.clone();
@@ -776,6 +788,7 @@ impl Cluster {
                 }
             }
             inner.members = next;
+            inner.fenced = false;
         }
         self.persist()
     }
@@ -1167,6 +1180,49 @@ mod tests {
                 .next(),
             Some("https")
         );
+    }
+
+    #[test]
+    fn force_membership_adopts_lower_generation_on_join() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("busy".into());
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        // Inflate generation like a long-lived solo node.
+        for _ in 0..5 {
+            cluster.bump().unwrap();
+        }
+        let high_gen = cluster.generation();
+        assert!(high_gen > 1);
+
+        let seed_id = NodeId::new();
+        let snap = ClusterSnapshot {
+            name: "seed".into(),
+            secret: "shared-secret".into(),
+            generation: 2,
+            members: vec![
+                NodeRecord {
+                    id: seed_id,
+                    name: "seed".into(),
+                    peer_url: "https://10.1.1.10:7443".into(),
+                    cpus: 4,
+                    memory_mib: 4096,
+                    ipv4: vec!["10.1.1.10".into()],
+                    ipv6: vec![],
+                },
+                cluster.self_record(),
+            ],
+            vms: vec![],
+            volumes: vec![],
+        };
+        assert!(high_gen > snap.generation);
+        cluster.apply_membership(&snap).unwrap();
+        assert_ne!(cluster.secret(), "shared-secret"); // gated no-op
+        cluster.apply_membership_forced(&snap).unwrap();
+        assert_eq!(cluster.secret(), "shared-secret");
+        assert_eq!(cluster.generation(), 2);
+        assert_eq!(cluster.status(&[]).members.len(), 2);
     }
 
     #[test]

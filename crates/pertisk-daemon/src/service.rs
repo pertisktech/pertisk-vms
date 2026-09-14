@@ -1101,6 +1101,7 @@ impl Service {
             self.store.upsert(record.clone())?;
         }
         if dest != self.cluster.self_id() {
+            self.ensure_volumes_on_node(&record, dest).await?;
             let started = self.peer_run(dest, record).await?;
             self.store.upsert(started.clone())?;
             self.cluster.bump()?;
@@ -1435,6 +1436,7 @@ impl Service {
             Ok(()) | Err(pertisk_vmm::VmmError::NotFound(_)) => {}
             Err(_) => {}
         }
+        self.pull_missing_volumes(&record).await?;
         self.start_local(record.id).await
     }
 
@@ -1477,9 +1479,7 @@ impl Service {
         if dest == src {
             return Ok(record);
         }
-        if src == self.cluster.self_id() {
-            self.sync_vm_volumes(&record).await;
-        }
+        self.ensure_volumes_on_node(&record, dest).await?;
         let started = self.peer_run(dest, record.clone()).await?;
         if src == self.cluster.self_id() {
             let _ = self.apply_drop(&record).await;
@@ -1533,11 +1533,16 @@ impl Service {
             return Ok(record);
         }
         let mut record = self.volumes.create_volume(req.clone())?;
-        let want = req
+        let online = self.cluster.online_ids();
+        let configured = req
             .replicas
             .unwrap_or(self.config.storage.replica_count)
             .max(1);
-        let online = self.cluster.online_ids();
+        let want = if online.len() >= 2 {
+            configured.max(2)
+        } else {
+            configured
+        };
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record.backend = StorageBackend::Replica;
@@ -1557,8 +1562,13 @@ impl Service {
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_quorum()?;
         let mut record = self.volumes.import_volume(&source, name, format)?;
-        let want = self.config.storage.replica_count.max(1);
         let online = self.cluster.online_ids();
+        let configured = self.config.storage.replica_count.max(1);
+        let want = if online.len() >= 2 {
+            configured.max(2)
+        } else {
+            configured
+        };
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record.backend = StorageBackend::Replica;
@@ -1614,11 +1624,15 @@ impl Service {
             .await
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
         let online = self.cluster.online_ids();
-        record.replicas = cluster::place_replicas(
-            &online,
-            record.replica_count.max(1),
-            Some(self.cluster.self_id()),
-        );
+        let configured = record.replica_count.max(1);
+        let want = if online.len() >= 2 {
+            configured.max(2)
+        } else {
+            configured
+        };
+        record.replica_count = want;
+        record.replicas =
+            cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record = self.volumes.put_record(record)?;
         self.ensure_replicas(&record).await;
         self.sync_volume_replicas(&record).await;
@@ -2402,16 +2416,22 @@ impl Service {
 
     fn localize_disks(&self, record: &mut VmRecord) -> Result<(), DaemonError> {
         for disk in &mut record.spec.disks {
-            let Some(id) = disk.volume_id else {
-                continue;
-            };
-            let Ok(vol) = self.volumes.get_volume(id) else {
-                continue;
-            };
-            if vol.backend == StorageBackend::Rbd {
+            if let Some(id) = disk.volume_id {
+                let Ok(vol) = self.volumes.get_volume(id) else {
+                    continue;
+                };
+                if vol.backend == StorageBackend::Rbd {
+                    continue;
+                }
+                disk.path = self.volumes.local_path(vol.id, vol.format);
                 continue;
             }
-            disk.path = self.volumes.local_path(vol.id, vol.format);
+            // ISO paths are node-local absolute paths; remap by inventory name.
+            if let Some(name) = disk.iso_name.as_deref()
+                && let Ok(iso) = self.volumes.get_iso(name)
+            {
+                disk.path = iso.path;
+            }
         }
         Ok(())
     }
@@ -2430,6 +2450,24 @@ impl Service {
         self.cluster.apply_membership(&snap)?;
         self.store.replace_all(snap.vms)?;
         self.volumes.replace_records(snap.volumes)?;
+        Ok(())
+    }
+
+    /// Adopt a join-accept snapshot even when our local generation is higher.
+    pub fn apply_join_snapshot(
+        &self,
+        snap: pertisk_types::ClusterSnapshot,
+    ) -> Result<(), DaemonError> {
+        let secret = snap.secret.clone();
+        let generation = snap.generation;
+        self.cluster.apply_membership_forced(&snap)?;
+        self.store.replace_all(snap.vms)?;
+        self.volumes.replace_records(snap.volumes)?;
+        if self.cluster.secret() != secret || self.cluster.generation() != generation {
+            return Err(DaemonError::Peer(
+                "join failed: could not adopt peer cluster state (leave and retry)".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -2517,14 +2555,21 @@ impl Service {
             .json()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
-        self.apply_snapshot(snap)?;
+        self.apply_join_snapshot(snap)?;
         self.cluster
             .set_member_peer_url(remote.self_id, peer.to_string())?;
         // We just authenticated to this peer — treat it as online immediately.
         self.cluster.touch(remote.self_id, None);
         self.cluster.touch(self.cluster.self_id(), None);
         let _ = self.cluster.heal_remote_peer_urls();
-        Ok(self.cluster_status()?)
+        let status = self.cluster_status()?;
+        if status.members.len() < 2 {
+            return Err(DaemonError::Peer(
+                "join failed: peer cluster state was not applied (leave both sides and retry)"
+                    .into(),
+            ));
+        }
+        Ok(status)
     }
 
     pub fn on_heartbeat(
@@ -3058,6 +3103,117 @@ impl Service {
         }
     }
 
+    /// Make sure `dest` has disk files before peer start/migrate (even when replica_count=1).
+    async fn ensure_volumes_on_node(
+        &self,
+        vm: &VmRecord,
+        dest: pertisk_types::NodeId,
+    ) -> Result<(), DaemonError> {
+        if dest == self.cluster.self_id() {
+            return Ok(());
+        }
+        for disk in &vm.spec.disks {
+            let Some(id) = disk.volume_id else {
+                continue;
+            };
+            let Ok(mut vol) = self.volumes.get_volume(id) else {
+                continue;
+            };
+            if vol.backend == StorageBackend::Rbd {
+                continue;
+            }
+            if !vol.replicas.contains(&dest) {
+                vol.replicas.push(dest);
+                vol.replica_count = (vol.replicas.len() as u8).max(vol.replica_count);
+                vol = self.volumes.put_record(vol)?;
+                self.cluster.bump()?;
+            }
+            let _: VolumeRecord = self
+                .peer_json(dest, "/v1/peer/volumes/ensure", &vol)
+                .await
+                .map_err(|err| {
+                    DaemonError::Peer(format!("ensure volume {} on {dest}: {err}", vol.name))
+                })?;
+            if self.volumes.has_local(vol.id, vol.format) {
+                let bytes = self.volumes.read_blob(vol.id).map_err(|err| {
+                    DaemonError::Peer(format!("read volume {} for sync: {err}", vol.name))
+                })?;
+                self.peer_put_blob(dest, vol.id, &bytes).await.map_err(|err| {
+                    DaemonError::Peer(format!("sync volume {} to {dest}: {err}", vol.name))
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Pull any missing local disks from a peer that holds a replica.
+    async fn pull_missing_volumes(&self, vm: &VmRecord) -> Result<(), DaemonError> {
+        let online = self.cluster.online_ids();
+        let self_id = self.cluster.self_id();
+        for disk in &vm.spec.disks {
+            let Some(id) = disk.volume_id else {
+                continue;
+            };
+            let Ok(mut vol) = self.volumes.get_volume(id) else {
+                continue;
+            };
+            if vol.backend == StorageBackend::Rbd {
+                continue;
+            }
+            if self.volumes.has_local(vol.id, vol.format) {
+                if !vol.replicas.contains(&self_id) {
+                    vol.replicas.push(self_id);
+                    vol.replica_count = (vol.replicas.len() as u8).max(vol.replica_count);
+                    let _ = self.volumes.put_record(vol);
+                }
+                continue;
+            }
+            let mut sources: Vec<_> = vol
+                .replicas
+                .iter()
+                .copied()
+                .filter(|n| *n != self_id && online.contains(n))
+                .collect();
+            for n in &online {
+                if *n != self_id && !sources.contains(n) {
+                    sources.push(*n);
+                }
+            }
+            let mut pulled = false;
+            for src in sources {
+                match self.peer_get_blob(src, vol.id).await {
+                    Ok(bytes) => {
+                        self.volumes.ensure_local(&vol)?;
+                        self.volumes.write_blob(vol.id, &bytes)?;
+                        if !vol.replicas.contains(&self_id) {
+                            vol.replicas.push(self_id);
+                            vol.replica_count =
+                                (vol.replicas.len() as u8).max(vol.replica_count);
+                            let _ = self.volumes.put_record(vol.clone());
+                        }
+                        pulled = true;
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            volume = %vol.name,
+                            from = %src,
+                            error = %err,
+                            "pull volume replica failed"
+                        );
+                    }
+                }
+            }
+            if !pulled {
+                return Err(DaemonError::Peer(format!(
+                    "volume {} has no reachable replica for this node",
+                    vol.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
     async fn sync_volume_replicas(&self, record: &VolumeRecord) {
         if record.backend == StorageBackend::Rbd {
             return;
@@ -3083,7 +3239,14 @@ impl Service {
             if !online.contains(replica) {
                 continue;
             }
-            let _ = self.peer_put_blob(*replica, record.id, &bytes).await;
+            if let Err(err) = self.peer_put_blob(*replica, record.id, &bytes).await {
+                tracing::warn!(
+                    volume = %record.name,
+                    peer = %replica,
+                    error = %err,
+                    "volume replica sync failed"
+                );
+            }
         }
     }
 
@@ -3108,22 +3271,24 @@ impl Service {
                 continue;
             }
             vol.replicas.retain(|id| online.contains(id));
+            // Multi-node clusters need ≥2 replicas so guests can run on either side.
+            let want = {
+                let configured = usize::from(vol.replica_count.max(1));
+                let floor = if online.len() >= 2 { 2 } else { 1 };
+                configured.max(floor).min(online.len().max(1))
+            };
             if vol.replicas.is_empty() {
-                vol.replicas = cluster::place_replicas(
-                    &online,
-                    vol.replica_count.max(1),
-                    Some(self.cluster.self_id()),
-                );
+                vol.replicas =
+                    cluster::place_replicas(&online, want as u8, Some(self.cluster.self_id()));
             }
-            while vol.replicas.len() < usize::from(vol.replica_count.max(1))
-                && vol.replicas.len() < online.len()
-            {
+            while vol.replicas.len() < want {
                 if let Some(extra) = online.iter().find(|id| !vol.replicas.contains(id)) {
                     vol.replicas.push(*extra);
                 } else {
                     break;
                 }
             }
+            vol.replica_count = (vol.replicas.len() as u8).max(vol.replica_count);
             let _ = self.volumes.put_record(vol.clone());
             self.ensure_replicas(&vol).await;
             if self.volumes.has_local(vol.id, vol.format) {
@@ -3160,7 +3325,8 @@ impl Service {
             .header("x-pertisk-peer", self.cluster.secret())
             .header("content-type", "application/octet-stream")
             .body(bytes.to_vec())
-            .timeout(std::time::Duration::from_millis(600))
+            // Disk images are large; 600ms was far too short for cross-node sync.
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
@@ -3190,7 +3356,7 @@ impl Service {
                 url.trim_end_matches('/')
             ))
             .header("x-pertisk-peer", self.cluster.secret())
-            .timeout(std::time::Duration::from_millis(600))
+            .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
