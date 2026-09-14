@@ -419,6 +419,10 @@ struct LoopDisk {
 
 impl LoopDisk {
     fn attach(disk: &Path) -> Result<Self, StorageError> {
+        // Parallel guest starts all losetup the same way; serialize so partition
+        // nodes are not scanned while another attach is still probing.
+        static LOSETUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOSETUP.lock().unwrap_or_else(|err| err.into_inner());
         let out = Command::new("losetup")
             .args(["-f", "--show", "-P"])
             .arg(disk)
@@ -436,11 +440,16 @@ impl LoopDisk {
                 "losetup returned empty device".into(),
             ));
         }
-        // Partition nodes can lag briefly after -P. Ubuntu cloud GPT uses p13/p15
-        // (BOOT / ESP), so wait for any loopNp* node, not only p1/p2.
+        // p1 is often BIOS boot (no filesystem). Wait for the ESP (vfat), not
+        // merely the first partition node, or we firmware-boot into shim.
         let device = PathBuf::from(device);
-        for _ in 0..20 {
-            if !loop_partition_paths(&device).is_empty() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+        loop {
+            let parts = loop_partition_paths(&device);
+            let has_vfat = parts
+                .iter()
+                .any(|p| blkid_type(p).as_deref() == Some("vfat"));
+            if has_vfat || std::time::Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
