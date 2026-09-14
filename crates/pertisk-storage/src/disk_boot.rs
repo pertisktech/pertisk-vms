@@ -29,8 +29,8 @@ pub fn prepare_shim_disk_boot(
     }
 
     let boot_part = loopdev
-        .find_labeled("BOOT")
-        .or_else(|| loopdev.find_labeled("cloudimg-rootfs"))
+        .find_labeled("cloudimg-rootfs")
+        .or_else(|| loopdev.find_labeled("BOOT"))
         .or_else(|| loopdev.find_fs("xfs"))
         .or_else(|| loopdev.find_fs("ext4"))
         .or_else(|| loopdev.find_fs("btrfs"))
@@ -61,10 +61,8 @@ pub fn prepare_shim_disk_boot(
     fs::copy(&initrd_src, &initramfs)?;
 
     let mut cmdline = entry.options;
-    if !cmdline.contains("root=") {
-        if let Some(uuid) = blkid_value(&boot_part, "UUID") {
-            cmdline = format!("root=UUID={uuid} ro {cmdline}");
-        }
+    if !cmdline_has_block_root(&cmdline) {
+        cmdline = pin_root_device(&cmdline, &boot_part);
     }
     if !cmdline.contains("console=") {
         cmdline.push_str(" console=ttyS0,115200n8");
@@ -258,6 +256,52 @@ fn grub_linux_options(root: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Grub's `root=LABEL=cloudimg-rootfs` needs udev/initramfs. Direct CH kernel-boot
+/// must name the virtio partition or the kernel panics with unknown-block(0,0).
+fn cmdline_has_block_root(cmdline: &str) -> bool {
+    cmdline.split_whitespace().any(|p| {
+        p.starts_with("root=/dev/")
+            || p.starts_with("root=UUID=")
+            || p.starts_with("root=PARTUUID=")
+    })
+}
+
+fn pin_root_device(cmdline: &str, part: &Path) -> String {
+    let rest: Vec<&str> = cmdline
+        .split_whitespace()
+        .filter(|p| !p.starts_with("root=") && !p.starts_with("rootfstype="))
+        .collect();
+    let root = virtio_root_dev(part)
+        .or_else(|| blkid_value(part, "PARTUUID").map(|uuid| format!("PARTUUID={uuid}")))
+        .or_else(|| blkid_value(part, "UUID").map(|uuid| format!("UUID={uuid}")));
+    let Some(root) = root else {
+        return cmdline.to_string();
+    };
+    let mut out = format!("root={root}");
+    if let Some(fstype) = blkid_value(part, "TYPE") {
+        out.push_str(" rootfstype=");
+        out.push_str(&fstype);
+    }
+    if !rest.is_empty() {
+        out.push(' ');
+        out.push_str(&rest.join(" "));
+    }
+    if !out.contains("rootwait") {
+        out.push_str(" rootwait");
+    }
+    out
+}
+
+fn virtio_root_dev(part: &Path) -> Option<String> {
+    let name = part.file_name()?.to_str()?;
+    let idx = name.rfind('p')?;
+    let num = &name[idx + 1..];
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("/dev/vda{num}"))
 }
 
 fn parse_bls(path: &Path) -> Option<BlsEntry> {
@@ -497,5 +541,33 @@ mod tests {
             entry.initrd
         );
         assert!(entry.options.contains("root=UUID=abc"), "{}", entry.options);
+    }
+
+    #[test]
+    fn virtio_root_from_loop_partition() {
+        assert_eq!(
+            virtio_root_dev(Path::new("/dev/loop3p1")).as_deref(),
+            Some("/dev/vda1")
+        );
+        assert_eq!(
+            virtio_root_dev(Path::new("/dev/nbd0p15")).as_deref(),
+            Some("/dev/vda15")
+        );
+    }
+
+    #[test]
+    fn label_root_needs_pin() {
+        assert!(!cmdline_has_block_root(
+            "root=LABEL=cloudimg-rootfs ro quiet"
+        ));
+        assert!(cmdline_has_block_root("root=UUID=abc ro"));
+        assert!(cmdline_has_block_root("root=/dev/vda1 ro"));
+        let pinned = pin_root_device(
+            "root=LABEL=cloudimg-rootfs ro quiet",
+            Path::new("/dev/loop0p1"),
+        );
+        assert!(pinned.starts_with("root=/dev/vda1"), "{pinned}");
+        assert!(pinned.contains("ro"), "{pinned}");
+        assert!(!pinned.contains("LABEL="), "{pinned}");
     }
 }
