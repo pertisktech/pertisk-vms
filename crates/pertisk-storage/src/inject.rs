@@ -127,12 +127,9 @@ fn nbd_connect(disk: &Path) -> Result<AttachedDisk> {
             .args(["settle", "--timeout=5"])
             .status();
         let _ = Command::new("partprobe").arg(&dev).status();
-        for _ in 0..25 {
-            if !partitions(&dev).is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
+        // Sysfs can list nbd0p* before VFS can open them ("Can't lookup blockdev").
+        // Wait until at least one partition has a real filesystem type.
+        let _ = wait_partitions_ready(&dev);
         return Ok(AttachedDisk { dev, nbd: true });
     }
     Err(StorageError::Message(
@@ -235,11 +232,12 @@ fn losetup(disk: &Path) -> Result<String> {
         .args(["settle", "--timeout=5"])
         .status();
     std::thread::sleep(Duration::from_millis(400));
+    let _ = wait_partitions_ready(&dev);
     Ok(dev)
 }
 
 fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
-    let parts = partitions(loopdev);
+    let parts = wait_partitions_ready(loopdev);
     if parts.is_empty() {
         return Err(StorageError::Message(format!("no partitions on {loopdev}")));
     }
@@ -251,6 +249,9 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
     if let Some(ref lvm) = lvm {
         candidates.extend(lvm.volumes.iter().cloned());
     }
+    // Prefer real root filesystems; skip ESP/BIOS/swap noise that yields
+    // "VFS: Can't find ext4 filesystem" in dmesg when probed blindly.
+    candidates.sort_by_key(|p| mount_candidate_rank(p));
     let mut mounted = None;
     for part in &candidates {
         if try_mount(part, &mnt) {
@@ -277,6 +278,43 @@ fn inject_on_loop(loopdev: &str, id: &GuestIdentity<'_>) -> Result<()> {
     drop(lvm);
     let _ = fs::remove_dir_all(&mnt);
     written
+}
+
+fn wait_partitions_ready(loopdev: &str) -> Vec<PathBuf> {
+    let mut last = Vec::new();
+    for _ in 0..50 {
+        last = partitions(loopdev);
+        let usable: Vec<_> = last
+            .iter()
+            .filter(|p| blockdev_usable(p))
+            .cloned()
+            .collect();
+        if usable
+            .iter()
+            .any(|p| matches!(blkid_type(p).as_deref(), Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs" | "LVM2_member")))
+        {
+            // Kernel may still be registering sibling partitions (Ubuntu p13/p15).
+            std::thread::sleep(Duration::from_millis(150));
+            return partitions(loopdev)
+                .into_iter()
+                .filter(|p| blockdev_usable(p))
+                .collect();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    last.into_iter().filter(|p| blockdev_usable(p)).collect()
+}
+
+fn blockdev_usable(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.file_type().is_block_device() {
+        return false;
+    }
+    // Proves VFS can look the device up (avoids "Can't lookup blockdev").
+    File::open(path).is_ok()
 }
 
 fn partitions(loopdev: &str) -> Vec<PathBuf> {
@@ -307,15 +345,35 @@ fn partitions(loopdev: &str) -> Vec<PathBuf> {
     out
 }
 
+fn mount_candidate_rank(dev: &Path) -> u8 {
+    match blkid_type(dev).as_deref() {
+        Some("xfs") | Some("ext4") | Some("ext3") | Some("ext2") | Some("btrfs") => 0,
+        Some("LVM2_member") => 1,
+        Some("vfat") | Some("swap") => 9,
+        _ => 5,
+    }
+}
+
 fn try_mount(dev: &Path, mnt: &Path) -> bool {
-    let attempts: &[&[&str]] = &[
-        &["-t", "xfs", "-o", "nouuid"],
-        &["-o", "nouuid"],
-        &[],
-    ];
-    for extra in attempts {
+    let fs = blkid_type(dev);
+    // nouuid is XFS-only. Passing it as a bare -o makes util-linux probe ext4 and
+    // fail with "ext4: Unknown parameter 'nouuid'" / "VFS: Can't find ext4".
+    let attempts: Vec<Vec<&str>> = match fs.as_deref() {
+        Some("xfs") => vec![vec!["-t", "xfs", "-o", "nouuid"], vec!["-t", "xfs"]],
+        Some("ext4") => vec![vec!["-t", "ext4"]],
+        Some("ext3") => vec![vec!["-t", "ext3"], vec!["-t", "ext4"]],
+        Some("ext2") => vec![vec!["-t", "ext2"]],
+        Some("btrfs") => vec![vec!["-t", "btrfs"]],
+        Some("vfat") | Some("swap") | Some("LVM2_member") => return false,
+        _ => vec![
+            vec!["-t", "xfs", "-o", "nouuid"],
+            vec!["-t", "ext4"],
+            vec![],
+        ],
+    };
+    for extra in &attempts {
         let mut cmd = Command::new("mount");
-        cmd.args(*extra);
+        cmd.args(extra);
         if cmd
             .arg(dev)
             .arg(mnt)
@@ -1565,5 +1623,14 @@ mod tests {
     #[test]
     fn blkid_type_missing_device_is_none() {
         assert_eq!(blkid_type(Path::new("/dev/does-not-exist-pertisk")), None);
+    }
+
+    #[test]
+    fn mount_rank_prefers_root_fs_over_esp() {
+        // Rank only consults blkid; missing devices share the unknown bucket.
+        assert_eq!(
+            mount_candidate_rank(Path::new("/dev/does-not-exist-pertisk")),
+            5
+        );
     }
 }
