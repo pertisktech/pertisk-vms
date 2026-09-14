@@ -1,7 +1,8 @@
 import { Link, useLocation, useOutletContext } from 'react-router-dom'
-import { asList, formatBytes, publicIpv6 } from '../api'
+import { asList, publicIpv6 } from '../api'
 import { Icon } from '../components/Icons'
 import { parseResourceRoute, resourceLink } from '../resourceRoutes'
+import { useMetrics } from '../useMetrics'
 
 function meterTone(pct) {
   if (pct >= 90) return 'hot'
@@ -9,16 +10,16 @@ function meterTone(pct) {
   return ''
 }
 
-function UsageBar({ label, pct, sublabel }) {
-  const n = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0
+function UsageBar({ label, value, sublabel }) {
+  const n = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0
   return (
     <div className="pve-usage-bar">
       <div className="pve-usage-bar-head">
         <span>{label}</span>
-        <em>
+        <span className="pve-usage-bar-val">
           {n.toFixed(1)}%
           {sublabel ? <span className="muted">{sublabel}</span> : null}
-        </em>
+        </span>
       </div>
       <div className="pve-usage-track">
         <div className={`pve-usage-fill ${meterTone(n)}`} style={{ width: `${Math.max(2, n)}%` }} />
@@ -27,11 +28,20 @@ function UsageBar({ label, pct, sublabel }) {
   )
 }
 
+function nodeAddress(member) {
+  const v6 = publicIpv6(member?.ipv6)
+  return member?.ipv4?.[0] || v6[0] || member?.peer_url || '—'
+}
+
 export default function Cluster() {
   const { inv } = useOutletContext()
-  const { cluster, error, setError } = inv
+  const { cluster, host, error, setError } = inv
+  const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const currentRoute = parseResourceRoute(useLocation().pathname)
+  const liveById = new Map(
+    asList(metrics.data?.nodes).map((n) => [String(n.node_id), n]),
+  )
 
   return (
     <div className="pve-tab-page">
@@ -52,25 +62,42 @@ export default function Cluster() {
       ) : (
         <div className="cluster-grid">
           {members.map((m) => {
-            const cpuPct = m.cpus ? (m.used_vcpus / m.cpus) * 100 : 0
-            const memPct = m.memory_mib ? (m.used_memory_mib / m.memory_mib) * 100 : 0
-            const v6 = publicIpv6(m.ipv6)
-            const addr = m.ipv4?.[0] || v6[0] || m.peer_url || '—'
+            const sample = liveById.get(String(m.id))
+            const live = sample?.live
+            const cores = Number(m.cpus) || 0
+            const cpuPct = Number.isFinite(Number(live?.cpu_pct))
+              ? Number(live.cpu_pct)
+              : cores
+                ? (Number(m.used_vcpus) / cores) * 100
+                : 0
+            const memTotal =
+              Number(live?.mem_total_bytes) ||
+              (Number(m.memory_mib) || 0) * 1024 * 1024 ||
+              (String(m.id) === String(cluster?.self_id) ? Number(host?.memory_mib || 0) * 1024 * 1024 : 0)
+            const memUsed =
+              Number(live?.mem_used_bytes) ||
+              (Number(m.used_memory_mib) || 0) * 1024 * 1024
+            const memPct = memTotal > 0 ? (memUsed / memTotal) * 100 : 0
+            const usedCores = cores ? Math.round((cpuPct / 100) * cores) : 0
+            const memTotalGiB = memTotal > 0 ? Math.round(memTotal / (1024 ** 3)) : 0
             const isSelf = m.id === cluster?.self_id
             const isLeader = m.id === cluster?.leader_id
+            const online = m.online !== false
+
             return (
-              <Link
-                key={m.id}
-                to={resourceLink('node', m.id, currentRoute)}
-                className={`cluster-card${m.online ? '' : ' offline'}`}
-                title={m.name}
-              >
+              <article key={m.id} className={`cluster-card${online ? '' : ' offline'}`}>
                 <div className="cluster-card-head">
-                  <span className="cluster-card-title">
-                    <span className={`cluster-card-dot ${m.online ? 'on' : 'off'}`} />
-                    <strong className="cluster-card-name">{m.name || m.id}</strong>
-                  </span>
-                  <span className="cluster-card-ip">{addr}</span>
+                  <div className="cluster-card-title">
+                    <span className={`cluster-card-dot ${online ? 'on' : 'off'}`} />
+                    <Link
+                      to={resourceLink('node', m.id, currentRoute)}
+                      className="cluster-card-name"
+                      title={m.name || String(m.id)}
+                    >
+                      {m.name || m.id}
+                    </Link>
+                  </div>
+                  <span className="cluster-card-ip">{nodeAddress(m)}</span>
                 </div>
                 {(isSelf || isLeader) && (
                   <div className="cluster-card-badges">
@@ -81,16 +108,16 @@ export default function Cluster() {
                 <div className="cluster-card-meters">
                   <UsageBar
                     label="CPU"
-                    pct={cpuPct}
-                    sublabel={`${m.used_vcpus || 0}/${m.cpus || 0}`}
+                    value={cpuPct}
+                    sublabel={cores ? `${usedCores}/${cores}` : undefined}
                   />
                   <UsageBar
                     label="Memory"
-                    pct={memPct}
-                    sublabel={formatBytes((m.memory_mib || 0) * 1024 * 1024)}
+                    value={memPct}
+                    sublabel={memTotalGiB ? `${memTotalGiB} GiB` : undefined}
                   />
                 </div>
-              </Link>
+              </article>
             )
           })}
         </div>
