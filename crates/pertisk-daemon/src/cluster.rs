@@ -1284,6 +1284,34 @@ mod tests {
     }
 
     #[test]
+    fn apply_membership_keeps_peer_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("a".into());
+        config.cluster.offline_after_ms = 5_000;
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        let peer_id = NodeId::new();
+        let peer = NodeRecord {
+            id: peer_id,
+            name: "b".into(),
+            peer_url: "https://10.1.1.10:7443".into(),
+            cpus: 4,
+            memory_mib: 4096,
+            ipv4: vec!["10.1.1.10".into()],
+            ipv6: vec![],
+        };
+        cluster.add_member(peer.clone()).unwrap();
+        cluster.touch(peer_id, Some(peer.clone()));
+        let snap = cluster.membership_snapshot();
+        cluster.apply_membership(&snap).unwrap();
+        let status = cluster.status(&[]);
+        let member = status.members.iter().find(|m| m.id == peer_id).unwrap();
+        assert!(member.online, "snapshot apply must not drop last_seen");
+        assert!(cluster.has_quorum());
+    }
+
+    #[test]
     fn persist_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = HostConfig::default_for(dir.path());

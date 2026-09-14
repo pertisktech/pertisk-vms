@@ -3,13 +3,13 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::Request;
 use axum::extract::{
     DefaultBodyLimit, Path, Query, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -131,6 +131,13 @@ pub fn router(service: Service) -> Router {
             axum::routing::delete(peer_volume_delete),
         )
         .route("/v1/peer/volumes/{id}/stat", get(peer_volume_stat))
+        .route_layer(middleware::from_fn_with_state(
+            service.clone(),
+            auth_middleware,
+        ))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+
+    let peer_blobs = Router::new()
         .route(
             "/v1/peer/volumes/{id}/blob",
             get(peer_volume_blob_get).put(peer_volume_blob_put),
@@ -139,7 +146,7 @@ pub fn router(service: Service) -> Router {
             service.clone(),
             auth_middleware,
         ))
-        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+        .layer(DefaultBodyLimit::disable());
 
     let large_upload = Router::new()
         .route("/v1/isos/upload", post(upload_iso))
@@ -156,6 +163,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/login", post(login))
         .route("/v1/openapi.json", get(openapi))
         .merge(protected)
+        .merge(peer_blobs)
         .merge(large_upload)
         .fallback(static_handler)
         .with_state(service)
@@ -1615,16 +1623,58 @@ async fn peer_volume_blob_get(
     Path(id): Path<VolumeId>,
 ) -> Result<impl IntoResponse, DaemonError> {
     let rec = service.get_volume(id)?;
-    let data = std::fs::read(&rec.path)?;
-    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], data))
+    let file = tokio::fs::File::open(&rec.path)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let meta = file
+        .metadata()
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&meta.len().to_string()).expect("content-length"),
+    );
+    Ok((headers, body))
 }
 
 async fn peer_volume_blob_put(
     State(service): State<Service>,
     Path(id): Path<VolumeId>,
-    body: Bytes,
+    body: Body,
 ) -> Result<impl IntoResponse, DaemonError> {
-    Ok(Json(service.apply_volume_blob(id, &body)?))
+    let rec = service.get_volume(id)?;
+    let tmp = service.upload_tmp_path("peer-blob", rec.format.extension())?;
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let mut stream = body.into_data_stream();
+    let write = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(pertisk_storage::StorageError::Io)?;
+        }
+        file.flush()
+            .await
+            .map_err(pertisk_storage::StorageError::Io)?;
+        Ok::<(), DaemonError>(())
+    }
+    .await;
+    if let Err(err) = write {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err);
+    }
+    drop(file);
+    let result = service.apply_volume_blob_path(id, &tmp);
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Ok(Json(result?))
 }
 
 impl IntoResponse for DaemonError {

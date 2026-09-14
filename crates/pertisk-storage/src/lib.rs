@@ -302,6 +302,29 @@ impl VolumePool {
         Ok(record)
     }
 
+    /// Copy an on-disk image into the volume path without buffering it in RAM.
+    pub fn write_blob_from_path(&self, id: VolumeId, src: &Path) -> Result<VolumeRecord> {
+        let mut record = self.get_volume(id)?;
+        if record.backend == StorageBackend::Rbd {
+            return Err(StorageError::Message(
+                "cannot write a blob to an rbd volume".into(),
+            ));
+        }
+        record.path = self.local_path(record.id, record.format);
+        if let Some(parent) = record.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if src != record.path.as_path() {
+            let tmp = record.path.with_extension("blob.tmp");
+            std::fs::copy(src, &tmp)?;
+            std::fs::rename(&tmp, &record.path)?;
+        }
+        let len = std::fs::metadata(&record.path)?.len();
+        record.size_bytes = record.size_bytes.max(len);
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
     pub fn local_stat(&self, id: VolumeId) -> Result<(bool, u64)> {
         let record = self.get_volume(id)?;
         if !record.path.exists() {
@@ -1135,6 +1158,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = VolumePool::open(dir.path(), pertisk_types::find_in_path("qemu-img")).unwrap();
         (pool, dir)
+    }
+
+    #[test]
+    fn write_blob_from_path_does_not_require_ram_copy_of_source() {
+        let (pool, dir) = pool();
+        let vol = pool
+            .create_volume(CreateVolumeRequest {
+                name: "disk".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+            })
+            .unwrap();
+        let src = dir.path().join("incoming.bin");
+        std::fs::write(&src, vec![7u8; 64 * 1024]).unwrap();
+        let written = pool.write_blob_from_path(vol.id, &src).unwrap();
+        assert_eq!(std::fs::read(&written.path).unwrap(), vec![7u8; 64 * 1024]);
     }
 
     #[test]

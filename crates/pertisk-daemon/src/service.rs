@@ -2576,11 +2576,14 @@ impl Service {
         &self,
         msg: pertisk_types::HeartbeatMessage,
     ) -> Result<Option<pertisk_types::ClusterSnapshot>, DaemonError> {
-        self.cluster.touch(msg.from, Some(msg.member));
+        let from = msg.from;
+        self.cluster.touch(from, Some(msg.member));
         if let Some(snap) = msg.snapshot
             && snap.generation >= self.cluster.generation()
         {
             self.apply_snapshot(snap)?;
+            // Re-touch so applying a snapshot cannot mark the sender stale.
+            self.cluster.touch(from, None);
         }
         if self.cluster.is_leader() && msg.generation < self.cluster.generation() {
             return Ok(Some(self.snapshot()?));
@@ -2614,11 +2617,16 @@ impl Service {
             self.autostart_local().await;
         }
         self.send_heartbeats().await;
-        if self.cluster.has_quorum()
-            && self.cluster.is_leader()
-            && let Ok(_guard) = self.rebuild.try_lock()
-        {
-            self.rebuild_volumes().await;
+        // Replica rebuild copies disk images and can run for minutes. Never await it
+        // on the heartbeat tick — a 2-node cluster loses quorum after ~5s of silence.
+        if self.cluster.has_quorum() && self.cluster.is_leader() {
+            if let Ok(guard) = self.rebuild.clone().try_lock_owned() {
+                let svc = self.clone();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    svc.rebuild_volumes().await;
+                });
+            }
         }
         Ok(())
     }
@@ -2944,13 +2952,23 @@ impl Service {
             match self
                 .http
                 .post(&endpoint)
-                .timeout(std::time::Duration::from_secs(2))
+                .timeout(std::time::Duration::from_secs(8))
                 .header("x-pertisk-peer", self.cluster.secret())
                 .json(&msg)
                 .send()
                 .await
             {
-                Ok(res) if res.status().is_success() => {}
+                Ok(res) if res.status().is_success() => {
+                    // A 200 means the peer is alive even if we have not received their
+                    // heartbeat (e.g. they were stuck rebuilding volumes).
+                    self.cluster.touch(id, None);
+                    if let Ok(Some(snap)) =
+                        res.json::<Option<pertisk_types::ClusterSnapshot>>().await
+                    {
+                        let _ = self.apply_snapshot(snap);
+                        self.cluster.touch(id, None);
+                    }
+                }
                 Ok(res) => {
                     tracing::warn!(
                         peer = %id,
@@ -3075,6 +3093,17 @@ impl Service {
         Ok(self.volumes.write_blob(id, bytes)?)
     }
 
+    pub fn apply_volume_blob_path(
+        &self,
+        id: VolumeId,
+        src: &Path,
+    ) -> Result<VolumeRecord, DaemonError> {
+        if self.volumes.get_volume(id).is_err() {
+            return Err(DaemonError::Storage(StorageError::NotFound(id)));
+        }
+        Ok(self.volumes.write_blob_from_path(id, src)?)
+    }
+
     pub fn volume_stat(&self, id: VolumeId) -> Result<serde_json::Value, DaemonError> {
         let (exists, size) = self.volumes.local_stat(id).unwrap_or((false, 0));
         Ok(serde_json::json!({ "exists": exists, "size": size }))
@@ -3135,10 +3164,7 @@ impl Service {
                     DaemonError::Peer(format!("ensure volume {} on {dest}: {err}", vol.name))
                 })?;
             if self.volumes.has_local(vol.id, vol.format) {
-                let bytes = self.volumes.read_blob(vol.id).map_err(|err| {
-                    DaemonError::Peer(format!("read volume {} for sync: {err}", vol.name))
-                })?;
-                self.peer_put_blob(dest, vol.id, &bytes).await.map_err(|err| {
+                self.peer_put_blob(dest, vol.id).await.map_err(|err| {
                     DaemonError::Peer(format!("sync volume {} to {dest}: {err}", vol.name))
                 })?;
             }
@@ -3181,10 +3207,8 @@ impl Service {
             }
             let mut pulled = false;
             for src in sources {
-                match self.peer_get_blob(src, vol.id).await {
-                    Ok(bytes) => {
-                        self.volumes.ensure_local(&vol)?;
-                        self.volumes.write_blob(vol.id, &bytes)?;
+                match self.peer_pull_blob(src, vol.id).await {
+                    Ok(()) => {
                         if !vol.replicas.contains(&self_id) {
                             vol.replicas.push(self_id);
                             vol.replica_count =
@@ -3229,9 +3253,6 @@ impl Service {
         if !has_remote {
             return;
         }
-        let Ok(bytes) = self.volumes.read_blob(record.id) else {
-            return;
-        };
         for replica in &record.replicas {
             if *replica == self.cluster.self_id() {
                 continue;
@@ -3239,7 +3260,7 @@ impl Service {
             if !online.contains(replica) {
                 continue;
             }
-            if let Err(err) = self.peer_put_blob(*replica, record.id, &bytes).await {
+            if let Err(err) = self.peer_put_blob(*replica, record.id).await {
                 tracing::warn!(
                     volume = %record.name,
                     peer = %replica,
@@ -3298,10 +3319,9 @@ impl Service {
                 .iter()
                 .copied()
                 .find(|id| *id != self.cluster.self_id())
-                && let Ok(bytes) = self.peer_get_blob(src, vol.id).await
             {
                 let _ = self.volumes.ensure_local(&vol);
-                let _ = self.volumes.write_blob(vol.id, &bytes);
+                let _ = self.peer_pull_blob(src, vol.id).await;
             }
         }
     }
@@ -3310,8 +3330,24 @@ impl Service {
         &self,
         dest: pertisk_types::NodeId,
         id: VolumeId,
-        bytes: &[u8],
     ) -> Result<(), DaemonError> {
+        let rec = self.volumes.get_volume(id)?;
+        if rec.backend == StorageBackend::Rbd {
+            return Ok(());
+        }
+        let path = rec.path.clone();
+        if !path.is_file() {
+            return Err(DaemonError::Peer(format!("local volume {id} missing")));
+        }
+        let local_len = std::fs::metadata(&path)?.len();
+        if local_len > 0
+            && let Ok(stat) = self.peer_volume_stat_remote(dest, id).await
+            && stat.0
+            && stat.1 == local_len
+        {
+            return Ok(());
+        }
+        let file = std::fs::File::open(&path)?;
         let url = self
             .cluster
             .member_url(dest)
@@ -3324,8 +3360,8 @@ impl Service {
             ))
             .header("x-pertisk-peer", self.cluster.secret())
             .header("content-type", "application/octet-stream")
-            .body(bytes.to_vec())
-            // Disk images are large; 600ms was far too short for cross-node sync.
+            .header("content-length", local_len)
+            .body(file)
             .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
             .await
@@ -3340,11 +3376,45 @@ impl Service {
         Ok(())
     }
 
-    async fn peer_get_blob(
+    async fn peer_volume_stat_remote(
         &self,
         dest: pertisk_types::NodeId,
         id: VolumeId,
-    ) -> Result<Vec<u8>, DaemonError> {
+    ) -> Result<(bool, u64), DaemonError> {
+        let url = self
+            .cluster
+            .member_url(dest)
+            .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
+        let response = self
+            .http
+            .get(format!(
+                "{}/v1/peer/volumes/{id}/stat",
+                url.trim_end_matches('/')
+            ))
+            .header("x-pertisk-peer", self.cluster.secret())
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(DaemonError::Peer(format!("{}", response.status())));
+        }
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        Ok((
+            value.get("exists").and_then(|v| v.as_bool()).unwrap_or(false),
+            value.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+        ))
+    }
+
+    async fn peer_pull_blob(
+        &self,
+        dest: pertisk_types::NodeId,
+        id: VolumeId,
+    ) -> Result<(), DaemonError> {
+        let rec = self.volumes.get_volume(id)?;
         let url = self
             .cluster
             .member_url(dest)
@@ -3363,11 +3433,14 @@ impl Service {
         if !response.status().is_success() {
             return Err(DaemonError::Peer(format!("{}", response.status())));
         }
-        Ok(response
-            .bytes()
-            .await
-            .map_err(|err| DaemonError::Peer(err.to_string()))?
-            .to_vec())
+        let tmp = self.upload_tmp_path("peer-pull", rec.format.extension())?;
+        if let Err(err) = stream_response_to_file(response, &tmp).await {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
+        let result = self.volumes.write_blob_from_path(id, &tmp);
+        let _ = std::fs::remove_file(&tmp);
+        result.map(|_| ()).map_err(Into::into)
     }
 
     async fn peer_delete_volume(
@@ -3395,6 +3468,24 @@ impl Service {
         self.cluster.reset_solo()?;
         self.cluster_status()
     }
+}
+
+async fn stream_response_to_file(
+    response: reqwest::Response,
+    dest: &Path,
+) -> Result<u64, DaemonError> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = response.bytes_stream();
+    let mut written = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| DaemonError::Peer(err.to_string()))?;
+        written += chunk.len() as u64;
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(written)
 }
 
 /// Fill / refresh NIC IPs from QEMU guest agent and/or the host neighbour table.
