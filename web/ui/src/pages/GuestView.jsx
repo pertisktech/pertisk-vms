@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { createContext, useContext, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api, asList, isTemplate, vmCaption } from '../api'
 import { Btn } from '../components/Icons'
@@ -7,10 +7,22 @@ import ResourceView from '../components/ResourceView'
 import { useConfirm } from '../components/Confirm'
 import CloneWizard from '../components/CloneWizard'
 
+const GuestOverride = createContext(null)
+
+/** Optional override for standalone SSH popup windows. */
+export function GuestProvider({ value, children }) {
+  return <GuestOverride.Provider value={value}>{children}</GuestOverride.Provider>
+}
+
 export function useGuest() {
-  const { vmId } = useParams()
-  const ctx = useOutletContext()
-  const live = ctx.inv.vms.find((item) => String(item.id) === vmId) || null
+  const override = useContext(GuestOverride)
+  const { vmId: routeId } = useParams()
+  const ctx = useOutletContext() || {}
+  const vmId = override?.vmId || routeId
+  const live =
+    override?.vm ||
+    ctx.inv?.vms?.find((item) => String(item.id) === String(vmId)) ||
+    null
   // Keep last-known guest across inventory polls so Console websockets are not torn down.
   const cached = useRef(live)
   if (live) cached.current = live
@@ -18,6 +30,9 @@ export function useGuest() {
     cached.current = live
   }
   const vm = live || cached.current
+  if (override) {
+    return { ...ctx, ...override, vmId, vm }
+  }
   return { ...ctx, vmId, vm }
 }
 
@@ -98,6 +113,7 @@ export default function GuestView() {
         tabs={[
           { to: 'summary', label: 'Summary', icon: 'gauge' },
           !template && { to: 'console', label: 'Console', icon: 'terminal' },
+          !template && { to: 'ssh', label: 'SSH', icon: 'key' },
           { to: 'hardware', label: 'Hardware', icon: 'hardware' },
           !template && { to: 'snapshots', label: 'Snapshots', icon: 'camera' },
           !template && { to: 'backup', label: 'Backup', icon: 'archive' },
@@ -107,9 +123,14 @@ export default function GuestView() {
         actions={
           <>
             {!template && (
-              <Btn icon="terminal" onClick={() => nav(`/vm/${vmId}/console`)}>
-                Console
-              </Btn>
+              <>
+                <Btn icon="terminal" onClick={() => nav(`/vm/${vmId}/console`)}>
+                  Console
+                </Btn>
+                <Btn icon="key" variant="secondary" onClick={() => nav(`/vm/${vmId}/ssh`)}>
+                  SSH
+                </Btn>
+              </>
             )}
             {canWrite && (
               <>

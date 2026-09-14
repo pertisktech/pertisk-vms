@@ -54,6 +54,9 @@ import {
   LuArchive,
   LuCircleDot,
   LuPencil,
+  LuMaximize2,
+  LuMinimize2,
+  LuExternalLink,
 } from 'react-icons/lu'
 
 const ICONS = {
@@ -112,6 +115,9 @@ const ICONS = {
   archive: LuArchive,
   'circle-dot': LuCircleDot,
   pencil: LuPencil,
+  maximize: LuMaximize2,
+  minimize: LuMinimize2,
+  external: LuExternalLink,
 }
 
 export function Icon({ name, size = 18, className = '' }) {

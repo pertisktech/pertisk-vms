@@ -126,6 +126,32 @@ EOF
 
 ensure_ssh_login
 
+ensure_guest_ssh_identity() {
+  # Node-owned key injected into cloud clones so the UI SSH tab can log in without a password.
+  mkdir -p /etc/pertisk/ssh /var/lib/pertisk/ssh
+  chmod 700 /etc/pertisk/ssh /var/lib/pertisk/ssh
+  local key=/etc/pertisk/ssh/id_ed25519
+  local pub="${key}.pub"
+  local auth=/etc/pertisk/ssh/authorized_keys
+  if [[ ! -f "$key" ]]; then
+    if command -v ssh-keygen >/dev/null 2>&1; then
+      ssh-keygen -t ed25519 -N '' -C "pertisk-node@$(hostname -s 2>/dev/null || echo node)" -f "$key" >/dev/null
+      chmod 600 "$key"
+      chmod 644 "$pub"
+      echo "pertisk-firstboot: created $key for guest SSH"
+    fi
+  fi
+  if [[ -f "$pub" ]]; then
+    touch "$auth"
+    chmod 600 "$auth"
+    if ! grep -qxF "$(cat "$pub")" "$auth" 2>/dev/null; then
+      cat "$pub" >>"$auth"
+    fi
+  fi
+}
+
+ensure_guest_ssh_identity
+
 if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
   /usr/sbin/pertisk-fix-hosts || echo "pertisk-firstboot: hosts fix skipped" >&2
 elif ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then

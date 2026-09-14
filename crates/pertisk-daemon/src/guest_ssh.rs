@@ -1,7 +1,8 @@
-//! Interactive host shell (Proxmox-style Node → Shell).
+//! Interactive SSH into a running guest (browser terminal → host ssh client).
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -10,26 +11,34 @@ use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySyste
 use tokio::sync::mpsc;
 use tracing::warn;
 
-pub async fn proxy(socket: WebSocket) {
-    match spawn_shell() {
+use crate::shell::{PtyIn, parse_resize};
+
+pub struct GuestSshTarget {
+    pub host: String,
+    pub user: String,
+    pub identity: Option<PathBuf>,
+}
+
+pub async fn proxy(socket: WebSocket, target: GuestSshTarget) {
+    match spawn_ssh(&target) {
         Ok(session) => pump(socket, session).await,
         Err(err) => {
             let mut socket = socket;
             let _ = socket
-                .send(Message::Text(format!("shell: {err}\r\n").into()))
+                .send(Message::Text(format!("ssh: {err}\r\n").into()))
                 .await;
         }
     }
 }
 
-struct ShellSession {
+struct SshSession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
 }
 
-fn spawn_shell() -> Result<ShellSession, String> {
+fn spawn_ssh(target: &GuestSshTarget) -> Result<SshSession, String> {
     let system = NativePtySystem::default();
     let pair = system
         .openpty(PtySize {
@@ -39,31 +48,36 @@ fn spawn_shell() -> Result<ShellSession, String> {
             pixel_height: 0,
         })
         .map_err(|err| format!("open pty: {err}"))?;
-    let mut cmd = CommandBuilder::new(shell_bin());
-    cmd.arg("-i");
-    cmd.arg("-l");
+
+    let ssh = ssh_bin().ok_or_else(|| {
+        "ssh client missing (install openssh-client on the node)".to_string()
+    })?;
+    let mut cmd = CommandBuilder::new(ssh);
+    cmd.arg("-tt");
+    cmd.arg("-o");
+    cmd.arg("StrictHostKeyChecking=accept-new");
+    cmd.arg("-o");
+    cmd.arg("UserKnownHostsFile=/var/lib/pertisk/ssh/known_hosts");
+    cmd.arg("-o");
+    cmd.arg("LogLevel=ERROR");
+    cmd.arg("-o");
+    cmd.arg("PreferredAuthentications=publickey,password,keyboard-interactive");
+    if let Some(identity) = &target.identity {
+        cmd.arg("-i");
+        cmd.arg(identity);
+    }
+    cmd.arg(format!("{}@{}", target.user, target.host));
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("LANG", "C.UTF-8");
     cmd.env("LC_ALL", "C.UTF-8");
-    cmd.env("SHELL", shell_bin());
-    cmd.env("ZSH", "/usr/share/oh-my-zsh");
-    cmd.env("POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD", "true");
-    cmd.env("POWERLEVEL9K_INSTANT_PROMPT", "off");
-    cmd.env(
-        "PATH",
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    );
-    if Path::new("/root").is_dir() {
-        cmd.cwd("/root");
-        cmd.env("HOME", "/root");
-        cmd.env("USER", "root");
-        cmd.env("LOGNAME", "root");
-    }
+
+    let _ = std::fs::create_dir_all("/var/lib/pertisk/ssh");
+
     let child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|err| format!("spawn shell: {err}"))?;
+        .map_err(|err| format!("spawn ssh: {err}"))?;
     let reader = pair
         .master
         .try_clone_reader()
@@ -72,7 +86,7 @@ fn spawn_shell() -> Result<ShellSession, String> {
         .master
         .take_writer()
         .map_err(|err| format!("pty writer: {err}"))?;
-    Ok(ShellSession {
+    Ok(SshSession {
         child,
         master: Arc::new(Mutex::new(pair.master)),
         reader,
@@ -80,27 +94,80 @@ fn spawn_shell() -> Result<ShellSession, String> {
     })
 }
 
-fn shell_bin() -> &'static str {
-    [
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/bin/sh",
-        "/usr/bin/sh",
-    ]
-    .into_iter()
-    .find(|path| Path::new(path).is_file())
-    .unwrap_or("/bin/sh")
+fn ssh_bin() -> Option<&'static str> {
+    ["/usr/bin/ssh", "/bin/ssh"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
 }
 
-pub(crate) enum PtyIn {
-    Data(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+pub fn find_identity() -> Option<PathBuf> {
+    ensure_identity();
+    const CANDIDATES: &[&str] = &[
+        "/etc/pertisk/ssh/id_ed25519",
+        "/etc/pertisk/ssh/id_rsa",
+        "/root/.ssh/id_ed25519",
+        "/root/.ssh/id_rsa",
+    ];
+    CANDIDATES
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
 }
 
-async fn pump(mut socket: WebSocket, session: ShellSession) {
-    let ShellSession {
+/// Create `/etc/pertisk/ssh/id_ed25519` when missing and append its pubkey to authorized_keys.
+fn ensure_identity() {
+    let key = Path::new("/etc/pertisk/ssh/id_ed25519");
+    let pub_path = Path::new("/etc/pertisk/ssh/id_ed25519.pub");
+    let auth = Path::new("/etc/pertisk/ssh/authorized_keys");
+    let _ = std::fs::create_dir_all("/etc/pertisk/ssh");
+    let _ = std::fs::create_dir_all("/var/lib/pertisk/ssh");
+    if !key.is_file() {
+        let keygen = ["/usr/bin/ssh-keygen", "/bin/ssh-keygen"]
+            .into_iter()
+            .find(|p| Path::new(p).is_file());
+        if let Some(bin) = keygen {
+            let status = std::process::Command::new(bin)
+                .args([
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    "pertisk-node",
+                    "-f",
+                    key.to_str().unwrap_or("/etc/pertisk/ssh/id_ed25519"),
+                ])
+                .status();
+            if !matches!(status, Ok(s) if s.success()) {
+                return;
+            }
+            let _ = std::fs::set_permissions(key, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    if pub_path.is_file() {
+        let Ok(pub_line) = std::fs::read_to_string(pub_path) else {
+            return;
+        };
+        let pub_line = pub_line.trim();
+        if pub_line.is_empty() {
+            return;
+        }
+        let existing = std::fs::read_to_string(auth).unwrap_or_default();
+        if !existing.lines().any(|l| l.trim() == pub_line) {
+            let mut body = existing;
+            if !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str(pub_line);
+            body.push('\n');
+            let _ = std::fs::write(auth, body);
+            let _ = std::fs::set_permissions(auth, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+async fn pump(mut socket: WebSocket, session: SshSession) {
+    let SshSession {
         mut child,
         master,
         mut reader,
@@ -189,47 +256,17 @@ async fn pump(mut socket: WebSocket, session: ShellSession) {
     }
 
     if let Err(err) = child.kill() {
-        warn!(error = %err, "host shell kill");
+        warn!(error = %err, "guest ssh kill");
     }
     let _ = child.wait();
 }
 
-pub(crate) fn parse_resize(text: &str) -> Option<(u16, u16)> {
-    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
-    if value.get("type")?.as_str()? != "resize" {
-        return None;
-    }
-    let cols = value.get("cols")?.as_u64()? as u16;
-    let rows = value.get("rows")?.as_u64()? as u16;
-    if cols == 0 || rows == 0 {
-        return None;
-    }
-    Some((cols, rows))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_resize, shell_bin};
-    use std::path::Path;
+    use super::find_identity;
 
     #[test]
-    fn parse_resize_json() {
-        assert_eq!(
-            parse_resize(r#"{"type":"resize","cols":100,"rows":40}"#),
-            Some((100, 40))
-        );
-        assert_eq!(parse_resize("echo hi"), None);
-    }
-
-    #[test]
-    fn shell_bin_exists() {
-        let bin = shell_bin();
-        assert!(
-            Path::new(bin).is_file() || bin == "/bin/sh",
-            "shell binary missing: {bin}"
-        );
-        if Path::new("/bin/zsh").is_file() {
-            assert_eq!(bin, "/bin/zsh");
-        }
+    fn find_identity_is_optional() {
+        let _ = find_identity();
     }
 }

@@ -19,6 +19,8 @@ import NodeRepositories from './pages/node/Repositories'
 import NodeShell from './pages/node/Shell'
 import GuestSummary from './pages/guest/Summary'
 import GuestConsoleRoute from './pages/guest/ConsoleRoute'
+import GuestSshRoute from './pages/guest/SshRoute'
+import GuestSshPopup from './pages/guest/SshPopup'
 import GuestHardware from './pages/guest/Hardware'
 import GuestSnapshots from './pages/guest/Snapshots'
 import GuestBackup from './pages/guest/Backup'
@@ -34,6 +36,7 @@ export default function App() {
         <HashRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/vm/:vmId/ssh-popup" element={<GuestSshPopup />} />
             <Route element={<Layout />}>
               <Route path="/dc" element={<Datacenter />}>
                 <Route index element={<Navigate to="summary" replace />} />
@@ -59,6 +62,7 @@ export default function App() {
                 <Route index element={<Navigate to="summary" replace />} />
                 <Route path="summary" element={<GuestSummary />} />
                 <Route path="console" element={<GuestConsoleRoute />} />
+                <Route path="ssh" element={<GuestSshRoute />} />
                 <Route path="hardware" element={<GuestHardware />} />
                 <Route path="snapshots" element={<GuestSnapshots />} />
                 <Route path="backup" element={<GuestBackup />} />

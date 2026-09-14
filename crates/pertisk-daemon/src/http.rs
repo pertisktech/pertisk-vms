@@ -87,6 +87,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/console/input", post(console_input))
         .route("/v1/vms/{id}/console/ws", get(console_ws))
         .route("/v1/vms/{id}/graphics/ws", get(graphics_ws))
+        .route("/v1/vms/{id}/ssh/ws", get(guest_ssh_ws))
         .route("/v1/volumes", get(list_volumes).post(create_volume))
         .route("/v1/volumes/{id}", get(show_volume).delete(delete_volume))
         .route("/v1/volumes/{id}/resize", post(resize_volume))
@@ -223,7 +224,7 @@ fn required_role(method: &Method, path: &str) -> Role {
         Role::Viewer
     } else if path.starts_with("/v1/users") {
         Role::Admin
-    } else if path.starts_with("/v1/node/shell") {
+    } else if path.starts_with("/v1/node/shell") || path.contains("/ssh/ws") {
         Role::Operator
     } else if *method == Method::GET {
         Role::Viewer
@@ -1325,6 +1326,28 @@ async fn graphics_ws(
         .graphics_socket
         .ok_or_else(|| DaemonError::Peer("VM has no graphics console".into()))?;
     Ok(ws.on_upgrade(move |socket| proxy_graphics(socket, graphics_socket)))
+}
+
+#[derive(Debug, Deserialize)]
+struct GuestSshQuery {
+    #[serde(default)]
+    user: Option<String>,
+}
+
+async fn guest_ssh_ws(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Query(query): Query<GuestSshQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, DaemonError> {
+    let target = service.guest_ssh_target(id, query.user.as_deref())?;
+    let _ = service.audit(
+        &user.username,
+        "vm.ssh",
+        Some(&format!("{}@{}", target.user, target.host)),
+    );
+    Ok(ws.on_upgrade(move |socket| crate::guest_ssh::proxy(socket, target)))
 }
 
 async fn proxy_graphics(mut ws: WebSocket, graphics_socket: std::path::PathBuf) {

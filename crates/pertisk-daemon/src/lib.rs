@@ -3,6 +3,7 @@
 mod cluster;
 mod console;
 mod control;
+mod guest_ssh;
 mod http;
 mod metrics;
 mod service;

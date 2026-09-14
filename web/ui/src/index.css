@@ -2392,6 +2392,52 @@ a.guest-card:hover { color: inherit; }
 }
 .console-tab.active { background: color-mix(in srgb, var(--accent, #5b8def) 35%, transparent); color: var(--color-text); }
 .console-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.ssh-user-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.ssh-user-field input {
+  width: 7.5rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: var(--mono);
+}
+.pve-console-wrap.is-fullscreen,
+.pve-console-wrap:fullscreen {
+  background: var(--bg);
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+.pve-console-wrap:fullscreen .console-pane-stack {
+  border-radius: var(--radius-lg);
+  min-height: 0;
+  height: 100%;
+}
+.pve-ssh-window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  padding: 0.5rem;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+}
+.pve-ssh-window .pve-console-wrap,
+.pve-ssh-popup {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.pve-ssh-window .console-pane-stack {
+  min-height: 0;
+}
 .console-xterm { padding: 0; background: var(--color-console); min-height: 0; }
 .console-xterm .xterm {
   width: 100% !important;

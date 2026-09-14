@@ -1769,6 +1769,65 @@ impl Service {
         })
     }
 
+    /// Resolve SSH user + address for the browser guest SSH tab.
+    pub fn guest_ssh_target(
+        &self,
+        id: VmId,
+        user: Option<&str>,
+    ) -> Result<crate::guest_ssh::GuestSshTarget, DaemonError> {
+        let vm = self.store.get(id)?;
+        self.require_not_template(&vm, "ssh")?;
+        if vm.state != VmState::Running {
+            return Err(DaemonError::Peer(format!(
+                "guest {id} is not running (state {})",
+                vm.state
+            )));
+        }
+        let host = vm
+            .spec
+            .nets
+            .iter()
+            .find_map(|nic| {
+                nic.ip
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        nic.ipv6
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && !s.to_ascii_lowercase().starts_with("fe80:"))
+                            .map(|s| s.to_string())
+                    })
+            })
+            .ok_or_else(|| {
+                DaemonError::Peer(format!(
+                    "guest {id} has no IP yet — wait for DHCP/cloud-init or set a static address"
+                ))
+            })?;
+        let mut hints = vec![vm.spec.name.clone()];
+        for disk in &vm.spec.disks {
+            if let Some(vid) = disk.volume_id {
+                if let Ok(vol) = self.volumes.get_volume(vid) {
+                    hints.push(vol.name);
+                }
+            }
+        }
+        let user = user
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
+            });
+        Ok(crate::guest_ssh::GuestSshTarget {
+            host,
+            user,
+            identity: crate::guest_ssh::find_identity(),
+        })
+    }
+
     pub async fn write_console(&self, id: VmId, text: &str) -> Result<(), DaemonError> {
         let vm = self.store.get(id)?;
         self.attach_console(&vm).await;
