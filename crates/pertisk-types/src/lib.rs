@@ -282,7 +282,8 @@ fn default_heartbeat_ms() -> u64 {
 }
 
 fn default_offline_after_ms() -> u64 {
-    5000
+    // 2-node clusters lose quorum after one missed beat at 5s and fence/autostart-loop.
+    20_000
 }
 
 impl Default for ClusterConfig {

@@ -2677,6 +2677,9 @@ impl Service {
         }
         let _ = self.cluster.heal_remote_peer_urls();
         self.check_node_offline_notifications();
+        // Apply peer inventory before HA/autostart so a restart does not boot
+        // guests the other node already owns (that dual-run then stop/start-loops).
+        self.send_heartbeats().await;
         let quorum = self.cluster.has_quorum();
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
@@ -2686,9 +2689,8 @@ impl Service {
             self.recover_ha().await?;
             self.autostart_local().await;
         }
-        self.send_heartbeats().await;
         // Replica rebuild copies disk images and can run for minutes. Never await it
-        // on the heartbeat tick — a 2-node cluster loses quorum after ~5s of silence.
+        // on the heartbeat tick — a 2-node cluster loses quorum after a few missed beats.
         if self.cluster.has_quorum() && self.cluster.is_leader() {
             if let Ok(guard) = self.rebuild.clone().try_lock_owned() {
                 let svc = self.clone();
@@ -2846,20 +2848,29 @@ impl Service {
         Ok(())
     }
 
-    /// Correct stale Running state when the hypervisor process is already gone.
+    /// Correct stale Running state when the hypervisor process is already gone,
+    /// and stop guests this node no longer owns (HA / snapshot moved them).
     pub(crate) async fn reconcile_local_vms(&self) {
         let self_id = self.cluster.self_id();
         let Ok(vms) = self.store.list() else {
             return;
         };
         for vm in vms {
-            if vm.state != VmState::Running || vm.node_id != Some(self_id) {
+            let mine = vm.node_id == Some(self_id);
+            let alive = self.vmm.is_running(&vm).await;
+            if alive && !mine {
+                tracing::warn!(
+                    vm = %vm.id,
+                    owner = ?vm.node_id,
+                    "stopping guest owned by another node"
+                );
+                let _ = self.apply_drop(&vm).await;
                 continue;
             }
-            if !self.vmm.is_running(&vm).await
-                && let Err(err) = self.on_guest_exited(vm.id).await
-            {
-                tracing::warn!(vm = %vm.id, error = %err, "reconcile stop failed");
+            if mine && vm.state == VmState::Running && !alive {
+                if let Err(err) = self.on_guest_exited(vm.id).await {
+                    tracing::warn!(vm = %vm.id, error = %err, "reconcile stop failed");
+                }
             }
         }
     }
@@ -2915,10 +2926,18 @@ impl Service {
                 continue;
             }
             tracing::warn!(vm = %vm.id, from = %owner, to = %dest, "ha restart");
-            vm.node_id = Some(dest);
-            vm.state = VmState::Created;
-            match self.peer_run(dest, vm.clone()).await {
+            let mut moving = vm.clone();
+            moving.node_id = Some(dest);
+            moving.state = VmState::Created;
+            match self.peer_run(dest, moving).await {
                 Ok(started) => {
+                    let mut stale = vm.clone();
+                    stale.node_id = Some(owner);
+                    if owner == self.cluster.self_id() {
+                        let _ = self.apply_drop(&stale).await;
+                    } else {
+                        let _ = self.peer_drop(owner, &stale).await;
+                    }
                     let _ = self.store.upsert(started);
                 }
                 Err(err) => {

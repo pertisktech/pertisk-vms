@@ -39,7 +39,7 @@ name = "pertisk"
 # peer_url = "http://192.168.1.10:7480"
 # join = "http://192.168.1.10:7480"
 heartbeat_ms = 1000
-offline_after_ms = 5000
+offline_after_ms = 20000     # 2-node clusters need headroom; 5s fences too easily
 # Auto-detected from nproc / MemTotal if unset (16c/64G → 16 / ~48GiB advertised).
 # cpus = 16
 # memory_mib = 49152
