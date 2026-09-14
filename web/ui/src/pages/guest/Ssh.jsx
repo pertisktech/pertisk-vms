@@ -43,7 +43,7 @@ function guestSshMeta(vm) {
   const addrs = nicAddrs(nic)
   const host = addrs[0] || ''
   const hints = [vm?.spec?.name, ...(disksOf(vm) || []).map((d) => d.path || d.iso_name)].filter(Boolean)
-  const user = defaultCloudUser(...hints)
+  const user = (vm?.spec?.ssh_user || '').trim() || defaultCloudUser(...hints)
   return { host, user }
 }
 

@@ -121,6 +121,7 @@ impl Service {
         let notify = config.notify.clone();
         let cluster = Cluster::open(data_dir.join("state/cluster.json"), &config, &listen)
             .expect("open cluster state");
+        crate::guest_ssh::ensure_identity();
         Self {
             vmm: Arc::new(vmm),
             store: Arc::new(store),
@@ -895,6 +896,7 @@ impl Service {
             autostart: false,
             autostart_delay: 0,
             autostart_order: 0,
+            ssh_user: None,
         };
         spec.validate()?;
         let id = match req.id {
@@ -938,6 +940,7 @@ impl Service {
         spec.disks = Vec::new();
         spec.nets = Vec::new();
         spec.serial_log = None;
+        spec.ssh_user = None;
         spec.autostart = req.autostart.unwrap_or(false);
         spec.ha = req.ha.unwrap_or(true);
         spec.autostart_delay = req.autostart_delay.unwrap_or(0);
@@ -1082,6 +1085,7 @@ impl Service {
                     }
                     default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
                 });
+            crate::guest_ssh::ensure_identity();
             if let Some(path) = os_disk {
                 let hostname_i = hostname.clone();
                 let user_i = user.clone();
@@ -1116,13 +1120,17 @@ impl Service {
             let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
                 name: format!("{name}-{new_id}-cidata.iso"),
                 hostname: Some(hostname),
-                user: Some(user),
+                user: Some(user.clone()),
                 password: ci.password.clone(),
                 ssh_authorized_keys: ci.ssh_authorized_keys.clone(),
                 userdata: ci.userdata.clone(),
                 network: self.cloudinit_network_for(new_id),
             })?;
             self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
+            if let Ok(mut vm) = self.store.get(new_id) {
+                vm.spec.ssh_user = Some(user);
+                let _ = self.store.upsert(vm);
+            }
         }
         Ok(())
     }
@@ -1732,6 +1740,7 @@ impl Service {
     }
 
     pub fn create_cloudinit_iso(&self, req: CloudInitIsoRequest) -> Result<IsoRecord, DaemonError> {
+        crate::guest_ssh::ensure_identity();
         Ok(self.volumes.create_cloudinit_iso(req)?)
     }
 
@@ -2084,12 +2093,45 @@ impl Service {
                     hints.push(vol.name);
                 }
             }
+            if let Some(iso) = &disk.iso_name {
+                hints.push(iso.clone());
+            }
         }
         let user = user
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
+            .or_else(|| {
+                vm.spec
+                    .ssh_user
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| default_cloud_user(hints.iter().map(|s| s.as_str())).to_string());
+        crate::guest_ssh::ensure_identity();
+        if let Some(key) = crate::guest_ssh::public_key() {
+            let qga = self.config.vmm.run_dir.join(format!("{id}.qga.sock"));
+            if let Err(err) =
+                pertisk_vmm::qga_ssh_add_authorized_keys(&qga, &user, std::slice::from_ref(&key))
+            {
+                tracing::debug!(vm = %id, user = %user, error = %err, "qga ssh key inject skipped");
+            }
+        }
+        if vm
+            .spec
+            .ssh_user
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            if let Ok(mut rec) = self.store.get(id) {
+                rec.spec.ssh_user = Some(user.clone());
+                let _ = self.store.upsert(rec);
+            }
+        }
         Ok(crate::guest_ssh::GuestSshTarget {
             host,
             user,
@@ -4107,6 +4149,7 @@ mod tests {
             autostart: false,
             autostart_delay: 0,
             autostart_order: 0,
+            ssh_user: None,
         }
     }
 

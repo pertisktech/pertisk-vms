@@ -142,8 +142,17 @@ pub fn find_identity() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+pub fn public_key() -> Option<String> {
+    ensure_identity();
+    let text = std::fs::read_to_string("/etc/pertisk/ssh/id_ed25519.pub").ok()?;
+    text.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("ssh-") || line.starts_with("ecdsa-"))
+        .map(|line| line.to_string())
+}
+
 /// Create `/etc/pertisk/ssh/id_ed25519` when missing and append its pubkey to authorized_keys.
-fn ensure_identity() {
+pub fn ensure_identity() {
     let key = Path::new("/etc/pertisk/ssh/id_ed25519");
     let pub_path = Path::new("/etc/pertisk/ssh/id_ed25519.pub");
     let auth = Path::new("/etc/pertisk/ssh/authorized_keys");

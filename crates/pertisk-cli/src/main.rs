@@ -1068,6 +1068,7 @@ async fn run() -> Result<()> {
                     autostart,
                     autostart_delay,
                     autostart_order,
+                    ssh_user: None,
                 };
                 let mut record: VmRecord = post_json(
                     &client,

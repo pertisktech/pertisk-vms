@@ -82,9 +82,39 @@ fn usable_guest_ipv6(ip: &str) -> bool {
 }
 
 fn qga_command(path: &Path, execute: &str, arguments: Option<Value>) -> std::io::Result<Value> {
+    qga_command_timeout(path, execute, arguments, Duration::from_millis(400))
+}
+
+/// Best-effort: install SSH pubkeys into the guest so the node's SSH tab can log in.
+pub fn ssh_add_authorized_keys(
+    qga_sock: &Path,
+    username: &str,
+    keys: &[String],
+) -> std::io::Result<()> {
+    if username.trim().is_empty() || keys.is_empty() {
+        return Ok(());
+    }
+    qga_command_timeout(
+        qga_sock,
+        "guest-ssh-add-authorized-keys",
+        Some(serde_json::json!({
+            "username": username,
+            "keys": keys,
+        })),
+        Duration::from_secs(3),
+    )?;
+    Ok(())
+}
+
+fn qga_command_timeout(
+    path: &Path,
+    execute: &str,
+    arguments: Option<Value>,
+    timeout: Duration,
+) -> std::io::Result<Value> {
     let mut stream = UnixStream::connect(path)?;
-    stream.set_read_timeout(Some(Duration::from_millis(400)))?;
-    stream.set_write_timeout(Some(Duration::from_millis(400)))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
 
     // Sync so we know the agent is alive and the stream is framed.
     let sync_id = (std::process::id() as i64)

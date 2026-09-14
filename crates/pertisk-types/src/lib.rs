@@ -938,6 +938,9 @@ pub struct VmSpec {
     /// Relative start order among autostart guests (lower first).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub autostart_order: u32,
+    /// Cloud-init login user for the guest SSH tab (`almalinux`, `ubuntu`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_user: Option<String>,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -1651,6 +1654,7 @@ mod tests {
             autostart: false,
             autostart_delay: 0,
             autostart_order: 0,
+            ssh_user: None,
         };
         assert!(spec.validate().is_err());
     }

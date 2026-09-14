@@ -452,6 +452,7 @@ mod tests {
                 autostart: false,
                 autostart_delay: 0,
                 autostart_order: 0,
+                ssh_user: None,
             },
             state: VmState::Running,
             pid: None,

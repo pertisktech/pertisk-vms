@@ -880,6 +880,7 @@ mod tests {
             autostart: false,
             autostart_delay: 0,
             autostart_order: 0,
+            ssh_user: None,
         };
         assert_eq!(
             qemu_guest_name(pertisk_types::VmId::Numeric(101), &spec),

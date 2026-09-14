@@ -1376,7 +1376,11 @@ async fn guest_ssh_ws(
     Query(query): Query<GuestSshQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, DaemonError> {
-    let target = service.guest_ssh_target(id, query.user.as_deref())?;
+    let ssh_user = query.user.clone();
+    let svc = service.clone();
+    let target = tokio::task::spawn_blocking(move || svc.guest_ssh_target(id, ssh_user.as_deref()))
+        .await
+        .map_err(|err| DaemonError::Peer(err.to_string()))??;
     let _ = service.audit(
         &user.username,
         "vm.ssh",
