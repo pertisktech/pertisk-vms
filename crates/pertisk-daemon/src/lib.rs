@@ -27,7 +27,7 @@ pub use service::{DaemonError, Service};
 pub use store::Store;
 pub use tls::{TlsBind, tls_bind};
 
-use crate::cluster::advertise_url;
+use crate::cluster::advertise_peer_url;
 
 fn install_rustls_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -73,12 +73,6 @@ pub async fn bind_and_serve(
     install_rustls_provider();
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let addr = listener.local_addr()?;
-    let _ = service.set_peer_url(advertise_url(
-        &addr.to_string(),
-        service.configured_peer_url(),
-    ));
-    tracing::info!(%listen, bound = %addr, driver = %service.driver(), "pertiskd listening");
-
     let https_addr = if let Some(tls) = &tls {
         tls::ensure_self_signed(&tls.cert, &tls.key)?;
         let https_addr: SocketAddr = tls
@@ -94,6 +88,15 @@ pub async fn bind_and_serve(
     } else {
         None
     };
+
+    // Prefer HTTPS peer URLs when TLS is enabled — join UI and heartbeats must match.
+    let peer = advertise_peer_url(
+        &addr.to_string(),
+        tls.as_ref().map(|t| t.listen.as_str()),
+        service.configured_peer_url(),
+    );
+    let _ = service.set_peer_url(peer);
+    tracing::info!(%listen, bound = %addr, driver = %service.driver(), "pertiskd listening");
 
     let ticker = service.clone();
     tokio::spawn(async move {

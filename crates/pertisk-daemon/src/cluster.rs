@@ -250,6 +250,49 @@ fn rewrite_peer_host(template: &str, host: &str) -> Option<String> {
     Some(format!("{scheme}://{}:{port}", format_url_host(host)))
 }
 
+fn peer_url_host(url: &str) -> Option<String> {
+    let rest = url
+        .trim()
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .or_else(|| url.trim().trim_end_matches('/').strip_prefix("http://"))?;
+    let hostport = rest.split('/').next()?;
+    if let Some(host) = hostport.strip_prefix('[') {
+        return host.split(']').next().map(str::to_string);
+    }
+    // IPv4 or hostname with optional :port
+    if let Some((host, port)) = hostport.rsplit_once(':')
+        && !host.is_empty()
+        && port.chars().all(|c| c.is_ascii_digit())
+    {
+        return Some(host.to_string());
+    }
+    Some(hostport.to_string())
+}
+
+/// Keep a reachable LAN/HTTPS URL when a peer still advertises loopback or plain HTTP.
+fn prefer_peer_url(existing: &str, incoming: &str) -> String {
+    let existing = existing.trim();
+    let incoming = incoming.trim();
+    if incoming.is_empty() {
+        return existing.to_string();
+    }
+    if existing.is_empty() {
+        return incoming.to_string();
+    }
+    if is_loopback_peer_url(incoming) && !is_loopback_peer_url(existing) {
+        return existing.to_string();
+    }
+    // Join UI / heartbeats often use HTTPS; do not let HTTP advertisements clobber that.
+    if incoming.starts_with("http://")
+        && existing.starts_with("https://")
+        && peer_url_host(existing) == peer_url_host(incoming)
+    {
+        return existing.to_string();
+    }
+    incoming.to_string()
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -330,7 +373,11 @@ impl Cluster {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let peer_url = advertise_url(listen, config.cluster.peer_url.as_deref());
+        let peer_url = advertise_peer_url(
+            listen,
+            config.daemon.effective_tls_listen().as_deref(),
+            config.cluster.peer_url.as_deref(),
+        );
         let configured_name = config
             .cluster
             .node_name
@@ -486,34 +533,47 @@ impl Cluster {
     }
 
     /// When this node has a LAN URL, rewrite other members still advertising loopback
-    /// to `scheme://<their ipv4>:port` so a joined cluster can recover after upgrade.
+    /// (or plain HTTP while we use HTTPS) so join/heartbeat stay reachable after upgrade.
     pub fn heal_remote_peer_urls(&self) -> Result<bool, DaemonError> {
         let self_url = self.self_record().peer_url;
         if is_loopback_peer_url(&self_url) {
             return Ok(false);
         }
+        let upgrade_http = self_url.starts_with("https://");
         let mut changed = false;
         {
             let mut inner = self.inner.lock().expect("cluster lock");
             let self_id = inner.self_id;
             for (id, member) in inner.members.iter_mut() {
-                if *id == self_id || !is_loopback_peer_url(&member.record.peer_url) {
+                if *id == self_id {
                     continue;
                 }
-                let host = member
-                    .record
-                    .ipv4
-                    .first()
-                    .cloned()
-                    .or_else(|| member.record.ipv6.first().cloned());
+                let url = member.record.peer_url.as_str();
+                let fix_loopback = is_loopback_peer_url(url);
+                let fix_http = upgrade_http && url.starts_with("http://") && !fix_loopback;
+                if !fix_loopback && !fix_http {
+                    continue;
+                }
+                let host = if fix_loopback {
+                    member
+                        .record
+                        .ipv4
+                        .first()
+                        .cloned()
+                        .or_else(|| member.record.ipv6.first().cloned())
+                } else {
+                    peer_url_host(url)
+                };
                 let Some(host) = host else {
                     continue;
                 };
-                let Some(url) = rewrite_peer_host(&self_url, &host) else {
+                let Some(next) = rewrite_peer_host(&self_url, &host) else {
                     continue;
                 };
-                member.record.peer_url = url;
-                changed = true;
+                if next != member.record.peer_url {
+                    member.record.peer_url = next;
+                    changed = true;
+                }
             }
         }
         if changed {
@@ -561,11 +621,9 @@ impl Cluster {
         let mut inner = self.inner.lock().expect("cluster lock");
         let now = now_ms();
         if let Some(mut record) = record {
-            if is_loopback_peer_url(&record.peer_url)
-                && let Some(existing) = inner.members.get(&id)
-                && !is_loopback_peer_url(&existing.record.peer_url)
-            {
-                record.peer_url = existing.record.peer_url.clone();
+            if let Some(existing) = inner.members.get(&id) {
+                record.peer_url =
+                    prefer_peer_url(&existing.record.peer_url, &record.peer_url);
             }
             inner.members.insert(
                 id,
@@ -631,9 +689,22 @@ impl Cluster {
         entered
     }
 
-    pub fn add_member(&self, record: NodeRecord) -> Result<(), DaemonError> {
+    pub fn add_member(&self, mut record: NodeRecord) -> Result<(), DaemonError> {
         {
             let mut inner = self.inner.lock().expect("cluster lock");
+            if let Some(self_member) = inner.members.get(&inner.self_id) {
+                let self_url = self_member.record.peer_url.as_str();
+                if self_url.starts_with("https://") && record.peer_url.starts_with("http://") {
+                    let host = peer_url_host(&record.peer_url)
+                        .or_else(|| record.ipv4.first().cloned())
+                        .or_else(|| record.ipv6.first().cloned());
+                    if let Some(host) = host
+                        && let Some(url) = rewrite_peer_host(self_url, &host)
+                    {
+                        record.peer_url = url;
+                    }
+                }
+            }
             inner.members.insert(
                 record.id,
                 MemberState {
@@ -679,10 +750,15 @@ impl Cluster {
                 } else {
                     last_seen_ms
                 };
+                let mut record = record.clone();
+                if let Some(existing) = inner.members.get(&record.id) {
+                    record.peer_url =
+                        prefer_peer_url(&existing.record.peer_url, &record.peer_url);
+                }
                 next.insert(
                     record.id,
                     MemberState {
-                        record: record.clone(),
+                        record,
                         last_seen_ms,
                     },
                 );
@@ -1091,6 +1167,57 @@ mod tests {
                 .next(),
             Some("https")
         );
+    }
+
+    #[test]
+    fn prefer_peer_url_keeps_https() {
+        assert_eq!(
+            prefer_peer_url("https://10.1.1.144:7443", "http://10.1.1.144:7480"),
+            "https://10.1.1.144:7443"
+        );
+        assert_eq!(
+            prefer_peer_url("http://10.1.1.144:7480", "https://10.1.1.144:7443"),
+            "https://10.1.1.144:7443"
+        );
+    }
+
+    #[test]
+    fn heals_http_peer_urls_to_self_https() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("a".into());
+        config.daemon.tls_listen = Some("0.0.0.0:7443".into());
+        config.daemon.listen = "0.0.0.0:7480".into();
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "0.0.0.0:7480").unwrap();
+        let self_url = cluster.self_record().peer_url;
+        assert!(self_url.starts_with("https://"), "{self_url}");
+        assert!(self_url.ends_with(":7443"), "{self_url}");
+
+        let peer_id = NodeId::new();
+        cluster
+            .add_member(NodeRecord {
+                id: peer_id,
+                name: "b".into(),
+                peer_url: "http://10.1.1.99:7480".into(),
+                cpus: 4,
+                memory_mib: 4096,
+                ipv4: vec!["10.1.1.99".into()],
+                ipv6: vec![],
+            })
+            .unwrap();
+        // add_member should already upgrade; force http then heal.
+        cluster
+            .set_member_peer_url(peer_id, "http://10.1.1.99:7480".into())
+            .unwrap();
+        assert!(cluster.heal_remote_peer_urls().unwrap());
+        let peer = cluster
+            .status(&[])
+            .members
+            .into_iter()
+            .find(|m| m.id == peer_id)
+            .unwrap();
+        assert_eq!(peer.peer_url, "https://10.1.1.99:7443");
     }
 
     #[test]

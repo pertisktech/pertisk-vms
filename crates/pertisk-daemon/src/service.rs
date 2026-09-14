@@ -2468,6 +2468,15 @@ impl Service {
         password: &str,
     ) -> Result<pertisk_types::ClusterStatus, DaemonError> {
         let peer = peer.trim_end_matches('/');
+        // Advertise HTTPS before accept so the peer stores a reachable URL for heartbeats.
+        let desired = crate::cluster::advertise_peer_url(
+            &self.config.daemon.listen,
+            self.config.daemon.effective_tls_listen().as_deref(),
+            self.config.cluster.peer_url.as_deref(),
+        );
+        if !crate::cluster::is_loopback_peer_url(&desired) {
+            let _ = self.cluster.set_peer_url(desired);
+        }
         let login: pertisk_api::TokenResponse = self
             .http
             .post(format!("{peer}/v1/login"))
@@ -2511,6 +2520,8 @@ impl Service {
         self.apply_snapshot(snap)?;
         self.cluster
             .set_member_peer_url(remote.self_id, peer.to_string())?;
+        // We just authenticated to this peer — treat it as online immediately.
+        self.cluster.touch(remote.self_id, None);
         self.cluster.touch(self.cluster.self_id(), None);
         let _ = self.cluster.heal_remote_peer_urls();
         Ok(self.cluster_status()?)
@@ -2534,14 +2545,17 @@ impl Service {
 
     pub async fn cluster_tick(&self) -> Result<(), DaemonError> {
         self.cluster.touch_self();
-        if crate::cluster::is_loopback_peer_url(&self.cluster.self_record().peer_url) {
-            let url = crate::cluster::advertise_url(
-                &self.config.daemon.listen,
-                self.config.cluster.peer_url.as_deref(),
-            );
-            if !crate::cluster::is_loopback_peer_url(&url) {
-                let _ = self.cluster.set_peer_url(url);
-            }
+        let desired = crate::cluster::advertise_peer_url(
+            &self.config.daemon.listen,
+            self.config.daemon.effective_tls_listen().as_deref(),
+            self.config.cluster.peer_url.as_deref(),
+        );
+        let current = self.cluster.self_record().peer_url;
+        if !crate::cluster::is_loopback_peer_url(&desired)
+            && (crate::cluster::is_loopback_peer_url(&current)
+                || (current.starts_with("http://") && desired.starts_with("https://")))
+        {
+            let _ = self.cluster.set_peer_url(desired);
         }
         let _ = self.cluster.heal_remote_peer_urls();
         self.check_node_offline_notifications();
@@ -2880,16 +2894,35 @@ impl Service {
                     .unwrap_or_else(|_| self.cluster.membership_snapshot()),
             );
         }
-        for (_id, url) in self.cluster.peer_urls_except_self() {
-            let url = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
-            let _ = self
+        for (id, url) in self.cluster.peer_urls_except_self() {
+            let endpoint = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
+            match self
                 .http
-                .post(url)
+                .post(&endpoint)
                 .timeout(std::time::Duration::from_secs(2))
                 .header("x-pertisk-peer", self.cluster.secret())
                 .json(&msg)
                 .send()
-                .await;
+                .await
+            {
+                Ok(res) if res.status().is_success() => {}
+                Ok(res) => {
+                    tracing::warn!(
+                        peer = %id,
+                        url = %endpoint,
+                        status = %res.status(),
+                        "cluster heartbeat rejected"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        peer = %id,
+                        url = %endpoint,
+                        error = %err,
+                        "cluster heartbeat failed"
+                    );
+                }
+            }
         }
     }
 
