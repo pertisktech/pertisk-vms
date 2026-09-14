@@ -1086,21 +1086,87 @@ a.guest-card:hover { color: inherit; }
 .guest-card-state.ready { color: var(--success); }
 .guest-card-state.error { color: var(--danger); }
 .guest-card-state.pending { color: var(--warning); }
-.cluster-grid {
+/* Datacenter tab chrome (storage / templates / networks / cluster / terraform) */
+
+.pve-action-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 0.55rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.pve-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  background: var(--muted);
+  color: var(--text-muted);
+}
+.pve-pill.ok {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.pve-usage-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.pve-usage-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+.pve-usage-bar-head span:first-child {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.pve-usage-bar-head em {
+  font-style: normal;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+}
+.pve-usage-bar-head em .muted {
+  margin-left: 0.35rem;
+}
+.pve-usage-track {
+  height: 8px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.pve-usage-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--transition-normal);
+}
+.pve-usage-fill.warm { background: var(--warning); }
+.pve-usage-fill.hot { background: var(--danger); }
+.pve-usage-fill.ok { background: var(--success); }
+
+.cluster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 1rem;
+  align-items: stretch;
 }
 .cluster-card {
   display: flex;
   flex-direction: column;
-  gap: 0.28rem;
-  width: 18.5rem;
-  flex: none;
+  gap: 0.65rem;
+  width: auto;
   min-width: 0;
-  padding: 0.55rem 0.7rem 0.6rem;
-  border-radius: var(--radius-sm);
+  padding: 1rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--color-card);
   color: inherit;
@@ -1110,90 +1176,91 @@ a.guest-card:hover { color: inherit; }
 .cluster-card:hover {
   color: inherit;
   border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
 }
 .cluster-card.offline { opacity: 0.72; }
 .cluster-card-head {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.cluster-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   min-width: 0;
 }
 .cluster-card-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
   flex: none;
 }
 .cluster-card-dot.on { background: var(--success); }
-.cluster-card-dot.off { background: var(--danger); }
+.cluster-card-dot.off { background: var(--text-muted); }
 .cluster-card-name {
-  flex: 1 1 auto;
+  flex: none;
   min-width: 0;
-  font-size: 0.875rem;
-  font-weight: 650;
+  font-size: 0.95rem;
+  font-weight: 600;
   letter-spacing: -0.02em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cluster-card-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.28rem;
-  min-width: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.cluster-card-meta span:not(.cluster-card-ip) {
-  padding: 0.04rem 0.32rem;
-  border-radius: 999px;
-  background: var(--muted);
-  text-transform: lowercase;
-}
 .cluster-card-ip {
-  min-width: 0;
-  margin-left: auto;
   font-family: var(--mono);
-  font-weight: 500;
+  font-size: 0.7rem;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cluster-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 .cluster-card-meters {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.28rem 0.45rem;
-}
-.cluster-card-meter {
   display: flex;
   flex-direction: column;
-  gap: 0.12rem;
-  min-width: 0;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: var(--text-muted);
+  gap: 0.75rem;
+  margin-top: 0.25rem;
 }
-.cluster-card-meter em {
-  font-style: normal;
+
+.pve-card-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.tf-code-wrap {
+  position: relative;
+}
+.tf-code-wrap .tf-copy {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  z-index: 1;
+}
+.tf-code {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  padding-right: 6.5rem;
+  max-height: 28rem;
+  overflow: auto;
   font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: pre;
+  color: var(--text);
 }
-.cluster-card-track {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  overflow: hidden;
-}
-.cluster-card-fill { height: 100%; border-radius: 999px; }
-.cluster-card-fill.cpu { background: var(--color-blue-b1); }
-.cluster-card-fill.mem { background: var(--accent); }
-.cluster-card-fill.warm { background: var(--warning); }
-.cluster-card-fill.hot { background: var(--danger); }
 .guest-err { margin: 0.5rem 0 0; font-size: 0.75rem; color: var(--danger); }
 .console-dock { margin-top: 0.25rem; }
 .console-pane {
@@ -2465,6 +2532,9 @@ a.guest-card:hover { color: inherit; }
   font-size: 0.82rem;
   font-weight: 600;
   letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .pve-card-panel-actions {

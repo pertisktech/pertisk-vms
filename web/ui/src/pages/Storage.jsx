@@ -138,26 +138,17 @@ export default function Storage() {
   }
 
   return (
-    <div className="dash-page">
-      <div className="page-head">
-        <div>
-          <h1>
-            <Icon name="disk" size={20} />
-            Storage
-          </h1>
-          <p className="dash-lead muted">Volumes replicate across nodes. Upload an ISO here, then attach it in the guest wizard.</p>
+    <div className="pve-tab-page">
+      {canWrite && (
+        <div className="pve-action-row">
+          <Btn icon="plus" variant="secondary" onClick={() => setIsoOpen(true)}>
+            Import ISO
+          </Btn>
+          <Btn icon="plus" onClick={() => setVolOpen(true)}>
+            Create volume
+          </Btn>
         </div>
-        {canWrite && (
-          <div className="dash-resources-actions">
-            <Btn icon="plus" variant="secondary" onClick={() => setIsoOpen(true)}>
-              Import ISO
-            </Btn>
-            <Btn icon="plus" onClick={() => setVolOpen(true)}>
-              Create volume
-            </Btn>
-          </div>
-        )}
-      </div>
+      )}
       {error && (
         <div className="banner danger">
           {error}
@@ -167,13 +158,18 @@ export default function Storage() {
         </div>
       )}
 
-      <section className="card table-card">
-        <div className="table-meta">Volumes</div>
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>Volumes</h3>
+        </header>
         {volumes.length === 0 ? (
-          <p className="muted">No volumes yet.</p>
+          <div className="pve-empty">
+            <Icon name="disk" size={22} />
+            <span className="muted">No volumes yet.</span>
+          </div>
         ) : (
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -188,57 +184,55 @@ export default function Storage() {
                   const snaps = snapshotsOf(v)
                   const reps = replicasOf(v)
                   return (
-                  <tr key={v.id}>
-                    <td>
-                      {v.name}
-                      {snaps.length > 0 && (
-                        <div className="muted">
-                          {snaps.map((s) => s.name).join(', ')}
-                        </div>
-                      )}
-                    </td>
-                    <td className="mono-inline">{v.format}</td>
-                    <td>{formatBytes(v.size_bytes)}</td>
-                    <td>
-                      {reps.length === 0
-                        ? v.replica_count || 1
-                        : reps.map((id) => nodeName(id)).join(', ')}
-                    </td>
-                    {canWrite && (
-                      <td className="col-actions">
-                        <div className="row-actions">
-                          <Btn variant="secondary" onClick={() => openAction('resize', v)}>
-                            Resize
-                          </Btn>
-                          <Btn variant="secondary" onClick={() => openAction('snap', v)}>
-                            Snapshot
-                          </Btn>
-                          {snaps.length > 0 && (
-                            <Btn variant="secondary" onClick={() => openAction('restore', v)}>
-                              Restore
-                            </Btn>
-                          )}
-                          <Btn variant="secondary" onClick={() => openAction('clone', v)}>
-                            Clone
-                          </Btn>
-                          <Btn
-                            icon="trash"
-                            variant="danger"
-                            onClick={async () => {
-                              const ok = await confirm({
-                                title: 'Delete volume',
-                                message: `Delete ${v.name}?`,
-                                confirmLabel: 'Delete',
-                              })
-                              if (ok) mutate(() => api(`/v1/volumes/${v.id}`, { method: 'DELETE' }))
-                            }}
-                          >
-                            Delete
-                          </Btn>
-                        </div>
+                    <tr key={v.id}>
+                      <td>
+                        <strong>{v.name}</strong>
+                        {snaps.length > 0 && (
+                          <div className="muted">{snaps.map((s) => s.name).join(', ')}</div>
+                        )}
                       </td>
-                    )}
-                  </tr>
+                      <td className="mono-inline muted">{v.format}</td>
+                      <td className="mono-inline muted">{formatBytes(v.size_bytes)}</td>
+                      <td className="mono-inline muted">
+                        {reps.length === 0
+                          ? v.replica_count || 1
+                          : reps.map((id) => nodeName(id)).join(', ')}
+                      </td>
+                      {canWrite && (
+                        <td className="col-actions">
+                          <div className="row-actions">
+                            <Btn variant="secondary" onClick={() => openAction('resize', v)}>
+                              Resize
+                            </Btn>
+                            <Btn variant="secondary" onClick={() => openAction('snap', v)}>
+                              Snapshot
+                            </Btn>
+                            {snaps.length > 0 && (
+                              <Btn variant="secondary" onClick={() => openAction('restore', v)}>
+                                Restore
+                              </Btn>
+                            )}
+                            <Btn variant="secondary" onClick={() => openAction('clone', v)}>
+                              Clone
+                            </Btn>
+                            <Btn
+                              icon="trash"
+                              variant="danger"
+                              onClick={async () => {
+                                const ok = await confirm({
+                                  title: 'Delete volume',
+                                  message: `Delete ${v.name}?`,
+                                  confirmLabel: 'Delete',
+                                })
+                                if (ok) mutate(() => api(`/v1/volumes/${v.id}`, { method: 'DELETE' }))
+                              }}
+                            >
+                              Delete
+                            </Btn>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
                   )
                 })}
               </tbody>
@@ -247,13 +241,17 @@ export default function Storage() {
         )}
       </section>
 
-      <section className="card table-card">
-        <div className="table-meta">ISOs</div>
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>ISOs</h3>
+        </header>
         {osIsos.length === 0 ? (
-          <p className="muted">No installer ISOs imported.</p>
+          <p className="muted" style={{ padding: '0.85rem 1rem' }}>
+            No installer ISOs imported.
+          </p>
         ) : (
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -265,7 +263,7 @@ export default function Storage() {
                 {osIsos.map((iso) => (
                   <tr key={iso.name}>
                     <td>{iso.name}</td>
-                    <td>{formatBytes(iso.size_bytes)}</td>
+                    <td className="mono-inline muted">{formatBytes(iso.size_bytes)}</td>
                     {canWrite && (
                       <td className="col-actions">
                         <Btn
@@ -293,14 +291,16 @@ export default function Storage() {
       </section>
 
       {seedIsos.length > 0 && (
-        <section className="card table-card">
-          <div className="table-meta">Cloud-init seeds</div>
-          <p className="muted" style={{ margin: '0 1rem 0.75rem' }}>
+        <section className="pve-card-panel">
+          <header className="pve-card-panel-head">
+            <h3>Cloud-init seeds</h3>
+          </header>
+          <p className="muted" style={{ margin: '0.75rem 1rem 0' }}>
             Tiny cidata ISOs created when you clone a cloud template. Not an OS image — import GenericCloud qcow2
             under Templates.
           </p>
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -312,7 +312,7 @@ export default function Storage() {
                 {seedIsos.map((iso) => (
                   <tr key={iso.name}>
                     <td>{iso.name}</td>
-                    <td>{formatBytes(iso.size_bytes)}</td>
+                    <td className="mono-inline muted">{formatBytes(iso.size_bytes)}</td>
                     {canWrite && (
                       <td className="col-actions">
                         <Btn

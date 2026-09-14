@@ -77,23 +77,14 @@ export default function Networks() {
   }
 
   return (
-    <div className="dash-page">
-      <div className="page-head">
-        <div>
-          <h1>
-            <Icon name="network" size={20} />
-            Networks
-          </h1>
-          <p className="dash-lead muted">
-            NAT pools for isolated guests, or bridge mode to attach to an existing LAN bridge (e.g. br0).
-          </p>
-        </div>
-        {canWrite && (
+    <div className="pve-tab-page">
+      {canWrite && (
+        <div className="pve-action-row">
           <Btn icon="plus" onClick={() => setOpen(true)}>
             Create network
           </Btn>
-        )}
-      </div>
+        </div>
+      )}
       {error && (
         <div className="banner danger">
           {error}
@@ -102,12 +93,18 @@ export default function Networks() {
           </button>
         </div>
       )}
-      <section className="card table-card">
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>Networks</h3>
+        </header>
         {networks.length === 0 ? (
-          <p className="muted">No networks yet.</p>
+          <div className="pve-empty">
+            <Icon name="network" size={22} />
+            <span className="muted">No networks yet.</span>
+          </div>
         ) : (
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -124,22 +121,22 @@ export default function Networks() {
               <tbody>
                 {networks.map((n) => (
                   <tr key={n.id}>
-                    <td>{n.name}</td>
-                    <td className="mono-inline">{n.mode || 'nat'}</td>
-                    <td className="mono-inline">{n.cidr}</td>
-                    <td className="mono-inline">{n.gateway || '—'}</td>
-                    <td className="mono-inline">{n.bridge || '—'}</td>
                     <td>
-                      <span className={`badge ${n.dhcp !== false ? 'ready' : 'unknown'}`}>
-                        {n.dhcp !== false ? 'on' : 'off'}
+                      <strong>{n.name}</strong>
+                    </td>
+                    <td className="mono-inline muted">{n.mode || 'nat'}</td>
+                    <td className="mono-inline muted">{n.cidr}</td>
+                    <td className="mono-inline muted">{n.gateway || '—'}</td>
+                    <td className="mono-inline muted">{n.bridge || '—'}</td>
+                    <td>
+                      <span className={`pve-pill${n.dhcp !== false ? ' ok' : ''}`}>
+                        {n.dhcp !== false ? 'On' : 'Off'}
                       </span>
                     </td>
                     <td>
-                      <span className={`badge ${n.isolate !== false ? 'pending' : 'unknown'}`}>
-                        {n.isolate !== false ? 'yes' : 'no'}
-                      </span>
+                      <span className="pve-pill">{n.isolate !== false ? 'Yes' : 'No'}</span>
                     </td>
-                    <td>{guestsOn(n.id)}</td>
+                    <td className="mono-inline muted">{guestsOn(n.id)}</td>
                     {canWrite && (
                       <td className="col-actions">
                         <Btn

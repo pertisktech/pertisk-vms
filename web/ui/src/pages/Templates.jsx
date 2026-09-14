@@ -100,28 +100,17 @@ export default function Templates() {
   }
 
   return (
-    <div className="dash-page">
-      <div className="page-head">
-        <div>
-          <h1>
-            <Icon name="template" size={20} />
-            Cloud templates
-          </h1>
-          <p className="dash-lead muted">
-            Import a cloud disk image, then clone guests with cloud-init (hostname, user, SSH keys).
-          </p>
+    <div className="pve-tab-page">
+      {canWrite && (
+        <div className="pve-action-row">
+          <Btn icon="disk" variant="secondary" onClick={() => setFromVolOpen(true)} disabled={freeVolumes.length === 0}>
+            From volume
+          </Btn>
+          <Btn icon="plus" onClick={() => setImportOpen(true)}>
+            Import image
+          </Btn>
         </div>
-        {canWrite && (
-          <div className="dash-resources-actions">
-            <Btn variant="secondary" onClick={() => setFromVolOpen(true)} disabled={freeVolumes.length === 0}>
-              From volume
-            </Btn>
-            <Btn icon="plus" onClick={() => setImportOpen(true)}>
-              Import image
-            </Btn>
-          </div>
-        )}
-      </div>
+      )}
       {error && (
         <div className="banner danger">
           {error}
@@ -131,15 +120,20 @@ export default function Templates() {
         </div>
       )}
 
-      <section className="card table-card">
-        <div className="table-meta">Templates</div>
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>Templates</h3>
+        </header>
         {templates.length === 0 ? (
-          <p className="muted">
-            No templates yet. Import an Ubuntu/Debian cloud image (qcow2), or convert a stopped guest from Options.
-          </p>
+          <div className="pve-empty">
+            <Icon name="template" size={22} />
+            <span className="muted">
+              No templates yet. Import an Ubuntu/Debian cloud image (qcow2), or convert a stopped guest from Options.
+            </span>
+          </div>
         ) : (
           <div className="table-shell">
-            <table>
+            <table className="pve-dense-table">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -155,13 +149,14 @@ export default function Templates() {
                   <tr key={vm.id}>
                     <td>
                       <Link to={`/vm/${vm.id}/summary`} className="pve-link">
-                        <Icon name="template" size={14} /> {vm.spec?.name || vm.id}
+                        <Icon name="template" size={14} />
+                        <strong>{vm.spec?.name || vm.id}</strong>
                       </Link>
                     </td>
-                    <td className="mono-inline">{vm.id}</td>
-                    <td>{vm.spec?.vcpus || 1}</td>
-                    <td>{vm.spec?.memory_mib || 0} MiB</td>
-                    <td>
+                    <td className="mono-inline muted">{vm.id}</td>
+                    <td className="mono-inline muted">{vm.spec?.vcpus || 1}</td>
+                    <td className="mono-inline muted">{vm.spec?.memory_mib || 0} MiB</td>
+                    <td className="mono-inline muted">
                       {disksOf(vm)
                         .filter((d) => !d.cdrom)
                         .map((d) => volumes.find((v) => v.id === d.volume_id)?.name || 'disk')

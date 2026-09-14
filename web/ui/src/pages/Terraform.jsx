@@ -290,128 +290,64 @@ export default function Terraform() {
   }
 
   return (
-    <div className="dash-page">
-      <div className="page-head">
-        <div>
-          <h1>
-            <Icon name="terraform" size={20} />
-            Terraform
-          </h1>
-          <p className="dash-lead muted">
-            Declare guests, networks, and volumes as code. Build the in-repo provider, then apply
-            the generated configuration.
-          </p>
-        </div>
-        <div className="dash-resources-actions">
-          <Btn icon="clone" variant="secondary" onClick={() => navigator.clipboard.writeText(hcl)}>
-            Copy main.tf
-          </Btn>
-          <Btn icon="updates" variant="secondary" onClick={download}>
-            Download main.tf
-          </Btn>
-        </div>
+    <div className="pve-tab-page">
+      <div className="pve-action-row">
+        <Btn icon="clone" variant="secondary" onClick={() => navigator.clipboard.writeText(hcl)}>
+          Copy main.tf
+        </Btn>
+        <Btn icon="updates" variant="secondary" onClick={download}>
+          Download main.tf
+        </Btn>
       </div>
 
-      <section className="card">
-        <h2 className="card-title">
-          <Icon name="key" size={18} />
-          Provider setup
-        </h2>
-        <p className="muted tf-help">
-          From the repo: <code>cd terraform-provider-pertisk-vms && go build</code>. Put this in{' '}
-          <code>~/.terraformrc</code> so Terraform uses that binary (not the registry):
-        </p>
-        <CodeBlock value={SETUP} label="Copy" />
-        <p className="muted tf-help">
-          Endpoint for this cluster is <code>{endpoint}</code>. Sign in as{' '}
-          <code>{user?.username || 'admin'}</code> with the same password you use here, or set{' '}
-          <code>PERTISK_TOKEN</code> from <code>pertisk login</code>.
-        </p>
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>
+            <Icon name="key" size={16} /> Provider setup
+          </h3>
+        </header>
+        <div className="pve-card-body">
+          <p className="muted tf-help" style={{ margin: 0 }}>
+            From the repo: <code>cd terraform-provider-pertisk-vms && go build</code>. Put this in{' '}
+            <code>~/.terraformrc</code> so Terraform uses that binary (not the registry):
+          </p>
+          <CodeBlock value={SETUP} label="Copy" />
+          <p className="muted tf-help" style={{ margin: 0 }}>
+            Endpoint for this cluster is <code>{endpoint}</code>. Sign in as{' '}
+            <code>{user?.username || 'admin'}</code> with the same password you use here, or set{' '}
+            <code>PERTISK_TOKEN</code> from <code>pertisk login</code>.
+          </p>
+        </div>
       </section>
 
-      <section className="card">
-        <h2 className="card-title">
-          <Icon name="template" size={18} />
-          Upload a template, then clone guests
-        </h2>
-        <p className="muted tf-help">
-          <code>pertisk_vms_template</code> uploads a cloud image (or wraps a volume).{' '}
-          <code>pertisk_vms_vm</code> with <code>clone.template_id</code> creates a guest from it.
-        </p>
-        <CodeBlock value={FROM_TEMPLATE} label="Copy" />
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>
+            <Icon name="template" size={16} /> Upload a template, then clone guests
+          </h3>
+        </header>
+        <div className="pve-card-body">
+          <p className="muted tf-help" style={{ margin: 0 }}>
+            <code>pertisk_vms_template</code> uploads a cloud image (or wraps a volume).{' '}
+            <code>pertisk_vms_vm</code> with <code>clone.template_id</code> creates a guest from it.
+          </p>
+          <CodeBlock value={FROM_TEMPLATE} label="Copy" />
+        </div>
       </section>
 
-      <section className="card">
-        <h2 className="card-title">
-          <Icon name="template" size={18} />
-          Generated configuration
-        </h2>
-        <p className="muted tf-help">
-          Snapshot of current inventory as HCL. Import existing objects with{' '}
-          <code>terraform import pertisk_vms_vm.&lt;name&gt; &lt;id&gt;</code> before applying, or use
-          this as a starting point for new guests.
-        </p>
-        <CodeBlock value={hcl} label="Copy HCL" />
-      </section>
-
-      <section className="card table-card">
-        <h2 className="card-title">
-          <Icon name="activity" size={18} />
-          Resources
-        </h2>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>Terraform</th>
-                <th>Manages</th>
-                <th>Here now</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <code>pertisk_vms_network</code>
-                </td>
-                <td>NAT or bridge networks</td>
-                <td>{inv?.networks?.length || 0}</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>pertisk_vms_volume</code>
-                </td>
-                <td>raw / qcow2 disks</td>
-                <td>{inv?.volumes?.length || 0}</td>
-              </tr>
-              <tr>
-                <td>
-                  <code>pertisk_vms_template</code>
-                </td>
-                <td>Upload a cloud image, wrap a volume, or convert a guest</td>
-                <td>
-                  {templates} template{templates === 1 ? '' : 's'}
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>pertisk_vms_vm</code>
-                </td>
-                <td>
-                  Guests — clone with <code>clone.template_id</code>
-                </td>
-                <td>
-                  {guests} guest{guests === 1 ? '' : 's'}
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <code>data.pertisk_vms_cluster</code>
-                </td>
-                <td>Quorum and members</td>
-                <td>{inv?.cluster?.name || '—'}</td>
-              </tr>
-            </tbody>
-          </table>
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>
+            <Icon name="activity" size={16} /> Generated configuration
+          </h3>
+        </header>
+        <div className="pve-card-body">
+          <p className="muted tf-help" style={{ margin: 0 }}>
+            Snapshot of current inventory as HCL ({templates} template{templates === 1 ? '' : 's'},{' '}
+            {guests} guest{guests === 1 ? '' : 's'}). Import existing objects with{' '}
+            <code>terraform import pertisk_vms_vm.&lt;name&gt; &lt;id&gt;</code> before applying.
+          </p>
+          <CodeBlock value={hcl} label="Copy HCL" />
         </div>
       </section>
     </div>
