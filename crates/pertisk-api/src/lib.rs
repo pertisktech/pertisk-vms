@@ -90,6 +90,59 @@ pub struct ChangePasswordRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SettingsResponse {
+    pub node_name: String,
+    pub notify: NotifySettingsView,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifySettingsView {
+    pub enabled: bool,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_tls: String,
+    pub smtp_user: String,
+    /// Always empty on GET; omit or leave empty on PUT to keep the existing password.
+    #[serde(default)]
+    pub smtp_password: String,
+    pub smtp_password_set: bool,
+    pub from: String,
+    pub recipients: Vec<String>,
+    pub events: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateSettingsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<UpdateNotifyRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateNotifyRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_tls: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_user: Option<String>,
+    /// When `Some("")` clears; when omitted keeps existing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetPasswordRequest {
     pub new_password: String,
 }
@@ -189,6 +242,11 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/host": { "get": { "summary": "Host capabilities" } },
             "/v1/host/shutdown": { "post": { "summary": "ACPI-stop guests, then power off this hypervisor" } },
             "/v1/host/reboot": { "post": { "summary": "ACPI-stop guests, then reboot this hypervisor" } },
+            "/v1/settings": {
+                "get": { "summary": "Node name and mail notification settings" },
+                "put": { "summary": "Update node name and mail notification settings" }
+            },
+            "/v1/settings/mail/test": { "post": { "summary": "Send a test email to shared recipients" } },
             "/v1/metrics": { "get": { "summary": "Cluster live metrics (cpu/mem/disk/net)" } },
             "/v1/metrics/node": { "get": { "summary": "Local node live metrics" } },
             "/v1/events/ws": { "get": { "summary": "Live inventory and metrics websocket (Bearer or ?token=)" } },

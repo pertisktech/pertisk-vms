@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -11,10 +11,10 @@ use pertisk_types::{
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
     CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord,
-    NodeMetrics, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SnapshotRequest,
-    StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics,
-    VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user,
-    is_guest_ipv4, probe_host, probe_host_addrs,
+    NodeId, NodeMetrics, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
+    SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk,
+    VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
+    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -95,11 +95,16 @@ pub struct Service {
     /// crashed the appliance when 8–10 guests started together.
     start_gate: Arc<tokio::sync::Semaphore>,
     config: HostConfig,
+    /// Runtime-editable notify settings (synced to config.toml on save).
+    notify: Arc<Mutex<NotifyConfig>>,
+    config_path: PathBuf,
     data_dir: std::path::PathBuf,
     started_at: Instant,
     autostarted: Arc<Mutex<HashSet<VmId>>>,
     created_this_boot: Arc<Mutex<HashSet<VmId>>>,
     metrics: Arc<MetricsCache>,
+    /// Last-known online flag per node (for `node.offline` edge detection).
+    node_online: Arc<Mutex<HashMap<NodeId, bool>>>,
 }
 
 impl Service {
@@ -113,6 +118,7 @@ impl Service {
         data_dir: std::path::PathBuf,
     ) -> Self {
         let listen = config.daemon.listen.clone();
+        let notify = config.notify.clone();
         let cluster = Cluster::open(data_dir.join("state/cluster.json"), &config, &listen)
             .expect("open cluster state");
         Self {
@@ -132,11 +138,14 @@ impl Service {
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
             start_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             config,
+            notify: Arc::new(Mutex::new(notify)),
+            config_path: data_dir.join("config.toml"),
             data_dir,
             started_at: Instant::now(),
             autostarted: Arc::new(Mutex::new(HashSet::new())),
             created_this_boot: Arc::new(Mutex::new(HashSet::new())),
             metrics: Arc::new(MetricsCache::new()),
+            node_online: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -236,6 +245,156 @@ impl Service {
         info.ssh_authorized_keys = pertisk_storage::operator_ssh_keys();
         info.daemon_uptime_secs = self.started_at.elapsed().as_secs();
         info
+    }
+
+    pub fn node_display_name(&self) -> String {
+        self.cluster.self_record().name
+    }
+
+    pub fn settings(&self) -> pertisk_api::SettingsResponse {
+        let notify = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        pertisk_api::SettingsResponse {
+            node_name: self.node_display_name(),
+            notify: pertisk_api::NotifySettingsView {
+                enabled: notify.enabled,
+                smtp_host: notify.smtp_host,
+                smtp_port: notify.smtp_port,
+                smtp_tls: notify.smtp_tls.as_str().into(),
+                smtp_user: notify.smtp_user,
+                smtp_password: String::new(),
+                smtp_password_set: !notify.smtp_password.is_empty(),
+                from: notify.from,
+                recipients: notify.recipients,
+                events: notify.events,
+            },
+        }
+    }
+
+    pub fn update_settings(
+        &self,
+        req: pertisk_api::UpdateSettingsRequest,
+    ) -> Result<pertisk_api::SettingsResponse, DaemonError> {
+        if let Some(name) = req.node_name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(DaemonError::Peer("node_name must not be empty".into()));
+            }
+            self.cluster.set_self_name(name)?;
+        }
+        if let Some(n) = req.notify {
+            let mut notify = self.notify.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = n.enabled {
+                notify.enabled = v;
+            }
+            if let Some(v) = n.smtp_host {
+                notify.smtp_host = v.trim().to_string();
+            }
+            if let Some(v) = n.smtp_port {
+                notify.smtp_port = v;
+            }
+            if let Some(v) = n.smtp_tls {
+                notify.smtp_tls = parse_smtp_tls(&v)?;
+            }
+            if let Some(v) = n.smtp_user {
+                notify.smtp_user = v.trim().to_string();
+            }
+            if let Some(v) = n.smtp_password {
+                notify.smtp_password = v;
+            }
+            if let Some(v) = n.from {
+                notify.from = v.trim().to_string();
+            }
+            if let Some(v) = n.recipients {
+                notify.recipients = v
+                    .into_iter()
+                    .flat_map(|line| {
+                        line.split([',', ';', '\n'])
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+            }
+            if let Some(v) = n.events {
+                notify.events = v
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+        }
+        self.persist_settings()?;
+        Ok(self.settings())
+    }
+
+    pub async fn send_test_mail(&self) -> Result<(), DaemonError> {
+        let cfg = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let node = self.node_display_name();
+        crate::notify::send_test(&cfg, &node)
+            .await
+            .map_err(DaemonError::Peer)
+    }
+
+    pub fn notify_event(&self, kind: &str, subject: &str, body: &str) {
+        let cfg = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let node = self.node_display_name();
+        let kind = kind.to_string();
+        let subject = subject.to_string();
+        let body = body.to_string();
+        tokio::spawn(async move {
+            crate::notify::send_event(&cfg, &node, &kind, &subject, &body).await;
+        });
+    }
+
+    fn notify_vm(&self, kind: &str, vm: &VmRecord, detail: &str) {
+        let name = &vm.spec.name;
+        let subject = format!("{kind}: {name}");
+        let body = format!(
+            "Event: {kind}\nVM: {name}\nID: {}\nState: {}\n{detail}",
+            vm.id, vm.state
+        );
+        self.notify_event(kind, &subject, &body);
+    }
+
+    fn persist_settings(&self) -> Result<(), DaemonError> {
+        let mut cfg = if self.config_path.exists() {
+            let text = std::fs::read_to_string(&self.config_path)?;
+            toml::from_str::<HostConfig>(&text)?
+        } else {
+            self.config.clone()
+        };
+        cfg.notify = self.notify.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        cfg.cluster.node_name = Some(self.node_display_name());
+        crate::save_config(&self.config_path, &cfg)
+    }
+
+    /// Emit `node.offline` when a peer transitions from online → offline.
+    pub fn check_node_offline_notifications(&self) {
+        let Ok(status) = self.cluster_status() else {
+            return;
+        };
+        let mut prev = self
+            .node_online
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for m in &status.members {
+            if m.id == status.self_id {
+                prev.insert(m.id, true);
+                continue;
+            }
+            let was_online = prev.get(&m.id).copied().unwrap_or(m.online);
+            if was_online && !m.online {
+                self.notify_event(
+                    "node.offline",
+                    &format!("Node offline: {}", m.name),
+                    &format!(
+                        "Event: node.offline\nNode: {}\nID: {}\nPeer URL: {}\n",
+                        m.name, m.id, m.peer_url
+                    ),
+                );
+            }
+            prev.insert(m.id, m.online);
+        }
     }
 
     pub async fn list_updates(&self) -> Result<UpdatesStatus, DaemonError> {
@@ -413,6 +572,7 @@ impl Service {
             .insert(id);
         self.cluster.bump()?;
         self.replicate().await;
+        self.notify_vm("vm.create", &record, "A new guest was defined.");
         Ok(record)
     }
 
@@ -945,9 +1105,12 @@ impl Service {
             self.store.upsert(started.clone())?;
             self.cluster.bump()?;
             self.replicate().await;
+            self.notify_vm("vm.start", &started, "Guest started on a peer node.");
             return Ok(started);
         }
-        self.start_local(id).await
+        let started = self.start_local(id).await?;
+        self.notify_vm("vm.start", &started, "Guest started.");
+        Ok(started)
     }
 
     pub async fn start_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
@@ -1030,7 +1193,12 @@ impl Service {
                 Err(err) => {
                     record.state = VmState::Failed;
                     record.last_error = Some(err.to_string());
-                    self.store.upsert(record)?;
+                    self.store.upsert(record.clone())?;
+                    self.notify_vm(
+                        "vm.failed",
+                        &record,
+                        &format!("VMM create failed: {err}"),
+                    );
                     return Err(err.into());
                 }
             }
@@ -1063,7 +1231,8 @@ impl Service {
             Err(err) => {
                 record.state = VmState::Failed;
                 record.last_error = Some(err.to_string());
-                self.store.upsert(record)?;
+                self.store.upsert(record.clone())?;
+                self.notify_vm("vm.failed", &record, &format!("VMM start failed: {err}"));
                 Err(err.into())
             }
         }
@@ -1076,9 +1245,13 @@ impl Service {
         if let Some(dest) = record.node_id
             && dest != self.cluster.self_id()
         {
-            return self.peer_stop(dest, record).await;
+            let stopped = self.peer_stop(dest, record).await?;
+            self.notify_vm("vm.stop", &stopped, "Guest stopped on a peer node.");
+            return Ok(stopped);
         }
-        self.stop_local(id).await
+        let stopped = self.stop_local(id).await?;
+        self.notify_vm("vm.stop", &stopped, "Guest stopped.");
+        Ok(stopped)
     }
 
     pub async fn stop_local(&self, id: VmId) -> Result<VmRecord, DaemonError> {
@@ -1237,6 +1410,7 @@ impl Service {
         }
         self.cluster.bump()?;
         self.replicate().await;
+        self.notify_vm("vm.destroy", &record, "Guest was destroyed.");
         Ok(())
     }
 
@@ -2370,6 +2544,7 @@ impl Service {
             }
         }
         let _ = self.cluster.heal_remote_peer_urls();
+        self.check_node_offline_notifications();
         let quorum = self.cluster.has_quorum();
         if self.cluster.set_fenced(!quorum) && !quorum {
             self.fence_local().await;
@@ -2613,7 +2788,12 @@ impl Service {
                     tracing::warn!(vm = %vm.id, %err, "ha restart failed");
                     vm.state = VmState::Failed;
                     vm.last_error = Some(err.to_string());
-                    let _ = self.store.upsert(vm);
+                    let _ = self.store.upsert(vm.clone());
+                    self.notify_vm(
+                        "vm.failed",
+                        &vm,
+                        &format!("HA restart failed: {err}"),
+                    );
                 }
             }
             self.cluster.bump()?;
@@ -3312,6 +3492,17 @@ fn iso_is_metal(disk: &DiskSpec) -> bool {
         .unwrap_or("")
         .to_ascii_lowercase();
     name.contains("talos") || name.contains("metal-amd") || name.contains("metal-arm")
+}
+
+fn parse_smtp_tls(raw: &str) -> Result<SmtpTls, DaemonError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "plain" => Ok(SmtpTls::Off),
+        "starttls" | "start_tls" => Ok(SmtpTls::StartTls),
+        "tls" | "ssl" | "wrapper" => Ok(SmtpTls::Tls),
+        other => Err(DaemonError::Peer(format!(
+            "invalid smtp_tls '{other}' (expected off|starttls|tls)"
+        ))),
+    }
 }
 
 #[cfg(test)]

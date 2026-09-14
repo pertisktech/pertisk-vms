@@ -12,6 +12,7 @@ export default function Datacenter() {
     { to: 'cluster', label: 'Cluster', icon: 'cluster' },
     { to: 'terraform', label: 'Terraform', icon: 'terraform' },
     { to: 'tasks', label: 'Task History', icon: 'activity' },
+    { to: 'settings', label: 'Settings', icon: 'settings' },
   ]
   if (user?.role === 'admin') {
     tabs.push({ to: 'users', label: 'Permissions', icon: 'users' })

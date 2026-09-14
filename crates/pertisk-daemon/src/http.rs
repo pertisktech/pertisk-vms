@@ -42,6 +42,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/host", get(host))
         .route("/v1/host/shutdown", post(host_shutdown))
         .route("/v1/host/reboot", post(host_reboot))
+        .route("/v1/settings", get(get_settings).put(put_settings))
+        .route("/v1/settings/mail/test", post(test_mail))
         .route("/v1/node/shell/ws", get(host_shell_ws))
         .route("/v1/updates", get(list_updates))
         .route("/v1/updates/refresh", post(refresh_updates))
@@ -285,6 +287,14 @@ async fn tracked<T>(
         }
         Err(err) => {
             let _ = service.finish_task(&task.id, Err(err.to_string()));
+            service.notify_event(
+                "task.error",
+                &format!("Task failed: {kind}"),
+                &format!(
+                    "Event: task.error\nKind: {kind}\nTarget: {target}\nActor: {}\nError: {err}\n",
+                    user.username
+                ),
+            );
             Err(err)
         }
     }
@@ -292,6 +302,22 @@ async fn tracked<T>(
 
 async fn host(State(service): State<Service>) -> impl IntoResponse {
     Json(service.host_info())
+}
+
+async fn get_settings(State(service): State<Service>) -> impl IntoResponse {
+    Json(service.settings())
+}
+
+async fn put_settings(
+    State(service): State<Service>,
+    Json(req): Json<pertisk_api::UpdateSettingsRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.update_settings(req)?))
+}
+
+async fn test_mail(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
+    service.send_test_mail().await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn host_shutdown(

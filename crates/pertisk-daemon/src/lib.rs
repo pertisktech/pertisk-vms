@@ -6,6 +6,7 @@ mod control;
 mod guest_ssh;
 mod http;
 mod metrics;
+mod notify;
 mod service;
 mod shell;
 mod static_files;
@@ -52,6 +53,16 @@ pub fn load_or_init_config(home: &Path) -> Result<(HostConfig, PathBuf), DaemonE
     };
     config.resolve_paths(home);
     Ok((config, path))
+}
+
+pub fn save_config(path: &Path, config: &HostConfig) -> Result<(), DaemonError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Persist without expanding absolute storage paths into the file when possible —
+    // write the in-memory resolved config (matches current node behavior after edits).
+    std::fs::write(path, toml::to_string_pretty(config)?)?;
+    Ok(())
 }
 
 pub async fn bind_and_serve(

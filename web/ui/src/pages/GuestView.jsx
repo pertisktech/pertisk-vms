@@ -1,5 +1,5 @@
 import { createContext, useContext, useRef, useState } from 'react'
-import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api, asList, isTemplate, vmCaption } from '../api'
 import { Btn } from '../components/Icons'
 import Modal from '../components/Modal'
@@ -23,11 +23,16 @@ export function useGuest() {
     override?.vm ||
     ctx.inv?.vms?.find((item) => String(item.id) === String(vmId)) ||
     null
-  // Keep last-known guest across inventory polls so Console websockets are not torn down.
+  // Keep last-known guest across inventory polls so Console/SSH websockets are not torn down.
+  // Clear when inventory confirms the guest is gone (terraform destroy / peer delete).
   const cached = useRef(live)
-  if (live) cached.current = live
-  if (cached.current && String(cached.current.id) !== String(vmId)) {
+  const loading = Boolean(ctx.inv?.loading)
+  if (live) {
     cached.current = live
+  } else if (cached.current && String(cached.current.id) !== String(vmId)) {
+    cached.current = null
+  } else if (!loading && !override?.vm) {
+    cached.current = null
   }
   const vm = live || cached.current
   if (override) {
@@ -82,14 +87,7 @@ export default function GuestView() {
         </div>
       )
     }
-    return (
-      <div className="pve-panel">
-        <div className="dash-empty card">
-          <strong>Guest not found</strong>
-          <p className="muted">It may have been destroyed or migrated to another node.</p>
-        </div>
-      </div>
-    )
+    return <Navigate to="/dc/summary" replace />
   }
 
   return (

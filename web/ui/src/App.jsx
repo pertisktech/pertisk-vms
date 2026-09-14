@@ -28,6 +28,7 @@ import GuestHistory from './pages/guest/History'
 import GuestOptions from './pages/guest/Options'
 import Templates from './pages/Templates'
 import Terraform from './pages/Terraform'
+import Settings from './pages/Settings'
 
 export default function App() {
   return (
@@ -47,6 +48,7 @@ export default function App() {
                 <Route path="cluster" element={<Cluster />} />
                 <Route path="terraform" element={<Terraform />} />
                 <Route path="tasks" element={<Activity />} />
+                <Route path="settings" element={<Settings />} />
                 <Route path="users" element={<Users />} />
               </Route>
               <Route path="/node/:nodeId" element={<NodeView />}>

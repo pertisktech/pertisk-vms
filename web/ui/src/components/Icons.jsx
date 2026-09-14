@@ -97,6 +97,7 @@ const ICONS = {
   datacenter: LuBuilding2,
   summary: LuFileText,
   hardware: LuSettings,
+  settings: LuSettings,
   clock: LuClock,
   options: LuSlidersHorizontal,
   key: LuKeyRound,

@@ -43,3 +43,16 @@ offline_after_ms = 5000
 # Auto-detected from nproc / MemTotal if unset (16c/64G → 16 / ~48GiB advertised).
 # cpus = 16
 # memory_mib = 49152
+
+# Shared SMTP notifications (Datacenter → Settings). Password is stored in config.toml.
+[notify]
+enabled = false
+smtp_host = ""
+smtp_port = 587
+smtp_tls = "starttls"   # off | starttls | tls
+smtp_user = ""
+smtp_password = ""
+from = "pertisk@example.com"
+recipients = ["ops@example.com"]
+events = ["vm.destroy", "vm.failed", "task.error", "node.offline"]
+# Also available: "vm.create", "vm.start", "vm.stop"

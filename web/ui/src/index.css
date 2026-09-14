@@ -1002,12 +1002,30 @@ a.btn-icon.secondary:hover {
   border: 1px solid rgba(232, 93, 93, 0.35);
   color: var(--danger);
 }
+.banner.success {
+  background: rgba(62, 170, 110, 0.12);
+  border: 1px solid rgba(62, 170, 110, 0.35);
+  color: var(--ok, #2f9e5f);
+}
 .banner-dismiss {
   margin-left: auto;
   background: transparent;
   border: none;
   color: inherit;
   padding: 0 0.25rem;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+  font-size: 0.92rem;
+}
+.settings-events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.35rem;
 }
 
 .dash-panel .guest-grid { padding: 0.75rem 0.9rem 0.9rem; }

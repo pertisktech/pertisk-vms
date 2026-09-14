@@ -457,6 +457,18 @@ impl Cluster {
         self.persist()
     }
 
+    pub fn set_self_name(&self, name: String) -> Result<(), DaemonError> {
+        {
+            let mut inner = self.inner.lock().expect("cluster lock");
+            let id = inner.self_id;
+            if let Some(member) = inner.members.get_mut(&id) {
+                member.record.name = name;
+            }
+        }
+        self.persist()?;
+        self.bump()
+    }
+
     pub fn set_member_peer_url(&self, id: NodeId, url: String) -> Result<(), DaemonError> {
         {
             let mut inner = self.inner.lock().expect("cluster lock");

@@ -1210,6 +1210,96 @@ pub struct HostConfig {
     pub network: NetworkConfig,
     #[serde(default)]
     pub cluster: ClusterConfig,
+    #[serde(default)]
+    pub notify: NotifyConfig,
+}
+
+/// SMTP notification settings (shared recipients).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default = "default_smtp_tls")]
+    pub smtp_tls: SmtpTls,
+    #[serde(default)]
+    pub smtp_user: String,
+    #[serde(default)]
+    pub smtp_password: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub recipients: Vec<String>,
+    #[serde(default = "default_notify_events")]
+    pub events: Vec<String>,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_tls() -> SmtpTls {
+    SmtpTls::StartTls
+}
+
+fn default_notify_events() -> Vec<String> {
+    vec![
+        "vm.destroy".into(),
+        "vm.failed".into(),
+        "task.error".into(),
+        "node.offline".into(),
+    ]
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    Off,
+    #[default]
+    #[serde(alias = "starttls")]
+    StartTls,
+    Tls,
+}
+
+impl SmtpTls {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::StartTls => "starttls",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_tls: default_smtp_tls(),
+            smtp_user: String::new(),
+            smtp_password: String::new(),
+            from: String::new(),
+            recipients: Vec::new(),
+            events: default_notify_events(),
+        }
+    }
+}
+
+impl NotifyConfig {
+    pub fn wants_event(&self, kind: &str) -> bool {
+        self.enabled && self.events.iter().any(|e| e == kind)
+    }
+
+    pub fn smtp_ready(&self) -> bool {
+        !self.smtp_host.trim().is_empty()
+            && !self.from.trim().is_empty()
+            && self.recipients.iter().any(|r| !r.trim().is_empty())
+    }
 }
 
 impl HostConfig {
@@ -1220,6 +1310,7 @@ impl HostConfig {
             storage: StorageConfig::default_for(home),
             network: NetworkConfig::default(),
             cluster: ClusterConfig::default(),
+            notify: NotifyConfig::default(),
         }
     }
 
