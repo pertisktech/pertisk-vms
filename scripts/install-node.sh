@@ -90,8 +90,15 @@ chmod 755 /usr/sbin/pertisk-kvm-check /usr/sbin/pertisk-firstboot \
 chmod 644 /etc/pertisk/config.toml /etc/pertisk/daemon.env
 chmod 755 /etc/pertisk
 
-# Always refresh node config from overlay so driver defaults stay current.
-cp /etc/pertisk/config.toml /var/lib/pertisk/config.toml
+# Seed live config from overlay on first install only.
+# Redeploy must not wipe operator Settings (node_name, [notify], etc.).
+mkdir -p /var/lib/pertisk
+if [[ ! -f /var/lib/pertisk/config.toml ]]; then
+  cp /etc/pertisk/config.toml /var/lib/pertisk/config.toml
+else
+  # Soft-refresh legacy cloud-hypervisor driver without replacing the whole file.
+  sed -i 's/^driver = "cloud-hypervisor"/driver = "qemu"/' /var/lib/pertisk/config.toml || true
+fi
 # Keep existing admin password in daemon.env if present; otherwise use overlay.
 if [[ -f /etc/pertisk/daemon.env ]]; then
   # Prefer qemu for VGA; override legacy cloud-hypervisor env.

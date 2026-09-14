@@ -331,11 +331,13 @@ impl Cluster {
             std::fs::create_dir_all(parent)?;
         }
         let peer_url = advertise_url(listen, config.cluster.peer_url.as_deref());
-        let node_name = config
+        let configured_name = config
             .cluster
             .node_name
-            .clone()
-            .unwrap_or_else(|| "node".into());
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let cpus = default_cpus(config.cluster.cpus);
         let memory_mib = default_memory_mib(config.cluster.memory_mib);
         let now = now_ms();
@@ -358,7 +360,11 @@ impl Cluster {
             }
             if let Some(self_member) = members.get_mut(&persisted.self_id) {
                 self_member.record.peer_url = peer_url;
-                self_member.record.name = node_name;
+                // Only apply config.toml / CLI name when explicitly set. Otherwise keep
+                // the name already stored in cluster.json (Settings / prior boots).
+                if let Some(name) = configured_name {
+                    self_member.record.name = name;
+                }
                 self_member.record.cpus = cpus;
                 self_member.record.memory_mib = memory_mib;
                 self_member.last_seen_ms = now;
@@ -375,7 +381,7 @@ impl Cluster {
             let self_id = NodeId::new();
             let record = NodeRecord {
                 id: self_id,
-                name: node_name,
+                name: configured_name.unwrap_or_else(|| "node".into()),
                 peer_url,
                 cpus,
                 memory_mib,
@@ -1111,6 +1117,22 @@ mod tests {
         assert_eq!(status.members.len(), 1);
         assert!(reopened.has_quorum());
         assert!(reopened.is_leader());
+    }
+
+    #[test]
+    fn keeps_persisted_name_when_config_omits_node_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("kept-name".into());
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        assert_eq!(cluster.self_record().name, "kept-name");
+        drop(cluster);
+
+        let mut bare = HostConfig::default_for(dir.path());
+        bare.cluster.node_name = None;
+        let reopened = Cluster::open(&path, &bare, "127.0.0.1:7480").unwrap();
+        assert_eq!(reopened.self_record().name, "kept-name");
     }
 
     #[test]
