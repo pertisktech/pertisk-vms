@@ -32,6 +32,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::control::AuthUser;
+use crate::service::write_sparse_chunk;
 use crate::static_files::static_handler;
 use crate::{DaemonError, Service};
 
@@ -924,6 +925,7 @@ async fn upload_volume_import(
         .clone()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
+    service.require_storage_bytes(0, "volume import")?;
     let ext = format.extension();
     let tmp = service.upload_tmp_path("pertisk-vol", ext)?;
     let mut file = tokio::fs::File::create(&tmp)
@@ -999,6 +1001,7 @@ async fn import_template(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| pertisk_storage::StorageError::Message("query name is required".into()))?;
     service.require_vm_name_free(&name)?;
+    service.require_storage_bytes(0, "template import")?;
     let ext = format.extension();
     let tmp = service.upload_tmp_path("pertisk-tpl", ext)?;
     let mut file = tokio::fs::File::create(&tmp)
@@ -1643,18 +1646,29 @@ async fn peer_volume_blob_get(
 async fn peer_volume_blob_put(
     State(service): State<Service>,
     Path(id): Path<VolumeId>,
+    headers: HeaderMap,
     body: Body,
 ) -> Result<impl IntoResponse, DaemonError> {
     let rec = service.get_volume(id)?;
+    if let Some(allocated) = headers
+        .get("x-pertisk-allocated")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        service.require_storage_bytes(allocated, "volume replica")?;
+    } else {
+        service.require_storage_bytes(0, "volume replica")?;
+    }
     let tmp = service.upload_tmp_path("peer-blob", rec.format.extension())?;
     let mut file = tokio::fs::File::create(&tmp)
         .await
         .map_err(pertisk_storage::StorageError::Io)?;
     let mut stream = body.into_data_stream();
+    let mut written = 0u64;
     let write = async {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
-            file.write_all(&chunk)
+            write_sparse_chunk(&mut file, &mut written, &chunk)
                 .await
                 .map_err(pertisk_storage::StorageError::Io)?;
         }
@@ -1694,9 +1708,11 @@ impl IntoResponse for DaemonError {
             Self::Control(crate::control::ControlError::UserNotFound(_)) => StatusCode::NOT_FOUND,
             Self::Control(crate::control::ControlError::UserExists(_)) => StatusCode::CONFLICT,
             Self::Control(crate::control::ControlError::Message(_)) => StatusCode::BAD_REQUEST,
-            Self::NoQuorum | Self::Fenced | Self::Unschedulable(_) | Self::Capacity(_) => {
+            Self::NoQuorum | Self::Fenced | Self::Unschedulable(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            Self::Capacity(_) => StatusCode::INSUFFICIENT_STORAGE,
+            Self::Io(err) if pertisk_storage::is_enospc(err) => StatusCode::INSUFFICIENT_STORAGE,
             Self::Peer(_) => StatusCode::BAD_GATEWAY,
             Self::Apt(_) | Self::HostPower(_) => StatusCode::BAD_REQUEST,
             Self::Storage(err) => storage_status(err),
@@ -1715,9 +1731,12 @@ fn storage_status(err: &pertisk_storage::StorageError) -> StatusCode {
     match err {
         NotFound(_) | IsoNotFound(_) | SnapshotNotFound(_) => StatusCode::NOT_FOUND,
         NameTaken(_) | IsoExists(_) | SnapshotExists(_) => StatusCode::CONFLICT,
+        Message(msg) if msg.to_ascii_lowercase().contains("no space left") => {
+            StatusCode::INSUFFICIENT_STORAGE
+        }
         InvalidIsoName(_) | CannotShrink { .. } | Message(_) => StatusCode::BAD_REQUEST,
         QemuImgRequired | LinkedRequiresQemu => StatusCode::BAD_REQUEST,
-        Io(err) if err.raw_os_error() == Some(28) => StatusCode::INSUFFICIENT_STORAGE,
+        Io(err) if pertisk_storage::is_enospc(err) => StatusCode::INSUFFICIENT_STORAGE,
         Io(_) | Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use pertisk_net::{NetError, NetworkPool};
-use pertisk_storage::{Rbd, StorageError, VolumePool};
+use pertisk_storage::{Rbd, StorageError, VolumePool, allocated_bytes};
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
@@ -12,10 +12,9 @@ use pertisk_types::{
     CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeId,
     NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
-    SmtpTls,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord,
-    VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord,
-    default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
+    SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk,
+    VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
+    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -1597,17 +1596,14 @@ impl Service {
             self.replicate().await;
             return Ok(record);
         }
+        self.require_storage_bytes(0, "create volume")?;
         let mut record = self.volumes.create_volume(req.clone())?;
         let online = self.cluster.online_ids();
         let configured = req
             .replicas
             .unwrap_or(self.config.storage.replica_count)
             .max(1);
-        let want = if online.len() >= 2 {
-            configured.max(2)
-        } else {
-            configured
-        };
+        let want = replica_want(online.len(), configured);
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record.backend = StorageBackend::Replica;
@@ -1626,14 +1622,12 @@ impl Service {
         source: std::path::PathBuf,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_quorum()?;
+        let need = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+        self.require_storage_bytes(need, "import volume")?;
         let mut record = self.volumes.import_volume(&source, name, format)?;
         let online = self.cluster.online_ids();
         let configured = self.config.storage.replica_count.max(1);
-        let want = if online.len() >= 2 {
-            configured.max(2)
-        } else {
-            configured
-        };
+        let want = replica_want(online.len(), configured);
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record.backend = StorageBackend::Replica;
@@ -1683,6 +1677,8 @@ impl Service {
         req: CloneVolumeRequest,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_volume_idle(id, "clone")?;
+        let source = self.volumes.get_volume(id)?;
+        self.require_storage_bytes(allocated_bytes(&source.path), "clone volume")?;
         let volumes = Arc::clone(&self.volumes);
         let req = req.clone();
         let mut record = tokio::task::spawn_blocking(move || volumes.clone_volume(id, req))
@@ -1690,11 +1686,7 @@ impl Service {
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
         let online = self.cluster.online_ids();
         let configured = record.replica_count.max(1);
-        let want = if online.len() >= 2 {
-            configured.max(2)
-        } else {
-            configured
-        };
+        let want = replica_want(online.len(), configured);
         record.replica_count = want;
         record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
         record = self.volumes.put_record(record)?;
@@ -1879,6 +1871,22 @@ impl Service {
     pub(crate) fn require_vm_name_free(&self, name: &str) -> Result<(), DaemonError> {
         if self.store.name_taken(name, None)? {
             return Err(DaemonError::NameTaken(name.to_string()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_storage_bytes(&self, need: u64, what: &str) -> Result<(), DaemonError> {
+        const HEADROOM_MIB: u64 = 1024;
+        let avail_mib =
+            free_space_mib(&self.config.storage.root).or_else(|| free_space_mib(Path::new("/")));
+        let Some(avail_mib) = avail_mib else {
+            return Ok(());
+        };
+        let need_mib = need.div_ceil(1024 * 1024).saturating_add(HEADROOM_MIB);
+        if avail_mib < need_mib {
+            return Err(DaemonError::Capacity(format!(
+                "{what} needs {need_mib} MiB free (including {HEADROOM_MIB} MiB headroom); this node has {avail_mib} MiB"
+            )));
         }
         Ok(())
     }
@@ -3190,7 +3198,20 @@ impl Service {
 
     pub fn volume_stat(&self, id: VolumeId) -> Result<serde_json::Value, DaemonError> {
         let (exists, size) = self.volumes.local_stat(id).unwrap_or((false, 0));
-        Ok(serde_json::json!({ "exists": exists, "size": size }))
+        let allocated = if exists {
+            self.volumes.local_allocated(id).unwrap_or(size)
+        } else {
+            0
+        };
+        let free_bytes = free_space_mib(&self.config.storage.root)
+            .or_else(|| free_space_mib(Path::new("/")))
+            .map(|mib| mib.saturating_mul(1024 * 1024));
+        Ok(serde_json::json!({
+            "exists": exists,
+            "size": size,
+            "allocated": allocated,
+            "free_bytes": free_bytes,
+        }))
     }
 
     pub fn apply_delete_replica(&self, id: VolumeId) -> Result<(), DaemonError> {
@@ -3249,7 +3270,7 @@ impl Service {
                 })?;
             if self.volumes.has_local(vol.id, vol.format) {
                 let remote = self.peer_volume_stat_remote(dest, vol.id).await.ok();
-                let remote_ready = remote.is_some_and(|(exists, size)| exists && size > 0);
+                let remote_ready = remote.is_some_and(|stat| stat.exists && stat.size > 0);
                 if !remote_ready {
                     self.peer_put_blob(dest, vol.id).await.map_err(|err| {
                         DaemonError::Peer(format!("sync volume {} to {dest}: {err}", vol.name))
@@ -3378,13 +3399,14 @@ impl Service {
             if vol.backend == StorageBackend::Rbd {
                 continue;
             }
+            let attached = !self.volume_users(vol.id).unwrap_or_default().is_empty()
+                || self.volume_is_backing(vol.id).unwrap_or(false);
+            if !attached {
+                // Leftover recovered/template disks must not be copied onto every node.
+                continue;
+            }
             vol.replicas.retain(|id| online.contains(id));
-            // Multi-node clusters need ≥2 replicas so guests can run on either side.
-            let want = {
-                let configured = usize::from(vol.replica_count.max(1));
-                let floor = if online.len() >= 2 { 2 } else { 1 };
-                configured.max(floor).min(online.len().max(1))
-            };
+            let want = usize::from(replica_want(online.len(), vol.replica_count.max(1)));
             if vol.replicas.is_empty() {
                 vol.replicas =
                     cluster::place_replicas(&online, want as u8, Some(self.cluster.self_id()));
@@ -3427,12 +3449,26 @@ impl Service {
             return Err(DaemonError::Peer(format!("local volume {id} missing")));
         }
         let local_len = tokio::fs::metadata(&path).await?.len();
+        let allocated = allocated_bytes(&path);
         if local_len > 0
             && let Ok(stat) = self.peer_volume_stat_remote(dest, id).await
-            && stat.0
-            && stat.1 == local_len
+            && stat.exists
+            && stat.size == local_len
         {
             return Ok(());
+        }
+        if let Ok(stat) = self.peer_volume_stat_remote(dest, id).await
+            && let Some(free) = stat.free_bytes
+        {
+            const HEADROOM: u64 = 1024 * 1024 * 1024;
+            if free < allocated.saturating_add(HEADROOM) {
+                return Err(DaemonError::Capacity(format!(
+                    "peer {dest} has {} MiB free; volume {} needs ~{} MiB allocated plus 1 GiB headroom",
+                    free / (1024 * 1024),
+                    rec.name,
+                    allocated.div_ceil(1024 * 1024)
+                )));
+            }
         }
         let file = tokio::fs::File::open(&path).await?;
         let url = self
@@ -3448,6 +3484,7 @@ impl Service {
             .header("x-pertisk-peer", self.cluster.secret())
             .header("content-type", "application/octet-stream")
             .header("content-length", local_len)
+            .header("x-pertisk-allocated", allocated)
             .body(file)
             .timeout(std::time::Duration::from_secs(30 * 60))
             .send()
@@ -3467,7 +3504,7 @@ impl Service {
         &self,
         dest: pertisk_types::NodeId,
         id: VolumeId,
-    ) -> Result<(bool, u64), DaemonError> {
+    ) -> Result<RemoteVolumeStat, DaemonError> {
         let url = self
             .cluster
             .member_url(dest)
@@ -3490,13 +3527,14 @@ impl Service {
             .json()
             .await
             .map_err(|err| DaemonError::Peer(err.to_string()))?;
-        Ok((
-            value
+        Ok(RemoteVolumeStat {
+            exists: value
                 .get("exists")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            value.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
-        ))
+            size: value.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            free_bytes: value.get("free_bytes").and_then(|v| v.as_u64()),
+        })
     }
 
     async fn peer_pull_blob(
@@ -3571,11 +3609,45 @@ async fn stream_response_to_file(
     let mut written = 0u64;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| DaemonError::Peer(err.to_string()))?;
-        written += chunk.len() as u64;
-        file.write_all(&chunk).await?;
+        write_sparse_chunk(&mut file, &mut written, &chunk).await?;
     }
     file.flush().await?;
     Ok(written)
+}
+
+pub(crate) async fn write_sparse_chunk(
+    file: &mut tokio::fs::File,
+    pos: &mut u64,
+    chunk: &[u8],
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+    const BLOCK: usize = 64 * 1024;
+    let mut off = 0;
+    while off < chunk.len() {
+        let end = (off + BLOCK).min(chunk.len());
+        let piece = &chunk[off..end];
+        if piece.iter().all(|&b| b == 0) {
+            *pos += piece.len() as u64;
+            file.set_len(*pos).await?;
+            file.seek(std::io::SeekFrom::Start(*pos)).await?;
+        } else {
+            file.write_all(piece).await?;
+            *pos += piece.len() as u64;
+        }
+        off = end;
+    }
+    Ok(())
+}
+
+fn replica_want(online: usize, configured: u8) -> u8 {
+    configured.max(1).min(online.max(1) as u8)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RemoteVolumeStat {
+    exists: bool,
+    size: u64,
+    free_bytes: Option<u64>,
 }
 
 /// Fill / refresh NIC IPs from QEMU guest agent and/or the host neighbour table.
@@ -3940,6 +4012,14 @@ mod tests {
                 .iter()
                 .any(|n| n.node_id == svc.cluster.self_id())
         );
+    }
+
+    #[test]
+    fn replica_want_does_not_force_two_copies() {
+        assert_eq!(replica_want(1, 2), 1);
+        assert_eq!(replica_want(2, 1), 1);
+        assert_eq!(replica_want(2, 2), 2);
+        assert_eq!(replica_want(3, 2), 2);
     }
 
     fn spec(name: &str) -> VmSpec {

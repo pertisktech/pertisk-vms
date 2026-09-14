@@ -318,7 +318,7 @@ impl VolumePool {
         }
         if src != record.path.as_path() {
             let tmp = record.path.with_extension("blob.tmp");
-            std::fs::copy(src, &tmp)?;
+            copy_volume_file(src, &tmp)?;
             std::fs::rename(&tmp, &record.path)?;
         }
         let len = std::fs::metadata(&record.path)?.len();
@@ -333,6 +333,12 @@ impl VolumePool {
             return Ok((false, 0));
         }
         Ok((true, std::fs::metadata(&record.path)?.len()))
+    }
+
+    /// On-disk allocation (sparse holes excluded). Falls back to apparent size.
+    pub fn local_allocated(&self, id: VolumeId) -> Result<u64> {
+        let record = self.get_volume(id)?;
+        Ok(allocated_bytes(&record.path))
     }
 
     pub fn list_volumes(&self) -> Result<Vec<VolumeRecord>> {
@@ -809,6 +815,45 @@ fn copy_volume_file(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bytes actually occupying disk. Sparse files report `len` much larger than this.
+pub fn allocated_bytes(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return 0;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return meta.blocks().saturating_mul(512).min(meta.len());
+    }
+    #[cfg(not(unix))]
+    meta.len()
+}
+
+pub fn is_enospc(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(28) || err.kind() == std::io::ErrorKind::StorageFull
+}
+
+/// Write `chunk` at `pos`, leaving runs of zeros as holes instead of allocating.
+pub fn write_sparse_slice(file: &mut File, pos: &mut u64, chunk: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    const BLOCK: usize = 64 * 1024;
+    let mut off = 0;
+    while off < chunk.len() {
+        let end = (off + BLOCK).min(chunk.len());
+        let piece = &chunk[off..end];
+        if piece.iter().all(|&b| b == 0) {
+            *pos += piece.len() as u64;
+            file.set_len(*pos)?;
+            file.seek(SeekFrom::Start(*pos))?;
+        } else {
+            file.write_all(piece)?;
+            *pos += piece.len() as u64;
+        }
+        off = end;
+    }
+    Ok(())
+}
+
 /// OpenStack ConfigDrive as VFAT labeled `config-2` (what AlmaLinux/RHEL 10 mounts).
 fn write_vfat_configdrive(dest: &Path, files: &[(&str, &[u8])]) -> Result<u64> {
     let mkfs = pertisk_types::find_in_path("mkfs.vfat")
@@ -1177,6 +1222,28 @@ mod tests {
         std::fs::write(&src, vec![7u8; 64 * 1024]).unwrap();
         let written = pool.write_blob_from_path(vol.id, &src).unwrap();
         assert_eq!(std::fs::read(&written.path).unwrap(), vec![7u8; 64 * 1024]);
+    }
+
+    #[test]
+    fn write_sparse_slice_punches_zero_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("holes.raw");
+        let mut file = File::create(&path).unwrap();
+        let mut pos = 0u64;
+        write_sparse_slice(&mut file, &mut pos, &[0u8; 128 * 1024]).unwrap();
+        write_sparse_slice(&mut file, &mut pos, &[1u8; 4096]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(pos, 128 * 1024 + 4096);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), pos);
+        #[cfg(unix)]
+        {
+            let used = allocated_bytes(&path);
+            assert!(
+                used < 64 * 1024,
+                "sparse write allocated {used} bytes for a mostly-hole file"
+            );
+        }
     }
 
     #[test]
