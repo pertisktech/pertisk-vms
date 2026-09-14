@@ -332,6 +332,44 @@ fn virtio_root_dev(part: &Path) -> Option<String> {
     Some(format!("/dev/vda{num}"))
 }
 
+/// True when `fname` is a partition of loop device `loop_name` (`loop0p15` of `loop0`).
+fn is_loop_partition(loop_name: &str, fname: &str) -> bool {
+    let Some(rest) = fname.strip_prefix(loop_name) else {
+        return false;
+    };
+    let Some(num) = rest.strip_prefix('p') else {
+        return false;
+    };
+    !num.is_empty() && num.chars().all(|c| c.is_ascii_digit())
+}
+
+fn loop_partition_paths(device: &Path) -> Vec<PathBuf> {
+    let name = device.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let parent = device.parent().unwrap_or(Path::new("/dev"));
+    let mut parts = Vec::new();
+    let Ok(rd) = fs::read_dir(parent) else {
+        return parts;
+    };
+    for e in rd.flatten() {
+        let Some(fname) = e.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if is_loop_partition(name, &fname) {
+            parts.push(e.path());
+        }
+    }
+    parts.sort_by_key(|p| partition_index(p));
+    parts
+}
+
+fn partition_index(path: &Path) -> u32 {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.rsplit('p').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
 fn parse_bls(path: &Path) -> Option<BlsEntry> {
     let text = fs::read_to_string(path).ok()?;
     let mut linux = None;
@@ -398,34 +436,20 @@ impl LoopDisk {
                 "losetup returned empty device".into(),
             ));
         }
-        // Partition nodes can lag briefly after -P.
+        // Partition nodes can lag briefly after -P. Ubuntu cloud GPT uses p13/p15
+        // (BOOT / ESP), so wait for any loopNp* node, not only p1/p2.
+        let device = PathBuf::from(device);
         for _ in 0..20 {
-            if Path::new(&format!("{device}p1")).exists()
-                || Path::new(&format!("{device}p2")).exists()
-            {
+            if !loop_partition_paths(&device).is_empty() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        Ok(Self {
-            device: PathBuf::from(device),
-        })
+        Ok(Self { device })
     }
 
     fn parts(&self) -> Vec<PathBuf> {
-        let name = self
-            .device
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let mut parts = Vec::new();
-        for i in 1..=8 {
-            let p = self.device.with_file_name(format!("{name}p{i}"));
-            if p.exists() {
-                parts.push(p);
-            }
-        }
-        parts
+        loop_partition_paths(&self.device)
     }
 
     fn find_fs(&self, want: &str) -> Option<PathBuf> {
@@ -569,6 +593,36 @@ mod tests {
             entry.initrd
         );
         assert!(entry.options.contains("root=UUID=abc"), "{}", entry.options);
+    }
+
+    #[test]
+    fn ubuntu_gpt_esp_is_p15() {
+        assert!(is_loop_partition("loop0", "loop0p1"));
+        assert!(is_loop_partition("loop0", "loop0p13"));
+        assert!(is_loop_partition("loop0", "loop0p15"));
+        assert!(!is_loop_partition("loop0", "loop0"));
+        assert!(!is_loop_partition("loop0", "loop0p"));
+        assert!(!is_loop_partition("loop1", "loop10p1"));
+        assert!(!is_loop_partition("loop0", "loop0n1"));
+        assert_eq!(partition_index(Path::new("/dev/loop0p15")), 15);
+        assert_eq!(partition_index(Path::new("/dev/loop0p1")), 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn ubuntu_cloud_gpt_kernel_boot() {
+        let disk = std::env::var("PERTISK_UBUNTU_RAW").expect("PERTISK_UBUNTU_RAW");
+        let dest = tempfile::tempdir().unwrap();
+        let boot = prepare_shim_disk_boot(Path::new(&disk), dest.path())
+            .unwrap()
+            .expect("ubuntu shim disk should kernel-boot");
+        assert!(
+            boot.cmdline.contains("root=/dev/vda1"),
+            "expected pinned root, got {}",
+            boot.cmdline
+        );
+        assert!(boot.kernel.is_file(), "{}", boot.kernel.display());
+        assert!(boot.initramfs.is_file(), "{}", boot.initramfs.display());
     }
 
     #[test]
