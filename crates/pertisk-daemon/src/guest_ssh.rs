@@ -49,6 +49,10 @@ fn spawn_ssh(target: &GuestSshTarget) -> Result<SshSession, String> {
         })
         .map_err(|err| format!("open pty: {err}"))?;
 
+    // Guests are often rebuilt and reuse the same DHCP IP with a new host key.
+    // Drop any stale known_hosts entry for this address before connecting.
+    forget_known_host(&target.host);
+
     let ssh = ssh_bin().ok_or_else(|| {
         "ssh client missing (install openssh-client on the node)".to_string()
     })?;
@@ -92,6 +96,30 @@ fn spawn_ssh(target: &GuestSshTarget) -> Result<SshSession, String> {
         reader,
         writer,
     })
+}
+
+/// Remove a guest address from the node known_hosts file (IP reuse after rebuild).
+fn forget_known_host(host: &str) {
+    let host = host.trim();
+    if host.is_empty() {
+        return;
+    }
+    let known = Path::new("/var/lib/pertisk/ssh/known_hosts");
+    if !known.is_file() {
+        return;
+    }
+    let Some(keygen) = ["/usr/bin/ssh-keygen", "/bin/ssh-keygen"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+    else {
+        return;
+    };
+    let _ = std::process::Command::new(keygen)
+        .arg("-f")
+        .arg(known)
+        .arg("-R")
+        .arg(host)
+        .output();
 }
 
 fn ssh_bin() -> Option<&'static str> {
