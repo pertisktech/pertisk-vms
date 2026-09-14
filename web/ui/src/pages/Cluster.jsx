@@ -29,6 +29,12 @@ function UsageBar({ label, value, sublabel }) {
 }
 
 function nodeAddress(member) {
+  try {
+    const host = member?.peer_url ? new URL(member.peer_url).hostname : ''
+    if (host) return host
+  } catch {
+    /* fall through */
+  }
   const v6 = publicIpv6(member?.ipv6)
   return member?.ipv4?.[0] || v6[0] || member?.peer_url || '—'
 }

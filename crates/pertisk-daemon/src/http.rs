@@ -23,7 +23,7 @@ use pertisk_types::{
     AddRepositoryRequest, AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest,
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, HeartbeatMessage,
-    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeRecord, ResizeVolumeRequest,
+    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord, ResizeVolumeRequest,
     SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
     VolumeId, VolumeRecord,
 };
@@ -129,6 +129,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/peer/shutdown", post(peer_shutdown))
         .route("/v1/peer/restart", post(peer_restart))
         .route("/v1/peer/drop", post(peer_drop))
+        .route("/v1/peer/forget", post(peer_forget))
         .route("/v1/peer/volumes/ensure", post(peer_volume_ensure))
         .route(
             "/v1/peer/volumes/{id}",
@@ -1528,7 +1529,7 @@ async fn cluster_join(
 }
 
 async fn cluster_leave(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
-    Ok(Json(service.leave_cluster()?))
+    Ok(Json(service.leave_cluster().await?))
 }
 
 async fn cluster_accept(
@@ -1594,6 +1595,14 @@ async fn peer_drop(
 ) -> Result<impl IntoResponse, DaemonError> {
     service.apply_drop(&record).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn peer_forget(
+    State(service): State<Service>,
+    Json(id): Json<NodeId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    service.forget_member(id)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn peer_volume_ensure(

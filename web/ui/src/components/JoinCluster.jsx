@@ -50,6 +50,7 @@ export default function JoinCluster({ canWrite, inv }) {
 
   return (
     <>
+      {error && <div className="banner danger">{error}</div>}
       {members.length > 1 && (
         <Btn
           icon="logout"
@@ -61,7 +62,13 @@ export default function JoinCluster({ canWrite, inv }) {
                 'This node becomes a solo cluster. Guests on other nodes stay there. Continue?',
               confirmLabel: 'Leave',
             })
-            if (ok) inv.mutate(() => api('/v1/cluster/leave', { method: 'POST' }))
+            if (ok) {
+              try {
+                await inv.mutate(() => api('/v1/cluster/leave', { method: 'POST' }))
+              } catch (err) {
+                setError(err.message || String(err))
+              }
+            }
           }}
         >
           Leave

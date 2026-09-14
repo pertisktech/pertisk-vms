@@ -1926,6 +1926,15 @@ impl Service {
             .collect())
     }
 
+    fn volume_used_by_ha(&self, id: VolumeId) -> bool {
+        self.store
+            .list()
+            .ok()
+            .into_iter()
+            .flatten()
+            .any(|vm| vm.spec.ha && vm.spec.disks.iter().any(|disk| disk.volume_id == Some(id)))
+    }
+
     fn volume_is_backing(&self, id: VolumeId) -> Result<bool, DaemonError> {
         Ok(self
             .volumes
@@ -2937,7 +2946,29 @@ impl Service {
             let mut moving = vm.clone();
             moving.node_id = Some(dest);
             moving.state = VmState::Created;
-            match self.peer_run(dest, moving).await {
+            let prepared = if dest == self.cluster.self_id() {
+                self.pull_missing_volumes(&moving)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| {
+                        DaemonError::Peer(format!("ha pull volumes for {} failed: {err}", vm.id))
+                    })
+            } else {
+                self.ensure_volumes_on_node(&moving, dest).await
+            };
+            if let Err(err) = prepared {
+                tracing::warn!(vm = %vm.id, %err, "ha restart missing replica");
+                vm.state = VmState::Failed;
+                vm.last_error = Some(err.to_string());
+                let _ = self.store.upsert(vm.clone());
+                self.notify_vm("vm.failed", &vm, &format!("HA restart failed: {err}"));
+                continue;
+            }
+            match if dest == self.cluster.self_id() {
+                self.apply_run(moving).await
+            } else {
+                self.peer_run(dest, moving).await
+            } {
                 Ok(started) => {
                     let mut stale = vm.clone();
                     stale.node_id = Some(owner);
@@ -3405,8 +3436,9 @@ impl Service {
                 // Leftover recovered/template disks must not be copied onto every node.
                 continue;
             }
+            let ha = self.volume_used_by_ha(vol.id);
             vol.replicas.retain(|id| online.contains(id));
-            let want = usize::from(replica_want(online.len(), vol.replica_count.max(1)));
+            let want = usize::from(replica_want_ha(online.len(), vol.replica_count.max(1), ha));
             if vol.replicas.is_empty() {
                 vol.replicas =
                     cluster::place_replicas(&online, want as u8, Some(self.cluster.self_id()));
@@ -3592,7 +3624,25 @@ impl Service {
         Ok(())
     }
 
-    pub fn leave_cluster(&self) -> Result<pertisk_types::ClusterStatus, DaemonError> {
+    pub fn forget_member(&self, id: pertisk_types::NodeId) -> Result<(), DaemonError> {
+        self.cluster.remove_member(id)
+    }
+
+    pub async fn leave_cluster(&self) -> Result<pertisk_types::ClusterStatus, DaemonError> {
+        let self_id = self.cluster.self_id();
+        let old_secret = self.cluster.secret();
+        let peers = self.cluster.peer_urls_except_self();
+        for (_id, url) in peers {
+            let endpoint = format!("{}/v1/peer/forget", url.trim_end_matches('/'));
+            let _ = self
+                .http
+                .post(&endpoint)
+                .header("x-pertisk-peer", &old_secret)
+                .json(&self_id)
+                .timeout(std::time::Duration::from_secs(8))
+                .send()
+                .await;
+        }
         self.cluster.reset_solo()?;
         self.cluster_status()
     }
@@ -3643,6 +3693,15 @@ fn replica_want(online: usize, configured: u8) -> u8 {
     configured.max(1).min(online.max(1) as u8)
 }
 
+fn replica_want_ha(online: usize, configured: u8, ha: bool) -> u8 {
+    let want = replica_want(online, configured);
+    if ha && online >= 2 {
+        want.max(2).min(online as u8)
+    } else {
+        want
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RemoteVolumeStat {
     exists: bool,
@@ -3687,8 +3746,14 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
             nic.ip = None;
             changed = true;
         }
+        let still_has_old = nic.ip.as_deref().is_some_and(|old| {
+            want.as_ref()
+                .is_some_and(|want| qga_ips.ipv4.iter().any(|(m, ip)| m == want && ip == old))
+                || pertisk_net::ipv4_for_mac(mac).as_deref() == Some(old)
+                || observed_v4.as_deref() == Some(old)
+        });
         if let Some(ip) = observed_v4 {
-            if nic.ip.as_deref() != Some(ip.as_str()) {
+            if nic.ip.as_deref() != Some(ip.as_str()) && !still_has_old {
                 nic.ip = Some(ip);
                 changed = true;
             }
@@ -4020,6 +4085,9 @@ mod tests {
         assert_eq!(replica_want(2, 1), 1);
         assert_eq!(replica_want(2, 2), 2);
         assert_eq!(replica_want(3, 2), 2);
+        assert_eq!(replica_want_ha(2, 1, true), 2);
+        assert_eq!(replica_want_ha(2, 1, false), 1);
+        assert_eq!(replica_want_ha(1, 2, true), 1);
     }
 
     fn spec(name: &str) -> VmSpec {

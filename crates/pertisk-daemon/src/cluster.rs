@@ -293,6 +293,37 @@ fn prefer_peer_url(existing: &str, incoming: &str) -> String {
     incoming.to_string()
 }
 
+fn new_cluster_secret() -> String {
+    format!(
+        "{}{}",
+        Uuid::new_v4().as_simple(),
+        Uuid::new_v4().as_simple()
+    )
+}
+
+fn stable_addrs(old: &[String], new: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = old.iter().filter(|ip| new.contains(ip)).cloned().collect();
+    for ip in new {
+        if !out.contains(&ip) {
+            out.push(ip);
+        }
+    }
+    out
+}
+
+fn ipv4_from_peer_url(url: &str) -> Option<String> {
+    let rest = url.split("://").nth(1)?;
+    let host = rest.split('/').next()?.split(']').next()?;
+    let host = host.trim_start_matches('[');
+    let host = if host.contains('.') {
+        host.split(':').next().unwrap_or(host)
+    } else {
+        host
+    };
+    host.parse::<std::net::Ipv4Addr>().ok()?;
+    Some(host.to_string())
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -342,6 +373,7 @@ struct Persisted {
     members: Vec<NodeRecord>,
 }
 
+#[derive(Clone)]
 struct MemberState {
     record: NodeRecord,
     last_seen_ms: u64,
@@ -444,11 +476,7 @@ impl Cluster {
             Inner {
                 self_id,
                 name: config.cluster.name.clone(),
-                secret: format!(
-                    "{}{}",
-                    Uuid::new_v4().as_simple(),
-                    Uuid::new_v4().as_simple()
-                ),
+                secret: new_cluster_secret(),
                 generation: 1,
                 members,
                 fenced: false,
@@ -719,6 +747,22 @@ impl Cluster {
             let mut inner = self.inner.lock().expect("cluster lock");
             let self_id = inner.self_id;
             inner.members.retain(|id, _| *id == self_id);
+            inner.secret = new_cluster_secret();
+            inner.generation += 1;
+            inner.fenced = false;
+        }
+        self.persist()
+    }
+
+    pub fn remove_member(&self, id: NodeId) -> Result<(), DaemonError> {
+        {
+            let mut inner = self.inner.lock().expect("cluster lock");
+            if id == inner.self_id {
+                return Ok(());
+            }
+            if inner.members.remove(&id).is_none() {
+                return Ok(());
+            }
             inner.generation += 1;
             inner.fenced = false;
         }
@@ -773,17 +817,12 @@ impl Cluster {
                     },
                 );
             }
-            for (id, member) in &inner.members {
-                next.entry(*id).or_insert_with(|| MemberState {
-                    record: member.record.clone(),
-                    last_seen_ms: member.last_seen_ms,
-                });
-            }
-            if !next.contains_key(&inner.self_id) {
-                let self_id = inner.self_id;
-                if let Some(self_member) = inner.members.remove(&self_id) {
-                    next.insert(self_id, self_member);
-                }
+            // Always keep ourselves if a snapshot omitted us. Do not merge other
+            // leftover members — that made Leave instantly rejoin the old cluster.
+            if !next.contains_key(&inner.self_id)
+                && let Some(self_member) = inner.members.get(&inner.self_id).cloned()
+            {
+                next.insert(inner.self_id, self_member);
             }
             inner.members = next;
             inner.fenced = false;
@@ -808,8 +847,14 @@ impl Cluster {
         let mut inner = self.inner.lock().expect("cluster lock");
         let self_id = inner.self_id;
         if let Some(member) = inner.members.get_mut(&self_id) {
-            member.record.ipv4 = addrs.ipv4;
-            member.record.ipv6 = addrs.ipv6;
+            member.record.ipv4 = stable_addrs(&member.record.ipv4, addrs.ipv4);
+            member.record.ipv6 = stable_addrs(&member.record.ipv6, addrs.ipv6);
+            if let Some(host) = ipv4_from_peer_url(&member.record.peer_url)
+                && member.record.ipv4.iter().any(|ip| ip == &host)
+            {
+                member.record.ipv4.retain(|ip| ip != &host);
+                member.record.ipv4.insert(0, host);
+            }
         }
     }
 
@@ -1307,6 +1352,61 @@ mod tests {
         let member = status.members.iter().find(|m| m.id == peer_id).unwrap();
         assert!(member.online, "snapshot apply must not drop last_seen");
         assert!(cluster.has_quorum());
+    }
+
+    #[test]
+    fn apply_membership_drops_departed_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("a".into());
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        let peer_id = NodeId::new();
+        cluster
+            .add_member(NodeRecord {
+                id: peer_id,
+                name: "b".into(),
+                peer_url: "https://10.1.1.10:7443".into(),
+                cpus: 4,
+                memory_mib: 4096,
+                ipv4: vec!["10.1.1.10".into()],
+                ipv6: vec![],
+            })
+            .unwrap();
+        assert_eq!(cluster.status(&[]).members.len(), 2);
+        let mut snap = cluster.membership_snapshot();
+        snap.members.retain(|m| m.id != peer_id);
+        snap.generation += 1;
+        cluster.apply_membership(&snap).unwrap();
+        let status = cluster.status(&[]);
+        assert_eq!(status.members.len(), 1, "{:?}", status.members);
+        assert_eq!(status.members[0].id, cluster.self_id());
+    }
+
+    #[test]
+    fn leave_rotates_secret_and_drops_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = HostConfig::default_for(dir.path());
+        config.cluster.node_name = Some("a".into());
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        let old_secret = cluster.secret();
+        cluster
+            .add_member(NodeRecord {
+                id: NodeId::new(),
+                name: "b".into(),
+                peer_url: "https://10.1.1.10:7443".into(),
+                cpus: 4,
+                memory_mib: 4096,
+                ipv4: vec!["10.1.1.10".into()],
+                ipv6: vec![],
+            })
+            .unwrap();
+        cluster.reset_solo().unwrap();
+        assert_eq!(cluster.status(&[]).members.len(), 1);
+        assert_ne!(cluster.secret(), old_secret);
+        assert!(cluster.has_quorum());
+        assert!(!cluster.is_fenced());
     }
 
     #[test]
