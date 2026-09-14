@@ -269,8 +269,9 @@ fn ipv4_for_mac_from_neigh(want_mac: &str) -> Option<String> {
     None
 }
 
-/// Best-effort IPv6 for a guest MAC from `ip -6 neigh`, falling back to SLAAC
-/// derived from the host bridge's global prefix + the guest EUI-64.
+/// Best-effort IPv6 for a guest MAC from `ip -6 neigh`.
+/// Probes the SLAAC EUI-64 to populate neigh, but does not invent an address
+/// the guest never claimed (unbooted Ubuntu otherwise shows a fake GUA).
 pub fn ipv6_for_mac(mac: &str) -> Option<String> {
     let want = normalize_mac(mac)?;
     #[cfg(not(target_os = "linux"))]
@@ -297,7 +298,6 @@ pub fn ipv6_for_mac(mac: &str) -> Option<String> {
                     }
                 }
             }
-            return Some(gua);
         }
         ipv6_for_mac_from_neigh(&want)
     }
@@ -536,7 +536,10 @@ pub fn probe_ipv4(ip: &str) {
         let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() else {
             return;
         };
-        if addr.is_unspecified() || addr.is_broadcast() || addr.is_loopback() || addr.is_link_local()
+        if addr.is_unspecified()
+            || addr.is_broadcast()
+            || addr.is_loopback()
+            || addr.is_link_local()
         {
             return;
         }

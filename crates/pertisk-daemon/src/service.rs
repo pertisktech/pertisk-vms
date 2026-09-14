@@ -7,14 +7,15 @@ use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool, allocated_bytes};
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
-    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitIsoRequest, CloudInitNetwork,
-    ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
-    CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
-    HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeId,
-    NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
-    SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk,
-    VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId,
-    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
+    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
+    CloudInitNetwork, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
+    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind,
+    HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec, NetworkId,
+    NetworkMode, NetworkRecord, NodeId, NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest,
+    SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
+    UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState,
+    VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host,
+    probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -577,8 +578,10 @@ impl Service {
         }
         for vm in &mut vms {
             if enrich_observed_ips(vm, run_dir) {
-                // Keep discovered DHCP addresses so Summary stays filled when ARP goes cold.
-                let _ = self.store.upsert(vm.clone());
+                // Patch IPs onto the latest record so a stale list() cannot wipe cidata.
+                if let Ok(latest) = self.persist_observed_nic_addrs(vm.id, &vm.spec.nets) {
+                    *vm = latest;
+                }
             }
         }
         Ok(vms)
@@ -594,7 +597,9 @@ impl Service {
             }
         }
         if enrich_observed_ips(&mut vm, &self.config.vmm.run_dir) {
-            let _ = self.store.upsert(vm.clone());
+            if let Ok(latest) = self.persist_observed_nic_addrs(vm.id, &vm.spec.nets) {
+                vm = latest;
+            }
         }
         Ok(vm)
     }
@@ -1060,79 +1065,137 @@ impl Service {
                 },
             )?;
         }
-        if let Some(ci) = &req.cloud_init {
-            let hostname = ci
-                .hostname
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(name)
-                .to_string();
-            let user = ci
-                .user
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    let mut hints = vec![source.spec.name.clone(), name.to_string()];
-                    for disk in &source.spec.disks {
-                        if let Some(id) = disk.volume_id {
-                            if let Ok(vol) = self.volumes.get_volume(id) {
-                                hints.push(vol.name);
-                            }
+        self.seed_cloned_guest(
+            &source,
+            new_id,
+            name,
+            os_disk.as_deref(),
+            req.cloud_init.as_ref(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn seed_cloned_guest(
+        &self,
+        source: &VmRecord,
+        new_id: VmId,
+        name: &str,
+        os_disk: Option<&Path>,
+        ci: Option<&CloudInitConfig>,
+    ) -> Result<(), DaemonError> {
+        let hostname = ci
+            .and_then(|c| c.hostname.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(name)
+            .to_string();
+        let user = ci
+            .and_then(|c| c.user.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                let mut hints = vec![source.spec.name.clone(), name.to_string()];
+                for disk in &source.spec.disks {
+                    if let Some(id) = disk.volume_id {
+                        if let Ok(vol) = self.volumes.get_volume(id) {
+                            hints.push(vol.name);
                         }
                     }
-                    default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
-                });
-            crate::guest_ssh::ensure_identity();
-            if let Some(path) = os_disk {
-                let hostname_i = hostname.clone();
-                let user_i = user.clone();
-                let password_i = ci.password.clone();
-                let keys_i = ci.ssh_authorized_keys.clone();
-                let net = self.cloudinit_network_for(new_id);
-                let mac_i = net.as_ref().and_then(|n| n.mac.clone());
-                let ipv4_i = net.as_ref().and_then(|n| n.ipv4.clone());
-                let gw_i = net.as_ref().and_then(|n| n.gateway.clone());
-                let prefix_i = net.as_ref().and_then(|n| n.prefix);
-                tokio::task::spawn_blocking(move || {
-                    pertisk_storage::inject_guest_identity(
-                        &path,
-                        &pertisk_storage::GuestIdentity {
-                            hostname: &hostname_i,
-                            user: &user_i,
-                            password: password_i
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty()),
-                            ssh_authorized_keys: &keys_i,
-                            mac: mac_i.as_deref(),
-                            ipv4: ipv4_i.as_deref(),
-                            gateway: gw_i.as_deref(),
-                            prefix: prefix_i,
-                        },
-                    )
-                })
-                .await
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
-            }
-            let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
-                name: format!("{name}-{new_id}-cidata.iso"),
-                hostname: Some(hostname),
-                user: Some(user.clone()),
-                password: ci.password.clone(),
-                ssh_authorized_keys: ci.ssh_authorized_keys.clone(),
-                userdata: ci.userdata.clone(),
-                network: self.cloudinit_network_for(new_id),
-            })?;
-            self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
-            if let Ok(mut vm) = self.store.get(new_id) {
-                vm.spec.ssh_user = Some(user);
-                let _ = self.store.upsert(vm);
-            }
+                }
+                default_cloud_user(hints.iter().map(|s| s.as_str())).to_string()
+            });
+        crate::guest_ssh::ensure_identity();
+        let password = ci.and_then(|c| c.password.clone());
+        let keys = ci
+            .map(|c| c.ssh_authorized_keys.clone())
+            .unwrap_or_default();
+        let userdata = ci.and_then(|c| c.userdata.clone());
+        if let Some(path) = os_disk.map(Path::to_path_buf) {
+            let hostname_i = hostname.clone();
+            let user_i = user.clone();
+            let password_i = password.clone();
+            let keys_i = keys.clone();
+            let net = self.cloudinit_network_for(new_id);
+            let mac_i = net.as_ref().and_then(|n| n.mac.clone());
+            let ipv4_i = net.as_ref().and_then(|n| n.ipv4.clone());
+            let gw_i = net.as_ref().and_then(|n| n.gateway.clone());
+            let prefix_i = net.as_ref().and_then(|n| n.prefix);
+            tokio::task::spawn_blocking(move || {
+                pertisk_storage::inject_guest_identity(
+                    &path,
+                    &pertisk_storage::GuestIdentity {
+                        hostname: &hostname_i,
+                        user: &user_i,
+                        password: password_i
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty()),
+                        ssh_authorized_keys: &keys_i,
+                        mac: mac_i.as_deref(),
+                        ipv4: ipv4_i.as_deref(),
+                        gateway: gw_i.as_deref(),
+                        prefix: prefix_i,
+                    },
+                )
+            })
+            .await
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
+        }
+        let iso = self.create_cloudinit_iso(CloudInitIsoRequest {
+            name: format!("{name}-{new_id}-cidata.iso"),
+            hostname: Some(hostname),
+            user: Some(user.clone()),
+            password,
+            ssh_authorized_keys: keys,
+            userdata,
+            network: self.cloudinit_network_for(new_id),
+        })?;
+        self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
+        let _ = self.store.update(new_id, |vm| {
+            vm.spec.ssh_user = Some(user);
+        });
+        Ok(())
+    }
+
+    fn restore_clone_cidata(&self, record: &mut VmRecord) -> Result<(), DaemonError> {
+        if record.spec.disks.iter().any(|disk| iso_is_cidata(disk)) {
+            return Ok(());
+        }
+        let name = format!("{}-{}-cidata.iso", record.spec.name, record.id);
+        let Ok(iso) = self.volumes.get_iso(&name) else {
+            return Ok(());
+        };
+        record.spec.disks.push(DiskSpec {
+            path: iso.path,
+            readonly: true,
+            cdrom: true,
+            volume_id: None,
+            iso_name: Some(iso.name),
+        });
+        if record
+            .spec
+            .ssh_user
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            record.spec.ssh_user =
+                Some(default_cloud_user(std::iter::once(record.spec.name.as_str())).to_string());
         }
         Ok(())
+    }
+
+    fn persist_observed_nic_addrs(
+        &self,
+        id: VmId,
+        nets: &[NetSpec],
+    ) -> Result<VmRecord, DaemonError> {
+        self.store.update(id, |latest| {
+            patch_nic_addrs(&mut latest.spec.nets, nets);
+        })
     }
 
     fn cloudinit_network_for(&self, vm_id: VmId) -> Option<CloudInitNetwork> {
@@ -1186,6 +1249,7 @@ impl Service {
         let mut record = self.store.get(id)?;
         self.require_not_template(&record, "start")?;
         self.localize_disks(&mut record)?;
+        self.restore_clone_cidata(&mut record)?;
         self.store.upsert(record.clone())?;
         match record.state {
             VmState::Created | VmState::Stopped | VmState::Failed => {}
@@ -1204,6 +1268,7 @@ impl Service {
         // Re-read after waiting: another start may have changed capacity/state.
         record = self.store.get(id)?;
         self.localize_disks(&mut record)?;
+        self.restore_clone_cidata(&mut record)?;
         self.store.upsert(record.clone())?;
         match record.state {
             VmState::Created | VmState::Stopped | VmState::Failed => {}
@@ -2127,10 +2192,9 @@ impl Service {
             .filter(|s| !s.is_empty())
             .is_none()
         {
-            if let Ok(mut rec) = self.store.get(id) {
+            let _ = self.store.update(id, |rec| {
                 rec.spec.ssh_user = Some(user.clone());
-                let _ = self.store.upsert(rec);
-            }
+            });
         }
         Ok(crate::guest_ssh::GuestSshTarget {
             host,
@@ -3833,6 +3897,25 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
         }
     }
     changed
+}
+
+fn patch_nic_addrs(dest: &mut [NetSpec], src: &[NetSpec]) {
+    for nic in dest {
+        let matched = src.iter().find(|other| {
+            match (
+                nic.mac.as_deref().and_then(pertisk_net::normalize_mac),
+                other.mac.as_deref().and_then(pertisk_net::normalize_mac),
+            ) {
+                (Some(a), Some(b)) if a == b => true,
+                _ => nic.tap.is_some() && nic.tap == other.tap,
+            }
+        });
+        let Some(other) = matched else {
+            continue;
+        };
+        nic.ip = other.ip.clone();
+        nic.ipv6 = other.ipv6.clone();
+    }
 }
 
 /// Cloud images often print `https://A.B.C.D:9090/` (Cockpit) on the serial console.

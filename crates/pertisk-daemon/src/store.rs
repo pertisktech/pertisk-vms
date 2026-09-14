@@ -62,6 +62,21 @@ impl Store {
         self.flush()
     }
 
+    /// Patch a live record under the lock so a stale `list()` cannot wipe disks/ISO.
+    pub fn update<F>(&self, id: VmId, f: F) -> Result<VmRecord, DaemonError>
+    where
+        F: FnOnce(&mut VmRecord),
+    {
+        let record = {
+            let mut vms = self.vms.lock().expect("store lock");
+            let rec = vms.get_mut(&id).ok_or(DaemonError::NotFound(id))?;
+            f(rec);
+            rec.clone()
+        };
+        self.flush()?;
+        Ok(record)
+    }
+
     pub fn replace_all(&self, records: Vec<VmRecord>) -> Result<(), DaemonError> {
         {
             let mut vms = self.vms.lock().expect("store lock");
@@ -145,10 +160,7 @@ fn quarantine_corrupt(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
 
 fn atomic_write(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
     static SEQ: AtomicU64 = AtomicU64::new(1);
-    let tmp = path.with_extension(format!(
-        "json.tmp.{}",
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let tmp = path.with_extension(format!("json.tmp.{}", SEQ.fetch_add(1, Ordering::Relaxed)));
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&tmp)?;
