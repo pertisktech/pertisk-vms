@@ -604,12 +604,39 @@ pub fn provision_nic(
     run_ip(&["tuntap", "add", "dev", tap, "mode", "tap"], true)?;
     run_ip(&["link", "set", "dev", tap, "master", bridge], false)?;
     run_ip(&["link", "set", "dev", tap, "up"], false)?;
+    disable_tap_offload(tap);
     if isolate {
         let _ = Command::new("bridge")
             .args(["link", "set", "dev", tap, "isolated", "on"])
             .status();
     }
     Ok(())
+}
+
+/// Disable TAP checksum/TSO offload.
+///
+/// Host-originated TCP (web SSH runs `ssh` on the node) otherwise leaves
+/// CHECKSUM_PARTIAL on virtio frames. Alma/Rocky drop those; ICMP and SSH
+/// from another machine still work.
+pub fn disable_tap_offload(tap: &str) {
+    if check_name(tap).is_err() {
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = tap;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("ethtool")
+            .args([
+                "-K", tap, "tx", "off", "rx", "off", "sg", "off", "tso", "off", "gso", "off",
+                "gro", "off",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 pub fn delete_tap(tap: &str) -> Result<()> {

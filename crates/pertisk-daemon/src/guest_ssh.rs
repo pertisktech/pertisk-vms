@@ -65,6 +65,8 @@ fn spawn_ssh(target: &GuestSshTarget) -> Result<SshSession, String> {
     cmd.arg("-o");
     cmd.arg("LogLevel=ERROR");
     cmd.arg("-o");
+    cmd.arg("ConnectTimeout=10");
+    cmd.arg("-o");
     cmd.arg("PreferredAuthentications=publickey,password,keyboard-interactive");
     if let Some(identity) = &target.identity {
         cmd.arg("-i");

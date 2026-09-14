@@ -2098,16 +2098,29 @@ impl Service {
                 vm.state
             )));
         }
+        for nic in &vm.spec.nets {
+            if let Some(tap) = nic.tap.as_deref() {
+                pertisk_net::disable_tap_offload(tap);
+            }
+            if let Some(ip) = nic.ip.as_deref() {
+                pertisk_net::probe_ipv4(ip);
+            }
+        }
         let host = vm
             .spec
             .nets
             .iter()
             .find_map(|nic| {
-                nic.ip
+                nic.mac
                     .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
+                    .and_then(pertisk_net::ipv4_for_mac)
+                    .or_else(|| {
+                        nic.ip
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    })
                     .or_else(|| {
                         nic.ipv6
                             .as_deref()
