@@ -2301,9 +2301,7 @@ impl Service {
                     );
                     spec.kernel = Some(boot.kernel);
                     spec.initramfs = Some(boot.initramfs);
-                    if spec.cmdline.is_none() {
-                        spec.cmdline = Some(boot.cmdline);
-                    }
+                    spec.cmdline = Some(boot.cmdline);
                     return Ok(spec);
                 }
             }

@@ -28,41 +28,69 @@ pub fn prepare_shim_disk_boot(
         return Ok(None);
     }
 
-    let boot_part = loopdev
-        .find_labeled("cloudimg-rootfs")
-        .or_else(|| loopdev.find_labeled("BOOT"))
-        .or_else(|| loopdev.find_fs("xfs"))
-        .or_else(|| loopdev.find_fs("ext4"))
-        .or_else(|| loopdev.find_fs("btrfs"))
-        .ok_or_else(|| {
-            StorageError::Message(format!(
-                "{} uses UEFI Secure Boot (shim) and Cloud Hypervisor firmware cannot boot it; \
-                 no /boot or root filesystem was found to kernel-boot instead",
-                disk.display()
-            ))
-        })?;
-
-    let boot_mnt = TempMount::mount(&boot_part, true)?;
-    let entry = pick_bls_entry(boot_mnt.path())
-        .or_else(|| pick_unix_kernel(boot_mnt.path()))
-        .ok_or_else(|| {
-            StorageError::Message(format!(
-                "{} has shim but no kernel under /boot (BLS or vmlinuz/initrd)",
-                disk.display()
-            ))
-        })?;
+    let mut search = Vec::new();
+    if let Some(p) = loopdev.find_labeled("BOOT") {
+        search.push(p);
+    }
+    if let Some(p) = loopdev.find_labeled("cloudimg-rootfs") {
+        if !search.contains(&p) {
+            search.push(p);
+        }
+    }
+    for fs in ["xfs", "ext4", "btrfs"] {
+        if let Some(p) = loopdev.find_fs(fs) {
+            if !search.contains(&p) {
+                search.push(p);
+            }
+        }
+    }
+    if search.is_empty() {
+        return Err(StorageError::Message(format!(
+            "{} uses UEFI Secure Boot (shim) and Cloud Hypervisor firmware cannot boot it; \
+             no /boot or root filesystem was found to kernel-boot instead",
+            disk.display()
+        )));
+    }
 
     fs::create_dir_all(dest_dir)?;
-    let kernel_src = resolve_boot_path(boot_mnt.path(), &entry.linux)?;
-    let initrd_src = resolve_boot_path(boot_mnt.path(), &entry.initrd)?;
     let kernel = dest_dir.join("vmlinuz");
     let initramfs = dest_dir.join("initramfs");
-    fs::copy(&kernel_src, &kernel)?;
-    fs::copy(&initrd_src, &initramfs)?;
+    let mut entry: Option<BlsEntry> = None;
+    for part in &search {
+        let boot_mnt = TempMount::mount(part, true)?;
+        let Some(found) =
+            pick_bls_entry(boot_mnt.path()).or_else(|| pick_unix_kernel(boot_mnt.path()))
+        else {
+            continue;
+        };
+        let kernel_src = resolve_boot_path(boot_mnt.path(), &found.linux)?;
+        let initrd_src = resolve_boot_path(boot_mnt.path(), &found.initrd)?;
+        fs::copy(&kernel_src, &kernel)?;
+        fs::copy(&initrd_src, &initramfs)?;
+        entry = Some(found);
+        break;
+    }
+    let entry = entry.ok_or_else(|| {
+        StorageError::Message(format!(
+            "{} has shim but no kernel under /boot (BLS or vmlinuz/initrd)",
+            disk.display()
+        ))
+    })?;
+
+    // Ubuntu 24.10+ puts vmlinuz on LABEL=BOOT (p13) and the rootfs on
+    // LABEL=cloudimg-rootfs (p1). Pin root= to the rootfs, not /boot.
+    let root_part = loopdev
+        .find_labeled("cloudimg-rootfs")
+        .or_else(|| loopdev.find_labeled("writable"))
+        .unwrap_or_else(|| search[0].clone());
 
     let mut cmdline = entry.options;
-    if !cmdline_has_block_root(&cmdline) {
-        cmdline = pin_root_device(&cmdline, &boot_part);
+    if cmdline
+        .split_whitespace()
+        .any(|p| p.starts_with("root=LABEL="))
+        || !cmdline_has_block_root(&cmdline)
+    {
+        cmdline = pin_root_device(&cmdline, &root_part);
     }
     if !cmdline.contains("console=") {
         cmdline.push_str(" console=ttyS0,115200n8");
