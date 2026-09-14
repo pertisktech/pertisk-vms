@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,5 +130,17 @@ func TestKeepPlannedBlocksPreservesStarted(t *testing.T) {
 	}
 	if state.State.ValueString() != "created" {
 		t.Fatalf("actual state should stay created, got %s", state.State.ValueString())
+	}
+}
+
+func TestGuestMatchesPlan(t *testing.T) {
+	plan := vmModel{Name: types.StringValue("rocky-1")}
+	ok := &client.VM{ID: "105", Spec: client.VMSpec{Name: "rocky-1"}}
+	if err := guestMatchesPlan(plan, ok); err != nil {
+		t.Fatal(err)
+	}
+	err := guestMatchesPlan(plan, &client.VM{ID: "105", Spec: client.VMSpec{Name: "almalinux-2"}})
+	if err == nil || !strings.Contains(err.Error(), "almalinux-2") {
+		t.Fatalf("got %v", err)
 	}
 }

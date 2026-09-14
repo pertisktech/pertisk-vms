@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,6 +60,33 @@ impl Store {
             vms.insert(record.id, record);
         }
         self.flush()
+    }
+
+    /// Insert a new guest, allocating a numeric ID when `requested` is `None`.
+    /// ID and name uniqueness are checked under the same lock so parallel
+    /// clones cannot both pick the next free ID and overwrite each other.
+    pub fn insert_unique(
+        &self,
+        requested: Option<VmId>,
+        name: &str,
+        build: impl FnOnce(VmId) -> VmRecord,
+    ) -> Result<VmRecord, DaemonError> {
+        let record = {
+            let mut vms = self.vms.lock().expect("store lock");
+            if vms.values().any(|vm| vm.spec.name == name) {
+                return Err(DaemonError::NameTaken(name.to_string()));
+            }
+            let id = match requested {
+                Some(id) if vms.contains_key(&id) => return Err(DaemonError::IdTaken(id)),
+                Some(id) => id,
+                None => next_numeric_locked(&vms),
+            };
+            let record = build(id);
+            vms.insert(id, record.clone());
+            record
+        };
+        self.flush()?;
+        Ok(record)
     }
 
     /// Patch a live record under the lock so a stale `list()` cannot wipe disks/ISO.
@@ -156,6 +183,24 @@ fn quarantine_corrupt(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         "quarantined corrupt state file"
     );
     Ok(())
+}
+
+fn next_numeric_locked(vms: &BTreeMap<VmId, VmRecord>) -> VmId {
+    let used: HashSet<u64> = vms
+        .keys()
+        .filter_map(|id| match id {
+            VmId::Numeric(n) => Some(*n),
+            VmId::Legacy(_) => None,
+        })
+        .collect();
+    let mut n = 100u64;
+    while used.contains(&n) {
+        n += 1;
+        if n > 9_999_999_999 {
+            return VmId::new();
+        }
+    }
+    VmId::Numeric(n)
 }
 
 fn atomic_write(path: &Path, json: &[u8]) -> Result<(), DaemonError> {
@@ -291,5 +336,81 @@ mod tests {
             }
         });
         assert!(store.list().unwrap().is_empty());
+    }
+
+    fn rec(id: VmId, name: &str) -> VmRecord {
+        VmRecord {
+            id,
+            spec: VmSpec {
+                name: name.into(),
+                vcpus: 1,
+                memory_mib: 512,
+                kernel: None,
+                cmdline: None,
+                initramfs: None,
+                firmware: None,
+                disks: vec![],
+                nets: vec![],
+                serial_log: None,
+                console_type: Default::default(),
+                ha: true,
+                autostart: false,
+                autostart_delay: 0,
+                autostart_order: 0,
+                ssh_user: None,
+            },
+            state: VmState::Created,
+            pid: None,
+            api_socket: None,
+            serial_log: None,
+            console_socket: None,
+            graphics_socket: None,
+            last_error: None,
+            node_id: None,
+            template: false,
+        }
+    }
+
+    #[test]
+    fn insert_unique_allocates_distinct_numeric_ids() {
+        let (store, _dir) = tmp_store();
+        let a = store
+            .insert_unique(None, "a", |id| rec(id, "a"))
+            .unwrap();
+        let b = store
+            .insert_unique(None, "b", |id| rec(id, "b"))
+            .unwrap();
+        assert_eq!(a.id, VmId::Numeric(100));
+        assert_eq!(b.id, VmId::Numeric(101));
+        assert!(matches!(
+            store.insert_unique(Some(a.id), "c", |id| rec(id, "c")),
+            Err(DaemonError::IdTaken(_))
+        ));
+        assert!(matches!(
+            store.insert_unique(None, "a", |id| rec(id, "a")),
+            Err(DaemonError::NameTaken(_))
+        ));
+    }
+
+    #[test]
+    fn parallel_insert_unique_does_not_reuse_ids() {
+        let (store, _dir) = tmp_store();
+        let store = std::sync::Arc::new(store);
+        std::thread::scope(|s| {
+            let mut joins = Vec::new();
+            for i in 0..24 {
+                let store = store.clone();
+                joins.push(s.spawn(move || {
+                    let name = format!("vm-{i}");
+                    store.insert_unique(None, &name, |id| rec(id, &name))
+                }));
+            }
+            let mut ids = HashSet::new();
+            for j in joins {
+                let rec = j.join().unwrap().unwrap();
+                assert!(ids.insert(rec.id), "duplicate id {}", rec.id);
+            }
+            assert_eq!(ids.len(), 24);
+        });
     }
 }

@@ -605,38 +605,42 @@ impl Service {
     }
 
     pub async fn create(&self, id: VmId, spec: VmSpec) -> Result<VmRecord, DaemonError> {
+        self.create_guest(Some(id), spec).await
+    }
+
+    pub async fn create_guest(
+        &self,
+        requested: Option<VmId>,
+        spec: VmSpec,
+    ) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
         spec.validate()?;
-        if self.store.contains(id) {
-            return Err(DaemonError::IdTaken(id));
-        }
-        if self.store.name_taken(&spec.name, None)? {
-            return Err(DaemonError::NameTaken(spec.name));
-        }
-        let mut spec = spec;
-        if spec.serial_log.is_none() {
-            spec.serial_log = Some(self.config.vmm.run_dir.join(format!("{id}.serial")));
-        }
         let dest = self.pick_node_define(&spec, None)?;
-        let serial_log = spec.serial_log.clone();
-        let record = VmRecord {
-            id,
-            spec,
-            state: VmState::Created,
-            pid: None,
-            api_socket: None,
-            serial_log,
-            console_socket: None,
-            graphics_socket: None,
-            last_error: None,
-            node_id: Some(dest),
-            template: false,
-        };
-        self.store.upsert(record.clone())?;
+        let run_dir = self.config.vmm.run_dir.clone();
+        let record = self.store.insert_unique(requested, &spec.name, |id| {
+            let mut spec = spec.clone();
+            if spec.serial_log.is_none() {
+                spec.serial_log = Some(run_dir.join(format!("{id}.serial")));
+            }
+            let serial_log = spec.serial_log.clone();
+            VmRecord {
+                id,
+                spec,
+                state: VmState::Created,
+                pid: None,
+                api_socket: None,
+                serial_log,
+                console_socket: None,
+                graphics_socket: None,
+                last_error: None,
+                node_id: Some(dest),
+                template: false,
+            }
+        })?;
         self.created_this_boot
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(id);
+            .insert(record.id);
         self.cluster.bump()?;
         self.replicate().await;
         self.notify_vm("vm.create", &record, "A new guest was defined.");
@@ -904,19 +908,14 @@ impl Service {
             ssh_user: None,
         };
         spec.validate()?;
-        let id = match req.id {
-            Some(id) if self.store.contains(id) => return Err(DaemonError::IdTaken(id)),
-            Some(id) => id,
-            None => self.next_numeric_vm_id()?,
-        };
-        let record = self.create(id, spec).await?;
+        let record = self.create_guest(req.id, spec).await?;
         if let Err(err) = self.attach_disk(
-            id,
+            record.id,
             AttachDiskRequest {
                 volume_id: req.volume_id,
             },
         ) {
-            let _ = self.destroy(id).await;
+            let _ = self.destroy(record.id).await;
             return Err(err);
         }
         self.convert_to_template(record.id).await
@@ -933,13 +932,6 @@ impl Service {
         if self.store.name_taken(&name, None)? {
             return Err(DaemonError::NameTaken(name));
         }
-        let new_id = match req.id {
-            Some(new_id) if self.store.contains(new_id) => {
-                return Err(DaemonError::IdTaken(new_id));
-            }
-            Some(new_id) => new_id,
-            None => self.next_numeric_vm_id()?,
-        };
         let mut spec = source.spec.clone();
         spec.name = name.clone();
         spec.disks = Vec::new();
@@ -965,7 +957,7 @@ impl Service {
         }
         spec.validate()?;
 
-        let created = match self.create(new_id, spec).await {
+        let created = match self.create_guest(req.id, spec).await {
             Ok(record) => record,
             Err(err) => return Err(err),
         };
@@ -1906,26 +1898,6 @@ impl Service {
             return Err(DaemonError::IsTemplate(vm.id, op));
         }
         Ok(())
-    }
-
-    fn next_numeric_vm_id(&self) -> Result<VmId, DaemonError> {
-        let used: HashSet<u64> = self
-            .store
-            .list()?
-            .into_iter()
-            .filter_map(|vm| match vm.id {
-                VmId::Numeric(n) => Some(n),
-                VmId::Legacy(_) => None,
-            })
-            .collect();
-        let mut n = 100u64;
-        while used.contains(&n) {
-            n += 1;
-            if n > 9_999_999_999 {
-                return Ok(VmId::new());
-            }
-        }
-        Ok(VmId::Numeric(n))
     }
 
     pub(crate) fn unique_volume_name(&self, base: &str) -> Result<String, DaemonError> {
@@ -4515,6 +4487,32 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
         svc.create(vm_id(102), spec("demo")).await.unwrap();
         let err = svc.create(vm_id(103), spec("demo")).await.unwrap_err();
         assert!(matches!(err, DaemonError::NameTaken(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_id() {
+        let (svc, _dir) = service();
+        svc.create(vm_id(102), spec("one")).await.unwrap();
+        let err = svc.create(vm_id(102), spec("two")).await.unwrap_err();
+        assert!(matches!(err, DaemonError::IdTaken(_)));
+    }
+
+    #[tokio::test]
+    async fn parallel_create_guest_allocates_distinct_ids() {
+        let (svc, _dir) = service();
+        let mut joins = Vec::new();
+        for i in 0..12 {
+            let svc = svc.clone();
+            joins.push(tokio::spawn(async move {
+                svc.create_guest(None, spec(&format!("p-{i}"))).await
+            }));
+        }
+        let mut ids = HashSet::new();
+        for j in joins {
+            let rec = j.await.unwrap().unwrap();
+            assert!(ids.insert(rec.id), "duplicate id {}", rec.id);
+        }
+        assert_eq!(ids.len(), 12);
     }
 
     #[tokio::test]

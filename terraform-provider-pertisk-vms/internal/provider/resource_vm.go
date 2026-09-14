@@ -343,6 +343,10 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 	if plan.Started.ValueBool() && vm != nil && vm.State == "running" {
 		vm = r.waitGuestIP(ctx, vm)
 	}
+	if err := guestMatchesPlan(plan, vm); err != nil {
+		resp.Diagnostics.AddError("Create guest failed", err.Error())
+		return
+	}
 	if plan.Started.ValueBool() && (vm == nil || vm.State != "running") {
 		st := ""
 		if vm != nil {
@@ -611,6 +615,10 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	if plan.Started.ValueBool() && vm != nil && vm.State == "running" {
 		vm = r.waitGuestIP(ctx, vm)
 	}
+	if err := guestMatchesPlan(plan, vm); err != nil {
+		resp.Diagnostics.AddError("Update guest failed", err.Error())
+		return
+	}
 	if !plan.Started.ValueBool() && vm.State == "running" {
 		stopped, err := r.api.StopVM(id)
 		if err != nil {
@@ -647,6 +655,17 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 
 func (r *vmResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func guestMatchesPlan(plan vmModel, vm *client.VM) error {
+	if vm == nil {
+		return fmt.Errorf("API returned no guest")
+	}
+	want := plan.Name.ValueString()
+	if vm.Spec.Name != want {
+		return fmt.Errorf("API returned guest %s named %q, expected %q", vm.ID.String(), vm.Spec.Name, want)
+	}
+	return nil
 }
 
 func guestIPv4(vm *client.VM) string {
@@ -699,6 +718,13 @@ func (r *vmResource) waitGuestIP(ctx context.Context, vm *client.VM) *client.VM 
 		if err != nil {
 			// Node often drops mid-boot; do not sit on a 15m HTTP timeout.
 			tflog.Warn(ctx, "guest poll failed", map[string]any{"id": last.ID.String(), "err": err.Error()})
+			return last
+		}
+		if got.ID.String() != last.ID.String() || got.Spec.Name != last.Spec.Name {
+			tflog.Warn(ctx, "guest poll returned a different VM", map[string]any{
+				"want_id": last.ID.String(), "want_name": last.Spec.Name,
+				"got_id": got.ID.String(), "got_name": got.Spec.Name,
+			})
 			return last
 		}
 		last = got
