@@ -11,7 +11,8 @@ use pertisk_types::{
     ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest, CreateTemplateRequest,
     CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind, HostConfig, HostInfo,
     HostPowerResult, ImportIsoRequest, IsoRecord, NetworkId, NetworkMode, NetworkRecord, NodeId,
-    NodeMetrics, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SmtpTls,
+    NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest, SerialChunk, SetRepositoryRequest,
+    SmtpTls,
     SnapshotRequest, StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord,
     VmId, VmMetrics, VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord,
     default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
@@ -483,12 +484,60 @@ impl Service {
     }
 
     pub fn cluster_metrics(&self) -> Result<ClusterMetrics, DaemonError> {
-        let node = self.node_metrics()?;
+        let local = self.node_metrics()?;
+        let status = self.cluster_status()?;
         let vms = self.store.list()?;
+        let mut nodes = Vec::with_capacity(status.members.len().max(1));
+        for member in &status.members {
+            if member.id == local.node_id {
+                nodes.push(local.clone());
+                continue;
+            }
+            let running: Vec<_> = vms
+                .iter()
+                .filter(|vm| vm.node_id == Some(member.id) && vm.state == VmState::Running)
+                .collect();
+            let mem_total = u64::from(member.memory_mib).saturating_mul(1024 * 1024);
+            let mem_used = u64::from(member.used_memory_mib).saturating_mul(1024 * 1024);
+            let cpu_pct = if member.cpus > 0 {
+                (member.used_vcpus as f32) * 100.0 / (member.cpus as f32)
+            } else {
+                0.0
+            };
+            nodes.push(NodeMetrics {
+                node_id: member.id,
+                name: member.name.clone(),
+                live: pertisk_types::ResourceSample {
+                    cpu_pct,
+                    mem_used_bytes: mem_used,
+                    mem_total_bytes: mem_total,
+                    disk_used_bytes: 0,
+                    disk_total_bytes: 0,
+                    net_rx_bps: 0,
+                    net_tx_bps: 0,
+                    collected_at_ms: local.live.collected_at_ms,
+                },
+                allocated_vcpus: running.iter().map(|vm| u32::from(vm.spec.vcpus)).sum(),
+                allocated_memory_mib: running.iter().map(|vm| vm.spec.memory_mib).sum(),
+                running_vms: running.len() as u32,
+            });
+        }
+        if nodes.is_empty() {
+            nodes.push(local.clone());
+        }
+        let mut live = local.live.clone();
+        if nodes.len() > 1 {
+            let cpu: f32 = nodes.iter().map(|n| n.live.cpu_pct).sum::<f32>() / nodes.len() as f32;
+            live.cpu_pct = cpu;
+            live.mem_used_bytes = nodes.iter().map(|n| n.live.mem_used_bytes).sum();
+            live.mem_total_bytes = nodes.iter().map(|n| n.live.mem_total_bytes).sum();
+            live.disk_used_bytes = nodes.iter().map(|n| n.live.disk_used_bytes).sum();
+            live.disk_total_bytes = nodes.iter().map(|n| n.live.disk_total_bytes).sum();
+        }
         let running_vms = vms.iter().filter(|vm| vm.state == VmState::Running).count() as u32;
         Ok(ClusterMetrics {
-            live: node.live.clone(),
-            nodes: vec![node],
+            live,
+            nodes,
             running_vms,
             total_vms: vms.iter().filter(|vm| !vm.template).count() as u32,
         })
@@ -1100,6 +1149,9 @@ impl Service {
         self.require_quorum()?;
         let mut record = self.store.get(id)?;
         self.require_not_template(&record, "start")?;
+        if record.state == VmState::Running {
+            return Ok(record);
+        }
         let affinity = self.volume_affinity(&record.spec);
         let dest = match record.node_id {
             Some(current) if affinity.is_empty() || affinity.contains(&current) => current,
@@ -1425,6 +1477,11 @@ impl Service {
 
     pub async fn apply_run(&self, mut record: VmRecord) -> Result<VmRecord, DaemonError> {
         record.node_id = Some(self.cluster.self_id());
+        if self.vmm.is_running(&record).await {
+            record.state = VmState::Running;
+            self.store.upsert(record.clone())?;
+            return Ok(record);
+        }
         record.pid = None;
         record.api_socket = None;
         record.console_socket = None;
@@ -2454,9 +2511,14 @@ impl Service {
         if snap.generation < self.cluster.generation() {
             return Ok(());
         }
+        // Equal generation: refresh membership only. Replacing VMs/volumes here
+        // makes split-brain last-writer-wins and can stop guests mid-start.
+        let replace_inventory = snap.generation > self.cluster.generation();
         self.cluster.apply_membership(&snap)?;
-        self.store.replace_all(snap.vms)?;
-        self.volumes.replace_records(snap.volumes)?;
+        if replace_inventory {
+            self.store.replace_all(snap.vms)?;
+            self.volumes.replace_records(snap.volumes)?;
+        }
         Ok(())
     }
 
@@ -2585,14 +2647,15 @@ impl Service {
     ) -> Result<Option<pertisk_types::ClusterSnapshot>, DaemonError> {
         let from = msg.from;
         self.cluster.touch(from, Some(msg.member));
-        if let Some(snap) = msg.snapshot
-            && snap.generation >= self.cluster.generation()
-        {
-            self.apply_snapshot(snap)?;
-            // Re-touch so applying a snapshot cannot mark the sender stale.
-            self.cluster.touch(from, None);
+        if let Some(snap) = msg.snapshot {
+            if snap.generation > self.cluster.generation() {
+                self.apply_snapshot(snap)?;
+                self.cluster.touch(from, None);
+            } else if snap.generation < self.cluster.generation() {
+                return Ok(Some(self.snapshot()?));
+            }
         }
-        if self.cluster.is_leader() && msg.generation < self.cluster.generation() {
+        if msg.generation < self.cluster.generation() {
             return Ok(Some(self.snapshot()?));
         }
         Ok(None)
@@ -2942,14 +3005,13 @@ impl Service {
     }
 
     async fn send_heartbeats(&self) {
-        let include = self.cluster.is_leader();
-        let mut msg = self.cluster.heartbeat_out(include);
-        if include {
-            msg.snapshot = Some(
-                self.snapshot()
-                    .unwrap_or_else(|_| self.cluster.membership_snapshot()),
-            );
-        }
+        // Always ship inventory so a follower that raced ahead (HA start while
+        // the peer looked offline) can push a higher generation to the leader.
+        let mut msg = self.cluster.heartbeat_out(true);
+        msg.snapshot = Some(
+            self.snapshot()
+                .unwrap_or_else(|_| self.cluster.membership_snapshot()),
+        );
         for (id, url) in self.cluster.peer_urls_except_self() {
             let endpoint = format!("{}/v1/peer/heartbeat", url.trim_end_matches('/'));
             match self
@@ -3167,9 +3229,13 @@ impl Service {
                     DaemonError::Peer(format!("ensure volume {} on {dest}: {err}", vol.name))
                 })?;
             if self.volumes.has_local(vol.id, vol.format) {
-                self.peer_put_blob(dest, vol.id).await.map_err(|err| {
-                    DaemonError::Peer(format!("sync volume {} to {dest}: {err}", vol.name))
-                })?;
+                let remote = self.peer_volume_stat_remote(dest, vol.id).await.ok();
+                let remote_ready = remote.is_some_and(|(exists, size)| exists && size > 0);
+                if !remote_ready {
+                    self.peer_put_blob(dest, vol.id).await.map_err(|err| {
+                        DaemonError::Peer(format!("sync volume {} to {dest}: {err}", vol.name))
+                    })?;
+                }
             }
         }
         Ok(())
@@ -3831,6 +3897,30 @@ mod tests {
             ),
             dir,
         )
+    }
+
+    #[test]
+    fn cluster_metrics_lists_every_member() {
+        let (svc, _dir) = service();
+        let peer = NodeRecord {
+            id: NodeId::new(),
+            name: "peer".into(),
+            peer_url: "https://10.1.1.10:7443".into(),
+            cpus: 8,
+            memory_mib: 8192,
+            ipv4: vec!["10.1.1.10".into()],
+            ipv6: vec![],
+        };
+        svc.cluster.add_member(peer).unwrap();
+        let metrics = svc.cluster_metrics().unwrap();
+        assert_eq!(metrics.nodes.len(), 2, "{:?}", metrics.nodes);
+        assert!(metrics.nodes.iter().any(|n| n.name == "peer"));
+        assert!(
+            metrics
+                .nodes
+                .iter()
+                .any(|n| n.node_id == svc.cluster.self_id())
+        );
     }
 
     fn spec(name: &str) -> VmSpec {

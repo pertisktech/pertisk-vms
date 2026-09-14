@@ -146,7 +146,29 @@ export default function MetricsCharts({
   const emptyMsg =
     empty || (loading ? 'Loading…' : 'No time-series data yet — wait for the next sample.')
   const gid = (name) => `${scope}-${name}`
-  const nodeRows = asList(nodes)
+  const metricRows = asList(nodes)
+  const memberRows = asList(members).map((m) => {
+    const metric = metricRows.find((n) => String(n.node_id) === String(m.id))
+    if (metric) {
+      return { ...metric, name: metric.name || m.name }
+    }
+    const memTotal = (Number(m.memory_mib) || 0) * 1024 * 1024
+    const memUsed = (Number(m.used_memory_mib) || 0) * 1024 * 1024
+    const cores = Number(m.cpus) || 0
+    return {
+      node_id: m.id,
+      name: m.name,
+      live: {
+        cpu_pct: cores ? ((Number(m.used_vcpus) || 0) / cores) * 100 : 0,
+        mem_used_bytes: memUsed,
+        mem_total_bytes: memTotal,
+        disk_used_bytes: 0,
+        disk_total_bytes: 0,
+      },
+      running_vms: 0,
+    }
+  })
+  const nodeRows = memberRows.length ? memberRows : metricRows
   const memberById = new Map(asList(members).map((m) => [String(m.id), m]))
 
   const cpuMemMetrics = [
