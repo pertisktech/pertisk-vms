@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{Result, StorageError};
 
-static NBD_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static NBD_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct GuestIdentity<'a> {
     pub hostname: &'a str,
@@ -387,9 +387,9 @@ fn try_mount(dev: &Path, mnt: &Path) -> bool {
     false
 }
 
-struct LvmSession {
+pub(crate) struct LvmSession {
     pvs: Vec<PathBuf>,
-    volumes: Vec<PathBuf>,
+    pub(crate) volumes: Vec<PathBuf>,
 }
 
 impl Drop for LvmSession {
@@ -400,7 +400,7 @@ impl Drop for LvmSession {
     }
 }
 
-fn activate_lvm(parts: &[PathBuf]) -> Option<LvmSession> {
+pub(crate) fn activate_lvm(parts: &[PathBuf]) -> Option<LvmSession> {
     let pvs: Vec<PathBuf> = parts
         .iter()
         .filter(|p| blkid_type(p).as_deref() == Some("LVM2_member"))
@@ -459,9 +459,9 @@ fn lvm_vgchange(pv: &Path, activate: bool) -> bool {
         .unwrap_or(false)
 }
 
-fn blkid_type(dev: &Path) -> Option<String> {
+pub(crate) fn blkid_type(dev: &Path) -> Option<String> {
     let output = Command::new("blkid")
-        .args(["-o", "value", "-s", "TYPE"])
+        .args(["-c", "/dev/null", "-o", "value", "-s", "TYPE"])
         .arg(dev)
         .output()
         .ok()?;

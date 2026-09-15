@@ -19,15 +19,30 @@ pub fn prepare_shim_disk_boot(
     if !disk.is_file() {
         return Ok(None);
     }
+    // Same lock as inject: linked clones share LVM VG UUIDs.
+    let _nbd = crate::inject::NBD_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let loopdev = LoopDisk::attach(disk)?;
-    let Some(esp) = loopdev.find_fs("vfat") else {
-        return Ok(None);
-    };
-    let esp_mnt = TempMount::mount(&esp, true)?;
-    if !esp_has_shim(esp_mnt.path()) {
+    let mut has_shim = false;
+    for part in loopdev.parts() {
+        if blkid_type(&part).as_deref() != Some("vfat") {
+            continue;
+        }
+        let Ok(esp_mnt) = TempMount::mount(&part, true) else {
+            continue;
+        };
+        if esp_has_shim(esp_mnt.path()) {
+            has_shim = true;
+            break;
+        }
+    }
+    if !has_shim {
         return Ok(None);
     }
 
+    // Rocky/Alma GenericCloud keeps / and often /boot on LVM (p3 is LVM2_member).
+    let lvm = crate::inject::activate_lvm(&loopdev.parts());
     let mut search = Vec::new();
     if let Some(p) = loopdev.find_labeled("BOOT") {
         search.push(p);
@@ -37,11 +52,19 @@ pub fn prepare_shim_disk_boot(
             search.push(p);
         }
     }
-    for fs in ["xfs", "ext4", "btrfs"] {
-        if let Some(p) = loopdev.find_fs(fs) {
-            if !search.contains(&p) {
-                search.push(p);
-            }
+    let mut pool = loopdev.parts();
+    if let Some(ref lvm) = lvm {
+        pool.extend(lvm.volumes.iter().cloned());
+    }
+    for part in &pool {
+        let fs = blkid_type(part);
+        if skip_blind_mount(fs.as_deref()) {
+            continue;
+        }
+        if matches!(fs.as_deref(), Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs"))
+            && !search.contains(part)
+        {
+            search.push(part.clone());
         }
     }
     if search.is_empty() {
@@ -57,7 +80,9 @@ pub fn prepare_shim_disk_boot(
     let initramfs = dest_dir.join("initramfs");
     let mut entry: Option<BlsEntry> = None;
     for part in &search {
-        let boot_mnt = TempMount::mount(part, true)?;
+        let Ok(boot_mnt) = TempMount::mount(part, true) else {
+            continue;
+        };
         let Some(found) =
             pick_bls_entry(boot_mnt.path()).or_else(|| pick_unix_kernel(boot_mnt.path()))
         else {
@@ -76,6 +101,7 @@ pub fn prepare_shim_disk_boot(
             disk.display()
         ))
     })?;
+    drop(lvm);
 
     // Ubuntu 24.10+ puts vmlinuz on LABEL=BOOT (p13) and the rootfs on
     // LABEL=cloudimg-rootfs (p1). Pin root= to the rootfs, not /boot.
@@ -461,15 +487,6 @@ impl LoopDisk {
         loop_partition_paths(&self.device)
     }
 
-    fn find_fs(&self, want: &str) -> Option<PathBuf> {
-        for part in self.parts() {
-            if blkid_type(&part).as_deref() == Some(want) {
-                return Some(part);
-            }
-        }
-        None
-    }
-
     fn find_labeled(&self, label: &str) -> Option<PathBuf> {
         for part in self.parts() {
             if blkid_label(&part).as_deref() == Some(label) {
@@ -492,12 +509,34 @@ struct TempMount {
 
 impl TempMount {
     fn mount(dev: &Path, read_only: bool) -> Result<Self, StorageError> {
+        let fs = blkid_type(dev);
+        if skip_blind_mount(fs.as_deref()) {
+            return Err(StorageError::Message(format!(
+                "not a mountable filesystem: {}",
+                dev.display()
+            )));
+        }
         let path =
             std::env::temp_dir().join(format!("pertisk-mnt-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(&path)?;
         let mut cmd = Command::new("mount");
-        if read_only {
-            cmd.args(["-o", "ro"]);
+        match (read_only, fs.as_deref()) {
+            (true, Some("xfs")) => {
+                cmd.args(["-t", "xfs", "-o", "ro,nouuid"]);
+            }
+            (true, Some(t)) => {
+                cmd.args(["-t", t, "-o", "ro"]);
+            }
+            (true, None) => {
+                cmd.args(["-o", "ro"]);
+            }
+            (false, Some("xfs")) => {
+                cmd.args(["-t", "xfs", "-o", "nouuid"]);
+            }
+            (false, Some(t)) => {
+                cmd.args(["-t", t]);
+            }
+            (false, None) => {}
         }
         let out = cmd
             .arg(dev)
@@ -509,7 +548,7 @@ impl TempMount {
             return Err(StorageError::Message(format!(
                 "mount {} failed: {}",
                 dev.display(),
-                String::from_utf8_lossy(&out.stderr)
+                String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
         Ok(Self { path })
@@ -537,7 +576,7 @@ fn blkid_label(dev: &Path) -> Option<String> {
 
 fn blkid_value(dev: &Path, key: &str) -> Option<String> {
     let out = Command::new("blkid")
-        .args(["-o", "value", "-s", key])
+        .args(["-c", "/dev/null", "-o", "value", "-s", key])
         .arg(dev)
         .output()
         .ok()?;
@@ -546,6 +585,13 @@ fn blkid_value(dev: &Path, key: &str) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if value.is_empty() { None } else { Some(value) }
+}
+
+fn skip_blind_mount(fs: Option<&str>) -> bool {
+    matches!(
+        fs,
+        Some("LVM2_member" | "swap" | "crypto_LUKS" | "iso9660" | "BitLocker")
+    )
 }
 
 fn now_ms() -> u128 {
@@ -644,6 +690,15 @@ mod tests {
             virtio_root_dev(Path::new("/dev/nbd0p15")).as_deref(),
             Some("/dev/vda15")
         );
+    }
+
+    #[test]
+    fn skip_lvm_and_swap_partitions() {
+        assert!(skip_blind_mount(Some("LVM2_member")));
+        assert!(skip_blind_mount(Some("swap")));
+        assert!(!skip_blind_mount(Some("xfs")));
+        assert!(!skip_blind_mount(Some("vfat")));
+        assert!(!skip_blind_mount(Some("ext4")));
     }
 
     #[test]

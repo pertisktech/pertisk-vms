@@ -148,9 +148,10 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Default:  booldefault.StaticBool(true),
 			},
 			"autostart": schema.BoolAttribute{
-				Optional: true,
-				Computed: true,
-				Default:  booldefault.StaticBool(false),
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "Start this guest when the node boots. Defaults to true.",
 			},
 			"autostart_delay": schema.Int64Attribute{
 				Optional: true,
@@ -648,6 +649,24 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 		return
 	}
 	id := state.ID.ValueString()
+	name := state.Name.ValueString()
+	if vm, err := r.api.GetVM(id); err == nil {
+		if name != "" && vm.Spec.Name != name {
+			if found, findErr := r.api.FindVM(name); findErr == nil {
+				tflog.Warn(ctx, "delete id reused; removing guest by name", map[string]any{
+					"state_id": id,
+					"name":     name,
+					"found_id": found.ID.String(),
+				})
+				id = found.ID.String()
+			}
+		}
+	} else if client.IsNotFound(err) && name != "" {
+		if found, findErr := r.api.FindVM(name); findErr == nil {
+			id = found.ID.String()
+		}
+	}
+	_ = r.api.StopVM(id)
 	if err := ignoreGone(r.api, id, r.api.DeleteVM(id)); err != nil {
 		resp.Diagnostics.AddError("Delete guest failed", err.Error())
 	}
@@ -944,6 +963,9 @@ func keepPlannedBlocks(plan, state vmModel) vmModel {
 	}
 	if !plan.Started.IsNull() && !plan.Started.IsUnknown() {
 		state.Started = plan.Started
+	}
+	if !plan.Autostart.IsNull() && !plan.Autostart.IsUnknown() {
+		state.Autostart = plan.Autostart
 	}
 	if !plan.AutostartDelay.IsNull() && !plan.AutostartDelay.IsUnknown() {
 		state.AutostartDelay = plan.AutostartDelay

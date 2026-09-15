@@ -103,6 +103,9 @@ pub struct Service {
     started_at: Instant,
     autostarted: Arc<Mutex<HashSet<VmId>>>,
     created_this_boot: Arc<Mutex<HashSet<VmId>>>,
+    /// Guests that were Running when the hypervisor process disappeared
+    /// (host reboot / daemon restart). Restored even if `autostart` is unset.
+    restore_on_boot: Arc<Mutex<HashSet<VmId>>>,
     metrics: Arc<MetricsCache>,
     /// Last-known online flag per node (for `node.offline` edge detection).
     node_online: Arc<Mutex<HashMap<NodeId, bool>>>,
@@ -146,6 +149,7 @@ impl Service {
             started_at: Instant::now(),
             autostarted: Arc::new(Mutex::new(HashSet::new())),
             created_this_boot: Arc::new(Mutex::new(HashSet::new())),
+            restore_on_boot: Arc::new(Mutex::new(HashSet::new())),
             metrics: Arc::new(MetricsCache::new()),
             node_online: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -1514,7 +1518,16 @@ impl Service {
             match self.vmm.destroy(&record).await {
                 Ok(()) => {}
                 Err(pertisk_vmm::VmmError::NotFound(_)) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    if self.vmm.is_running(&record).await {
+                        return Err(err.into());
+                    }
+                    tracing::warn!(
+                        vm = %id,
+                        error = %err,
+                        "destroy: hypervisor already gone"
+                    );
+                }
             }
         }
         self.console.drop_vm(id).await;
@@ -2810,6 +2823,7 @@ impl Service {
     }
 
     /// ACPI shutdown all running guests on this node (used before daemon exit).
+    /// Leave store state as Running so the next boot restores them.
     pub async fn shutdown_all_local_vms(&self) {
         let Ok(vms) = self.store.list() else {
             return;
@@ -2819,9 +2833,14 @@ impl Service {
             if vm.state != VmState::Running || vm.node_id != Some(self_id) {
                 continue;
             }
-            tracing::info!(vm = %vm.id, "shutting down guest before daemon exit");
-            if let Err(err) = self.shutdown_local(vm.id).await {
+            tracing::info!(
+                vm = %vm.id,
+                "stopping guest before node exit; will restore on boot"
+            );
+            self.console.drop_vm(vm.id).await;
+            if let Err(err) = self.vmm.shutdown(&vm).await {
                 tracing::warn!(vm = %vm.id, error = %err, "guest shutdown on daemon exit failed");
+                let _ = self.vmm.stop(&vm).await;
             }
         }
     }
@@ -2974,6 +2993,12 @@ impl Service {
                 continue;
             }
             if mine && vm.state == VmState::Running && !alive {
+                if !vm.template {
+                    self.restore_on_boot
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .insert(vm.id);
+                }
                 if let Err(err) = self.on_guest_exited(vm.id).await {
                     tracing::warn!(vm = %vm.id, error = %err, "reconcile stop failed");
                 }
@@ -3098,13 +3123,18 @@ impl Service {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone();
+        let restore: HashSet<VmId> = self
+            .restore_on_boot
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
         let mut candidates: Vec<_> = vms
             .into_iter()
             .filter(|vm| {
                 !vm.template
-                    && vm.spec.autostart
                     && vm.node_id == Some(self_id)
                     && !created.contains(&vm.id)
+                    && (vm.spec.autostart || restore.contains(&vm.id))
             })
             .collect();
         candidates.sort_by_key(|vm| (vm.spec.autostart_order, vm.spec.autostart_delay, vm.id));
@@ -4492,6 +4522,21 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
         svc.created_this_boot.lock().unwrap().remove(&vm.id);
         svc.cluster_tick().await.unwrap();
         assert_eq!(svc.get(vm.id).unwrap().state, VmState::Created);
+    }
+
+    #[tokio::test]
+    async fn restores_running_guest_after_hypervisor_gone() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(210), spec("keep")).await.unwrap();
+        let started = svc.start(vm.id).await.unwrap();
+        assert_eq!(started.state, VmState::Running);
+        svc.vmm.stop(&started).await.unwrap();
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.state = VmState::Running;
+        svc.store.upsert(rec).unwrap();
+        svc.created_this_boot.lock().unwrap().remove(&vm.id);
+        svc.cluster_tick().await.unwrap();
+        assert_eq!(svc.get(vm.id).unwrap().state, VmState::Running);
     }
 
     #[tokio::test]
