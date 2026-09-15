@@ -19,6 +19,16 @@ command -v qm >/dev/null || die "qm not found (run on Proxmox)"
 [[ -b "$ZVOL" ]] || die "disk not found: $ZVOL (adjust VMID or storage pool name)"
 
 cd "$ROOT"
+
+# rustup installs to ~/.cargo/bin; non-login shells (and some sudo sessions) omit it.
+if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
+  # shellcheck source=/dev/null
+  source "${CARGO_HOME:-$HOME/.cargo}/env"
+elif [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
+  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+fi
+command -v cargo >/dev/null || die "cargo not found (install rustup, or ensure ~/.cargo/bin is on PATH)"
+
 if command -v npm >/dev/null 2>&1; then
   echo "building web ui"
   (cd "$ROOT/web/ui" && npm ci --no-audit --no-fund && npm run build)
