@@ -666,7 +666,7 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 			id = found.ID.String()
 		}
 	}
-	_ = r.api.StopVM(id)
+	_, _ = r.api.StopVM(id)
 	if err := ignoreGone(r.api, id, r.api.DeleteVM(id)); err != nil {
 		resp.Diagnostics.AddError("Delete guest failed", err.Error())
 	}
