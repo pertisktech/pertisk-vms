@@ -52,6 +52,8 @@ need_free_space() {
 [[ "$(uname -m)" == "x86_64" ]] || die "x86_64 required"
 command -v mkksiso >/dev/null || die "install lorax (provides mkksiso): dnf install lorax"
 command -v curl >/dev/null || die "curl not in PATH"
+command -v createrepo_c >/dev/null || command -v createrepo >/dev/null \
+  || die "install createrepo_c: dnf install createrepo_c"
 [[ -f "$KS" ]] || die "missing $KS"
 
 VERSION="${VERSION:-$(git_version)}"
@@ -84,6 +86,14 @@ trap cleanup EXIT
 
 mkdir -p "$ADD_DIR/pertisk"
 cp -f "$RPM" "$ADD_DIR/pertisk/"
+# Anaconda installs pertisk-vms from file:///run/pertisk-repo (see kickstart %pre).
+if command -v createrepo_c >/dev/null; then
+  createrepo_c "$ADD_DIR/pertisk"
+elif command -v createrepo >/dev/null; then
+  createrepo "$ADD_DIR/pertisk"
+else
+  die "install createrepo_c (dnf install createrepo_c) so the ISO can ship a local RPM repo"
+fi
 
 OUT_ISO="$RELEASE_DIR/pertisk-node-${VERSION}-x86_64.iso"
 rm -f "$OUT_ISO"

@@ -14,7 +14,7 @@ script (console order + `ip=dhcp`), or attach serial / `tmux attach` on tty2.
 
 ```bash
 # On AlmaLinux/RHEL 10 x86_64 build host:
-sudo dnf install -y lorax rpm-build
+sudo dnf install -y lorax rpm-build createrepo_c
 make release-alma-iso VERSION=0.1.0
 
 # Optional: offline DVD base (needs ~12 GiB free for source + output):
