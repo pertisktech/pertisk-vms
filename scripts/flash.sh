@@ -15,7 +15,9 @@ while [[ $# -gt 0 ]]; do
     --disk) DISK="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
     -h|--help)
-      echo "Usage: sudo $0 --image out/pertisk-node.raw.xz --disk /dev/sdX --yes"
+      echo "Usage: sudo $0 --image release/pertisk-node-VERSION-x86_64.iso --disk /dev/sdX --yes"
+      echo "  --image  .iso / .raw / .img / .xz"
+      echo "  --disk   real block device (not the /dev/sdX placeholder); see lsblk"
       exit 0
       ;;
     *) die "unknown arg $1" ;;
@@ -24,8 +26,10 @@ done
 
 [[ "$(uname -s)" == "Linux" ]] || die "Linux only"
 [[ "$(id -u)" -eq 0 ]] || die "run as root"
-[[ -n "$IMAGE" && -f "$IMAGE" ]] || die "pass --image path/to/pertisk-node.raw (or .img / .xz)"
-[[ -n "$DISK" ]] || die "pass --disk /dev/sdX"
+[[ -n "$IMAGE" ]] || die "pass --image path/to/pertisk-node.iso (or .raw / .img / .xz)"
+[[ -f "$IMAGE" ]] || die "image not found: $IMAGE"
+[[ -n "$DISK" ]] || die "pass --disk /dev/sdY (real USB; /dev/sdX is a placeholder)"
+[[ "$DISK" != /dev/sdX && "$DISK" != /dev/hdX ]] || die "replace /dev/sdX with the real USB device (lsblk)"
 [[ -b "$DISK" ]] || die "$DISK is not a block device"
 [[ "$YES" -eq 1 ]] || die "refusing to wipe $DISK without --yes"
 

@@ -40,6 +40,8 @@ bash -n "$OVERLAY/usr/sbin/pertisk-uefi-register"
 bash -n "$ROOT/scripts/build-iso.sh"
 bash -n "$ROOT/scripts/build-sbc-image.sh"
 bash -n "$ROOT/scripts/flash.sh"
+grep -q '\.iso' "$ROOT/scripts/flash.sh" \
+  || { echo "FAIL flash.sh must accept AlmaLinux .iso images"; fail=1; }
 bash -n "$ROOT/scripts/install-node.sh"
 bash -n "$ROOT/scripts/test-qemu.sh"
 bash -n "$ROOT/scripts/lib.sh"
@@ -100,6 +102,22 @@ grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
   || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
 [[ -f "$ROOT/packaging/kickstart/pertisk-node.ks" ]] \
   || { echo "FAIL packaging/kickstart/pertisk-node.ks"; fail=1; }
+grep -q 'part biosboot --fstype=biosboot --size=1' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must create 1 MiB BIOS boot partition"; fail=1; }
+grep -q -- '--disklabel=gpt' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must force GPT for biosboot+ESP"; fail=1; }
+grep -q '^iptables-nft$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must request iptables-nft (no iptables package on EL10)"; fail=1; }
+if grep -qE '^-gnome|^-kde|^-firefox|^-libreoffice' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
+  echo "FAIL kickstart must not exclude globs that DNF reports as missing"
+  fail=1
+fi
+if grep -qE '^/etc/(hosts|hostname|motd)$' "$ROOT/packaging/rpm/pertisk-vms.spec"; then
+  echo "FAIL RPM must not own /etc/hosts|/etc/hostname|/etc/motd (conflicts with setup/systemd)"
+  fail=1
+fi
+grep -q 'inst.nogpgcheck' "$ROOT/scripts/build-alma-iso.sh" \
+  || { echo "FAIL ISO cmdline must disable GPG for unsigned pertisk RPM"; fail=1; }
 [[ -f "$ROOT/packaging/rpm/pertisk-vms.spec" ]] \
   || { echo "FAIL packaging/rpm/pertisk-vms.spec"; fail=1; }
 [[ -f "$ROOT/scripts/build-alma-iso.sh" ]] \

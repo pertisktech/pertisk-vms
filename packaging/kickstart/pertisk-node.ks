@@ -7,20 +7,23 @@ lang en_US.UTF-8
 keyboard --vckeymap=us
 timezone Etc/UTC --utc
 rootpw --plaintext pertisk
-network --bootproto=dhcp --device=link --activate --onboot=on
+network --bootproto=dhcp --device=link --activate --onboot=on --hostname=pertisk
 url --url="https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/"
 repo --name=alma-appstream --baseurl="https://repo.almalinux.org/almalinux/10/AppStream/x86_64/os/"
 # Local RPM repo populated in %pre from the boot USB (not BaseOS/AppStream).
-repo --name=pertisk --baseurl=file:///run/pertisk-repo
+# --nogpgcheck is invalid on RHEL/Alma 10 pykickstart; inst.nogpgcheck is on the ISO cmdline.
+repo --name=pertisk --baseurl=file:///run/pertisk-repo --cost=1
 firewall --enabled --service=ssh
 selinux --permissive
 firstboot --disable
 skipx
 reboot
 
-# UEFI: create ESP explicitly; --location=efi is invalid on RHEL/Alma 10 (use mbr).
+# GPT hybrid: 1 MiB BIOS boot (GRUB core.img) + ESP.
+# --location=efi is invalid on RHEL/Alma 10; mbr still needs biosboot on GPT.
 zerombr
-clearpart --all --initlabel
+clearpart --all --initlabel --disklabel=gpt
+part biosboot --fstype=biosboot --size=1
 part /boot/efi --fstype=efi --size=512
 part /boot --fstype=xfs --size=1024
 part swap --fstype=swap --size=2048
@@ -49,14 +52,10 @@ ls -la /run/pertisk-repo/
 pertisk-vms
 qemu-img
 iproute
-iptables
+iptables-nft
 openssh-server
 NetworkManager
 NetworkManager-tui
--gnome*
--kde*
--firefox
--libreoffice*
 %end
 
 %post --erroronfail --log=/root/pertisk-kickstart-post.log
@@ -91,6 +90,10 @@ fi
 systemctl enable NetworkManager.service sshd.service \
   pertisk-firstboot.service pertisk-bootcfg.service \
   pertisk-net.service pertiskd.service || true
+
+if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
+  /usr/sbin/pertisk-fix-hosts || true
+fi
 
 echo "pertisk kickstart: done"
 %end

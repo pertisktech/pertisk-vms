@@ -53,9 +53,6 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 /etc/modules-load.d/pertisk-net.conf
 /etc/ssh/sshd_config.d/pertisk.conf
 /etc/NetworkManager/conf.d/99-pertisk.conf
-/etc/hostname
-/etc/hosts
-/etc/motd
 /etc/systemd/system/getty@tty1.service.d/autologin.conf
 /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
 /etc/systemd/journald.conf.d/pertisk-no-console.conf
@@ -70,6 +67,20 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable pertisk-net.service >/dev/null 2>&1 || true
   systemctl enable pertiskd.service >/dev/null 2>&1 || true
 fi
+# Do not package /etc/{hosts,hostname,motd}: setup and systemd own those files.
+# Writing them here avoids DNF "file conflicts" during Anaconda.
+if [ ! -s /etc/hostname ]; then
+  printf 'pertisk\n' >/etc/hostname 2>/dev/null || true
+fi
+if [ -x /usr/sbin/pertisk-fix-hosts ]; then
+  /usr/sbin/pertisk-fix-hosts >/dev/null 2>&1 || true
+fi
+cat >/etc/motd 2>/dev/null <<'EOF' || true
+pertisk-vm node (AlmaLinux)
+Already installed to disk by Anaconda — no pertisk-install step.
+UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)
+SSH: root / pertisk
+EOF
 # Mark disk already installed so firstboot never runs live→NVMe copy.
 mkdir -p /var/lib/pertisk
 touch /var/lib/pertisk/.installed-to-disk 2>/dev/null || true

@@ -107,7 +107,7 @@ need_free_space "$RELEASE_DIR" "$((ISO_BYTES + PAYLOAD_BYTES + 64*1024*1024))"
 # ip=dhcp: inst.ks disables NM autoconnect on RHEL/Alma; bring net up in initramfs.
 # console=tty0 last: Anaconda text UI binds to /dev/console (last console=).
 # inst.cmdline: fail instead of waiting forever on any missing kickstart answer.
-CMDLINE="inst.ks=cdrom:/pertisk-node.ks ip=dhcp rd.neednet=1 inst.waitfornet=60 inst.text inst.cmdline console=ttyS0 console=tty0"
+CMDLINE="inst.ks=cdrom:/pertisk-node.ks ip=dhcp rd.neednet=1 inst.waitfornet=60 inst.text inst.cmdline inst.nogpgcheck console=ttyS0 console=tty0"
 
 echo "=== mkksiso (base=$(basename "$ALMA_ISO")) ==="
 # --ks injects the Kickstart onto the ISO; --add places RPMs at /pertisk/.
@@ -121,6 +121,6 @@ mkksiso \
 echo
 echo "=== iso ==="
 ls -lh "$OUT_ISO"
-echo "Flash (USB): sudo dd if=$OUT_ISO of=/dev/sdX bs=4M status=progress conv=fsync"
-echo "Or:          sudo ./scripts/flash.sh --image $OUT_ISO --disk /dev/sdX --yes"
+echo "Build host only: copy $OUT_ISO to a machine with the USB stick, then flash there."
+echo "  sudo dd if=pertisk-node-${VERSION}-x86_64.iso of=/dev/sdY bs=4M status=progress conv=fsync"
 echo "Boot UEFI with Secure Boot disabled. Anaconda installs AlmaLinux + pertiskd (network required for boot.iso)."

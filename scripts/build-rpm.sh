@@ -102,9 +102,6 @@ install -m 644 "$OVERLAY/etc/pertisk/daemon.env" "$PAYLOAD/etc/pertisk/daemon.en
 install -m 644 "$OVERLAY/etc/pertisk/join" "$PAYLOAD/etc/pertisk/join"
 install -m 644 "$OVERLAY/etc/modules-load.d/pertisk-net.conf" "$PAYLOAD/etc/modules-load.d/pertisk-net.conf"
 install -m 644 "$OVERLAY/etc/ssh/sshd_config.d/pertisk.conf" "$PAYLOAD/etc/ssh/sshd_config.d/pertisk.conf"
-install -m 644 "$OVERLAY/etc/hostname" "$PAYLOAD/etc/hostname"
-install -m 644 "$OVERLAY/etc/hosts" "$PAYLOAD/etc/hosts"
-install -m 644 "$OVERLAY/etc/motd" "$PAYLOAD/etc/motd"
 install -m 644 "$OVERLAY/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
   "$PAYLOAD/etc/systemd/system/getty@tty1.service.d/autologin.conf"
 install -m 644 "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
@@ -114,6 +111,8 @@ install -m 644 "$OVERLAY/etc/systemd/journald.conf.d/pertisk-no-console.conf" \
 
 # Alma-specific overlays (install policy, NM, presets).
 cp -a "$ALMA_OVERLAY"/. "$PAYLOAD"/
+# setup/systemd already own these; packaging them causes Anaconda DNF file conflicts.
+rm -f "$PAYLOAD/etc/hostname" "$PAYLOAD/etc/hosts" "$PAYLOAD/etc/motd"
 printf '%s\n' "$VERSION" >"$PAYLOAD/etc/pertisk/version"
 
 # After=network-online is enough; NetworkManager provides it on Alma.
