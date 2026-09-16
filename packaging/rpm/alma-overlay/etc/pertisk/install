@@ -1,0 +1,2 @@
+# AlmaLinux Kickstart install: Anaconda already wrote the disk.
+PERTISK_AUTO_INSTALL=0

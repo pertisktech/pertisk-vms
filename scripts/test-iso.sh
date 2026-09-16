@@ -49,7 +49,8 @@ echo "ok  bash -n overlay + scripts"
 grep -q '^release-amd release-amd64:' "$ROOT/Makefile" || { echo "FAIL Makefile release-amd"; fail=1; }
 grep -q '^release-arm release-arm64:' "$ROOT/Makefile" || { echo "FAIL Makefile release-arm"; fail=1; }
 grep -q '^release-sbc:' "$ROOT/Makefile" || { echo "FAIL Makefile release-sbc"; fail=1; }
-echo "ok  Makefile release-amd / release-arm / release-sbc"
+grep -q '^release-alma-iso:' "$ROOT/Makefile" || { echo "FAIL Makefile release-alma-iso"; fail=1; }
+echo "ok  Makefile release-amd / release-arm / release-sbc / release-alma-iso"
 
 [[ -f "$ROOT/iso/sbc/orangepi5plus.env" ]] || { echo "FAIL sbc orangepi5plus"; fail=1; }
 [[ -f "$ROOT/iso/sbc/orangepi5max.env" ]] || { echo "FAIL sbc orangepi5max"; fail=1; }
@@ -93,8 +94,20 @@ if grep -q 'pertisk-kvm-check' "$OVERLAY/usr/sbin/pertisk-install"; then
 fi
 grep -q 'is_installer_media' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot installer-media detect"; fail=1; }
+grep -q 'os-flavor' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot must honor AlmaLinux os-flavor (skip disk copy)"; fail=1; }
 grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
   || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
+[[ -f "$ROOT/packaging/kickstart/pertisk-node.ks" ]] \
+  || { echo "FAIL packaging/kickstart/pertisk-node.ks"; fail=1; }
+[[ -f "$ROOT/packaging/rpm/pertisk-vms.spec" ]] \
+  || { echo "FAIL packaging/rpm/pertisk-vms.spec"; fail=1; }
+[[ -f "$ROOT/scripts/build-alma-iso.sh" ]] \
+  || { echo "FAIL scripts/build-alma-iso.sh"; fail=1; }
+[[ -f "$ROOT/packaging/rpm/alma-overlay/etc/pertisk/os-flavor" ]] \
+  || { echo "FAIL alma os-flavor overlay"; fail=1; }
+bash -n "$ROOT/scripts/build-rpm.sh" || { echo "FAIL bash -n build-rpm"; fail=1; }
+bash -n "$ROOT/scripts/build-alma-iso.sh" || { echo "FAIL bash -n build-alma-iso"; fail=1; }
 grep -q 'pertisk-install --auto' "$OVERLAY/usr/sbin/pertisk-console" \
   || { echo "FAIL console must document pertisk-install --auto"; fail=1; }
 grep -q 'pertisk-fix-nvme-boot' "$OVERLAY/usr/sbin/pertisk-console" \

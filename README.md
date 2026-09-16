@@ -98,21 +98,45 @@ pertisk vm clone 100 --name web-1 --cloud-init --user ubuntu --password ubuntu -
 
 UI: Datacenter → Templates → Import image, then Clone. Or convert a stopped guest from Options → Convert to template. Templates cannot be started.
 
-**Node install (phase 7):** Debian/Armbian + pertiskd, flashed like Proxmox. No tarball, no `br0` by hand.
+**Node install (phase 7):** flash like Proxmox. No tarball, no `br0` by hand.
 
-Pick the image for the **machine**, not the CPU architecture:
+Pick the image for the **machine**, not only the CPU architecture:
 
 | Machine | Image | Notes |
 |---|---|---|
-| x86_64 UEFI PC (GMKtec G11, etc.) | `pertisk-node-VERSION-amd64.raw.xz` | USB live → `pertisk-install` to NVMe. Disable Secure Boot. |
-| UEFI ARM server | `pertisk-node-VERSION-arm64.raw.xz` | Same as amd64; GRUB EFI |
+| x86_64 UEFI PC (recommended) | `pertisk-node-VERSION-x86_64.iso` | AlmaLinux 10 Kickstart. Boot USB → Anaconda installs OS + `pertiskd`. Secure Boot **off**. |
+| x86_64 UEFI PC (legacy raw) | `pertisk-node-VERSION-amd64.raw.xz` | Debian live USB → `pertisk-install` to NVMe. Kept until Alma ISO is fully rolled out. |
+| UEFI ARM server | `pertisk-node-VERSION-arm64.raw.xz` | Same as amd64 raw; GRUB EFI |
 | Orange Pi 5 Plus | `pertisk-node-VERSION-orangepi5plus.img.xz` | Vendor U-Boot + kernel |
 | Orange Pi 5 Max | `pertisk-node-VERSION-orangepi5max.img.xz` | Not the Plus image |
 | Raspberry Pi 5 | `pertisk-node-VERSION-rpi5.img.xz` | 64-bit; needs `/dev/kvm` |
 
 **Do not** flash `pertisk-node-*-arm64.raw` onto Orange Pi or Raspberry Pi. That file is generic Debian EFI/GRUB and will not boot vendor firmware.
 
-**SBC (download → dd → boot):**
+### x86_64 UEFI PC — AlmaLinux installer ISO (preferred)
+
+Build on AlmaLinux/RHEL (needs `lorax`, `rpm-build`, cargo, npm):
+
+```bash
+make release-alma-iso VERSION=0.1.0
+# → release/pertisk-node-0.1.0-x86_64.iso
+# → release/pertisk-vms-0.1.0-1.*.x86_64.rpm
+```
+
+Flash and boot (UEFI, Secure Boot disabled):
+
+```bash
+sudo dd if=release/pertisk-node-0.1.0-x86_64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+# or: sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-x86_64.iso --disk /dev/sdX --yes
+```
+
+Anaconda runs unattended (`packaging/kickstart/pertisk-node.ks`), installs AlmaLinux 10 + the embedded `pertisk-vms` RPM, enables `pertiskd`, and reboots. Open **https://\<ip\>:7443/** or **http://\<ip\>:7480/** (`admin` / password in `/etc/pertisk/admin`). Root console password is `pertisk`.
+
+QEMU smoke steps: `./scripts/test-alma-iso.sh`.
+
+RPM only: `make release-rpm VERSION=0.1.0`.
+
+### SBC (download → dd → boot):
 
 ```bash
 VER=0.1.2
@@ -135,14 +159,14 @@ Build a board image on Linux: `sudo make release-sbc BOARD=orangepi5plus VERSION
 
 RK3588 is mixed A55+A76; QEMU pins guests to one cluster. Raspberry Pi 5 is all A76 (prefer kernel 6.6).
 
-**x86_64 UEFI PC:**
+### x86_64 UEFI PC — Debian raw (alternate)
 
 ```bash
 make release-amd VERSION=0.1.0
 sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-amd64.raw --disk /dev/sdX --yes
 ```
 
-Then boot the USB (UEFI, Secure Boot off). First boot **installs onto the largest NVMe automatically** with **no network**. If that does not start, the HDMI console is already root — run `pertisk-install --auto` (or `--list` then `--disk /dev/nvme0n1 --yes`). Unplug USB after it reboots. To skip auto-install, put `PERTISK_AUTO_INSTALL=0` in `/etc/pertisk/install`.
+Then boot the USB (UEFI, Secure Boot off). First boot can install onto the largest NVMe when `PERTISK_AUTO_INSTALL=1` in `/etc/pertisk/install`. Otherwise run `pertisk-install --auto` (or `--list` then `--disk /dev/nvme0n1 --yes`). Unplug USB after it reboots.
 
 **In-place updates** (do not reflash): Node → Updates → Refresh, then Upgrade. That runs `apt-get dist-upgrade` on the hypervisor and keeps guests in `/var/lib/pertisk`. Repositories is the apt sources list. CLI: `pertisk updates list|refresh|upgrade` and `pertisk repo list`. Rebuild Pertisk binaries from source with `sudo ./upgrade.sh`.
 

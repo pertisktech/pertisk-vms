@@ -23,9 +23,15 @@ is_installer_media() {
 }
 
 # Optional unattended flash only when /etc/pertisk/install sets PERTISK_AUTO_INSTALL=1.
+# AlmaLinux Kickstart installs set os-flavor=almalinux and never auto-clone.
 maybe_auto_disk_install() {
   [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 0
   [[ -x /usr/sbin/pertisk-install ]] || return 0
+  if [[ -f /etc/pertisk/os-flavor ]]; then
+    case "$(tr -d '[:space:]' </etc/pertisk/os-flavor)" in
+      almalinux|rhel|centos|rocky) return 0 ;;
+    esac
+  fi
   local auto=0
   if [[ -r /etc/pertisk/install ]]; then
     # shellcheck disable=SC1091
@@ -114,14 +120,27 @@ EOF
   echo "root:pertisk" | chpasswd 2>/dev/null || true
   local login_shell=/bin/bash
   [[ -x /bin/zsh ]] && login_shell=/bin/zsh
+  # Debian uses `sudo`; AlmaLinux/RHEL use `wheel`.
+  local admin_group=wheel
+  if getent group wheel >/dev/null 2>&1; then
+    admin_group=wheel
+  elif getent group sudo >/dev/null 2>&1; then
+    admin_group=sudo
+  fi
   if ! id -u admin >/dev/null 2>&1; then
-    useradd -m -s "$login_shell" -G sudo admin 2>/dev/null || true
+    useradd -m -s "$login_shell" -G "$admin_group" admin 2>/dev/null \
+      || useradd -m -s "$login_shell" admin 2>/dev/null \
+      || true
   fi
   if id -u admin >/dev/null 2>&1; then
     echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
   fi
   umask "$oldumask"
-  systemctl reload ssh.service 2>/dev/null || systemctl restart ssh.service 2>/dev/null || true
+  systemctl reload sshd.service 2>/dev/null \
+    || systemctl restart sshd.service 2>/dev/null \
+    || systemctl reload ssh.service 2>/dev/null \
+    || systemctl restart ssh.service 2>/dev/null \
+    || true
 }
 
 ensure_ssh_login
@@ -183,9 +202,10 @@ ensure_fstab() {
   [[ -f /etc/fstab ]] && return 0
   command -v findmnt >/dev/null || return 0
   command -v blkid >/dev/null || return 0
-  local root_src root_uuid esp_dev esp_uuid
+  local root_src root_uuid root_fstype esp_dev esp_uuid
   root_src="$(findmnt -n -o SOURCE / || true)"
   root_uuid="$(findmnt -n -o UUID / 2>/dev/null || blkid -s UUID -o value "$root_src" 2>/dev/null || true)"
+  root_fstype="$(findmnt -n -o FSTYPE / 2>/dev/null || echo ext4)"
   [[ -n "$root_uuid" ]] || return 0
   esp_dev=""
   if findmnt -n /boot/efi >/dev/null 2>&1; then
@@ -201,7 +221,7 @@ ensure_fstab() {
     esp_uuid="$(blkid -s UUID -o value "$esp_dev" 2>/dev/null || true)"
   fi
   {
-    echo "UUID=$root_uuid / ext4 defaults 0 1"
+    echo "UUID=$root_uuid / $root_fstype defaults 0 1"
     if [[ -n "$esp_uuid" ]]; then
       echo "UUID=$esp_uuid /boot/efi vfat umask=0077 0 2"
     fi
@@ -268,7 +288,7 @@ EOF
 else
   cat >"$ISSUE" <<EOF
 pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
-No IP yet? Plug a LAN cable. NVMe: pertisk-install --auto
+No IP yet? Plug a LAN cable.
 EOF
 fi
 

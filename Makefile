@@ -1,10 +1,12 @@
-.PHONY: release release-amd release-arm release-amd64 release-arm64 release-sbc
+.PHONY: release release-amd release-arm release-amd64 release-arm64 release-sbc release-alma-iso release-rpm
 
 # make release-amd VERSION=0.1.0
 # make release-arm VERSION=0.1.0
+# make release-alma-iso VERSION=0.1.0
 # make release-sbc BOARD=orangepi5plus VERSION=0.1.0
 # Images: release/pertisk-node-$(VERSION)-amd64.raw
 #         release/pertisk-node-$(VERSION)-arm64.raw
+#         release/pertisk-node-$(VERSION)-x86_64.iso   (AlmaLinux Kickstart)
 #         release/pertisk-node-$(VERSION)-$(BOARD).img.xz
 GIT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 CARGO_VERSION := $(shell awk '/^\[workspace.package\]/{p=1} p && /^version =/{gsub(/"/,"",$$3); print $$3; exit}' Cargo.toml)
@@ -18,6 +20,13 @@ release-amd release-amd64:
 
 release-arm release-arm64:
 	./scripts/build-iso.sh arm64 $(VERSION)
+
+# AlmaLinux 10 x86_64 Kickstart installer ISO (customer UEFI PC path).
+release-alma-iso:
+	./scripts/build-alma-iso.sh $(VERSION)
+
+release-rpm:
+	./scripts/build-rpm.sh $(VERSION)
 
 # Board appliance (not the generic UEFI arm64.raw). Linux root + loop mounts.
 release-sbc:

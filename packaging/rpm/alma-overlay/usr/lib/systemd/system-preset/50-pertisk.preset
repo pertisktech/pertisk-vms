@@ -1,0 +1,8 @@
+enable pertisk-firstboot.service
+enable pertisk-bootfix.service
+enable pertisk-net.service
+enable pertiskd.service
+enable sshd.service
+enable NetworkManager.service
+disable systemd-networkd.service
+disable systemd-networkd-wait-online.service
