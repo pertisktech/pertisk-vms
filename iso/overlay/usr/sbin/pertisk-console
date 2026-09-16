@@ -13,8 +13,9 @@ fi
 echo
 echo "pertisk-vm console (root shell, no login password)"
 echo "  TUI:            pertisk-tui"
-echo "  root password:  pertisk   (for ssh; or password from pertisk-setup)"
-echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
+echo "  SSH root/admin: password you set in Anaconda"
+echo "  Web UI:         https://<ip>:7443/  user admin  password admin"
+echo "                  (change under Users after login)"
 echo
 if [[ -f /etc/pertisk/needs-setup ]]; then
   echo "  Setup incomplete: run  pertisk-setup"
@@ -25,7 +26,7 @@ elif [[ -x /usr/sbin/pertisk-install && ! -f /var/lib/pertisk/.installed-to-disk
   echo "    pertisk-fix-nvme-boot /dev/nvme0n1"
   echo "  Then power OFF, UNPLUG USB, BIOS → Windows Boot Manager"
 else
-  echo "  Disk install: already done (Kickstart/Anaconda)."
+  echo "  Disk/network: configured in Anaconda."
   echo "  Check:        systemctl status pertiskd"
 fi
 echo

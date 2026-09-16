@@ -109,6 +109,16 @@ if grep -qE '^(cmdline|text)$' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
   echo "FAIL kickstart must not use cmdline/text (broken disk menu / no GUI)"
   fail=1
 fi
+if grep -qE '^(rootpw |network )' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
+  echo "FAIL kickstart must omit rootpw/network so Anaconda GUI asks"
+  fail=1
+fi
+if grep -q 'printf.*needs-setup\|>/etc/pertisk/needs-setup' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
+  echo "FAIL kickstart must not require console pertisk-setup (Anaconda GUI)"
+  fail=1
+fi
+grep -q 'rm -f /etc/pertisk/needs-setup' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must clear needs-setup after Anaconda GUI install"; fail=1; }
 grep -q 'pertisk.autodisk' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must support pertisk.autodisk serial fallback"; fail=1; }
 grep -q 'inst.graphical' "$ROOT/scripts/build-alma-iso.sh" \
@@ -121,24 +131,19 @@ if grep -qE '^CMDLINE=.*inst\.cmdline' "$ROOT/scripts/build-alma-iso.sh"; then
   echo "FAIL ISO cmdline must not use inst.cmdline (hides disk UI)"
   fail=1
 fi
-# Top-level kickstart must not force a disk (only %pre autodisk heredoc may).
 if awk '/^%pre/{exit} /^(clearpart|zerombr|ignoredisk|part )/{found=1} END{exit !found}' \
   "$ROOT/packaging/kickstart/pertisk-node.ks"; then
   echo "FAIL kickstart must omit top-level disk commands (Anaconda GUI selects disk)"
   fail=1
 fi
-grep -q 'node_name = "' "$OVERLAY/usr/sbin/pertisk-setup" \
-  || { echo "FAIL pertisk-setup must write cluster node_name"; fail=1; }
-if grep -n "grep -q 'node_name'" "$OVERLAY/usr/sbin/pertisk-setup" >/dev/null; then
-  echo "FAIL pertisk-setup must not match node_name via bare grep (hits comments)"
-  fail=1
-fi
-grep -q '^network --bootproto=dhcp' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart needs temporary DHCP for package download"; fail=1; }
-grep -q '^rootpw ' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart needs temporary rootpw (setup wizard sets admin)"; fail=1; }
-grep -q 'needs-setup' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart must set needs-setup for pertisk-setup wizard"; fail=1; }
+grep -q 'pertisk-sync-nodename' "$OVERLAY/usr/lib/systemd/system/pertiskd.service" \
+  || { echo "FAIL pertiskd must sync node_name from hostname before start"; fail=1; }
+[[ -f "$OVERLAY/usr/sbin/pertisk-sync-nodename" ]] \
+  || { echo "FAIL missing pertisk-sync-nodename"; fail=1; }
+bash -n "$OVERLAY/usr/sbin/pertisk-sync-nodename" \
+  || { echo "FAIL bash -n pertisk-sync-nodename"; fail=1; }
+grep -q '/etc/hostname' "$OVERLAY/usr/sbin/pertisk-sync-nodename" \
+  || { echo "FAIL sync-nodename must read Anaconda /etc/hostname"; fail=1; }
 
 grep -q 'com_redhat_kdump --disable' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must disable kdump (Crash recovery kernel arming hang)"; fail=1; }

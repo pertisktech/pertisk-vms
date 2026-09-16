@@ -68,14 +68,9 @@ if [[ ! -f "$HOME_DIR/config.toml" ]]; then
   fi
 fi
 
-node="$(hostname -s 2>/dev/null || echo pertisk)"
-if [[ -f "$HOME_DIR/config.toml" ]] && ! grep -q 'node_name' "$HOME_DIR/config.toml"; then
-  tmp="$(mktemp)"
-  awk -v n="$node" '
-    /^\[cluster\]/ { print; print "node_name = \"" n "\""; next }
-    { print }
-  ' "$HOME_DIR/config.toml" >"$tmp"
-  mv "$tmp" "$HOME_DIR/config.toml"
+# Hostname (Anaconda /etc/hostname) → [cluster] node_name (+ cluster.json).
+if [[ -x /usr/sbin/pertisk-sync-nodename ]]; then
+  /usr/sbin/pertisk-sync-nodename || true
 fi
 
 if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
@@ -106,7 +101,8 @@ needs_console_setup() {
   [[ -f /etc/pertisk/needs-setup ]] && [[ ! -f "$HOME_DIR/.setup-done" ]]
 }
 
-# Alma Kickstart: admin password / hostname / LAN come from pertisk-setup on console.
+# Alma Kickstart used to defer hostname/LAN/admin to pertisk-setup.
+# Current ISO: Anaconda GUI sets those; needs-setup is absent and setup is marked done.
 if is_alma_kickstart && needs_console_setup; then
   echo "pertisk-firstboot: waiting for console pertisk-setup (hostname / LAN / admin)"
   mkdir -p "$HOME_DIR/run" "$HOME_DIR/storage" "$HOME_DIR/state" /etc/pertisk /etc/issue.d
@@ -121,13 +117,19 @@ pertisk-vm: first-boot setup required.
 On HDMI/serial console: answer the prompts (or run: pertisk-setup)
 Web UI starts after setup completes.
 EOF
-  # Do not mark firstboot-done; setup wizard will.
   exit 0
 fi
 
+# Alma + Anaconda GUI: web UI bootstrap password defaults to "admin" (change under Users).
+# node_name is synced from /etc/hostname by pertisk-sync-nodename (above / ExecStartPre).
+
 if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
   PERTISK_ADMIN_PASSWORD="admin"
-  echo "pertisk-firstboot: using default admin password (set PERTISK_ADMIN_PASSWORD to override)"
+  if is_alma_kickstart; then
+    echo "pertisk-firstboot: web UI password default 'admin' (OS root/admin = Anaconda password)"
+  else
+    echo "pertisk-firstboot: using default admin password (set PERTISK_ADMIN_PASSWORD to override)"
+  fi
 fi
 umask 077
 touch "$ENV_FILE"
@@ -154,7 +156,6 @@ EOF
   fi
   local login_shell=/bin/bash
   [[ -x /bin/zsh ]] && login_shell=/bin/zsh
-  # Debian uses `sudo`; AlmaLinux/RHEL use `wheel`.
   local admin_group=wheel
   if getent group wheel >/dev/null 2>&1; then
     admin_group=wheel
@@ -168,7 +169,17 @@ EOF
     fi
   fi
   if [[ "$created_admin" -eq 1 ]] && id -u admin >/dev/null 2>&1; then
-    echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
+    if is_alma_kickstart; then
+      # Same password as root (hash copy) — plaintext was set only in Anaconda.
+      root_hash="$(awk -F: '$1=="root"{print $2; exit}' /etc/shadow 2>/dev/null || true)"
+      if [[ -n "$root_hash" && "$root_hash" != "*" && "$root_hash" != "!" ]]; then
+        usermod -p "$root_hash" admin 2>/dev/null || true
+      else
+        echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
+      fi
+    else
+      echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
+    fi
   fi
   umask "$oldumask"
   systemctl reload sshd.service 2>/dev/null \

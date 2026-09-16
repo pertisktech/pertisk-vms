@@ -1,0 +1,69 @@
+#!/bin/bash
+# Sync Linux hostname → /var/lib/pertisk/config.toml [cluster] node_name.
+# Prefer /etc/hostname (Anaconda) over the live kernel hostname.
+set -euo pipefail
+
+HOME_DIR="${PERTISK_HOME:-/var/lib/pertisk}"
+CFG="$HOME_DIR/config.toml"
+CLUSTER_JSON="$HOME_DIR/state/cluster.json"
+
+appliance_hostname() {
+  local h=""
+  if [[ -r /etc/hostname ]]; then
+    h="$(tr -d '[:space:]' </etc/hostname)"
+    h="${h%%.*}"
+  fi
+  if [[ -z "$h" || "$h" == "localhost" || "$h" == "localhost.localdomain" ]]; then
+    h="$(hostnamectl --static 2>/dev/null | tr -d '[:space:]' || true)"
+    h="${h%%.*}"
+  fi
+  if [[ -z "$h" || "$h" == "localhost" || "$h" == "localhost.localdomain" ]]; then
+    h="$(hostname -s 2>/dev/null || true)"
+  fi
+  if [[ -z "$h" || "$h" == "localhost" || "$h" == "localhost.localdomain" ]]; then
+    h="pertisk"
+  fi
+  # Keep kickstart-safe hostname charset.
+  h="$(printf '%s' "$h" | tr -cd 'A-Za-z0-9-' | cut -c1-63)"
+  [[ -n "$h" ]] || h="pertisk"
+  printf '%s' "$h"
+}
+
+mkdir -p "$HOME_DIR"
+if [[ ! -f "$CFG" && -f /etc/pertisk/config.toml ]]; then
+  cp /etc/pertisk/config.toml "$CFG"
+fi
+[[ -f "$CFG" ]] || exit 0
+
+node="$(appliance_hostname)"
+
+if grep -qE '^[[:space:]]*node_name[[:space:]]*=' "$CFG"; then
+  sed -i -E "s|^[[:space:]]*node_name[[:space:]]*=.*|node_name = \"${node}\"|" "$CFG"
+elif grep -qE '^[[:space:]]*\[cluster\]' "$CFG"; then
+  sed -i "/^\[cluster\]/a node_name = \"${node}\"" "$CFG"
+else
+  printf '\n[cluster]\nnode_name = "%s"\n' "$node" >>"$CFG"
+fi
+
+# Keep persisted cluster member label in sync (UI reads this).
+if [[ -f "$CLUSTER_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$CLUSTER_JSON" "$node" <<'PY' 2>/dev/null || true
+import json, sys
+path, name = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+self_id = data.get("self_id")
+changed = False
+for m in data.get("members") or []:
+    if m.get("id") == self_id and m.get("name") != name:
+        m["name"] = name
+        changed = True
+if changed:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+PY
+fi
+
+echo "pertisk-sync-nodename: node_name=${node}"
+exit 0

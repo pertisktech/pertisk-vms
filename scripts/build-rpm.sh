@@ -89,7 +89,8 @@ install -m 755 "$CLOUD_HYPERVISOR" "$PAYLOAD/usr/bin/cloud-hypervisor"
 install -m 644 "$FIRMWARE" "$PAYLOAD/usr/lib/cloud-hypervisor/hypervisor-fw"
 
 for s in pertisk-firstboot pertisk-kvm-check pertisk-host-bridge pertisk-bootfix \
-         pertisk-net pertisk-console pertisk-setup pertisk-fix-hosts pertisk-fix-dns; do
+         pertisk-net pertisk-console pertisk-setup pertisk-sync-nodename \
+         pertisk-fix-hosts pertisk-fix-dns; do
   install -m 755 "$OVERLAY/usr/sbin/$s" "$PAYLOAD/usr/sbin/$s"
 done
 

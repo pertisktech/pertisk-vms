@@ -14,6 +14,8 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/pertisk/daemon.env
 # Missing KVM must not block the web UI; guests will fail until SVM/VT-x is on.
 ExecStartPre=-/usr/sbin/pertisk-kvm-check
+# Hostname from Anaconda (/etc/hostname) → cluster node_name before daemon loads.
+ExecStartPre=-/usr/sbin/pertisk-sync-nodename
 ExecStart=/usr/bin/pertiskd
 Restart=on-failure
 RestartSec=3

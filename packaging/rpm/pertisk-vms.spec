@@ -38,6 +38,7 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 /usr/sbin/pertisk-net
 /usr/sbin/pertisk-console
 /usr/sbin/pertisk-setup
+/usr/sbin/pertisk-sync-nodename
 /usr/sbin/pertisk-fix-hosts
 /usr/sbin/pertisk-fix-dns
 /usr/lib/systemd/system/pertiskd.service
