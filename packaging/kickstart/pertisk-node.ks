@@ -52,24 +52,26 @@ ls -la /run/pertisk-repo/
 
 DISK=""
 DISK_BYTES=0
-mapfile -t CANDIDATES < <(
-  while read -r name size rem; do
-    [[ -n "$name" ]] || continue
-    tran="$(lsblk -dn -o TRAN "/dev/${name}" 2>/dev/null || true)"
-    case "$tran" in
-      usb|mmc) continue ;;
-    esac
-    [[ "${rem:-0}" == "1" ]] && continue
-    if lsblk -dn -o TYPE "/dev/${name}" 2>/dev/null | grep -qx rom; then
-      continue
-    fi
-    [[ "$size" =~ ^[0-9]+$ ]] || continue
-    # name|bytes|human|model
-    human="$(lsblk -dn -o SIZE "/dev/${name}" 2>/dev/null || echo "?")"
-    model="$(lsblk -dn -o MODEL "/dev/${name}" 2>/dev/null | sed 's/[[:space:]]\+/ /g;s/^ //;s/ $//' || true)"
-    printf '%s|%s|%s|%s\n' "$name" "$size" "$human" "${model:-disk}"
-  done < <(lsblk -dn -b -o NAME,SIZE,RM,TYPE | awk '$4=="disk"{print $1,$2,$3}')
-)
+CANDIDATES=()
+while read -r name size rem; do
+  [[ -n "$name" ]] || continue
+  # Keep only safe kernel disk names (sda, nvme0n1, …).
+  [[ "$name" =~ ^[a-zA-Z0-9]+$ ]] || continue
+  tran="$(lsblk -dn -o TRAN "/dev/${name}" 2>/dev/null | tr -d '\r' || true)"
+  case "$tran" in
+    usb|mmc) continue ;;
+  esac
+  [[ "${rem:-0}" == "1" ]] && continue
+  if lsblk -dn -o TYPE "/dev/${name}" 2>/dev/null | tr -d '\r' | grep -qx rom; then
+    continue
+  fi
+  [[ "$size" =~ ^[0-9]+$ ]] || continue
+  human="$(lsblk -dn -o SIZE "/dev/${name}" 2>/dev/null | tr -d '\r[:space:]' || echo '?')"
+  model="$(lsblk -dn -o MODEL "/dev/${name}" 2>/dev/null | tr -d '\r' | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//' || true)"
+  model="$(printf '%s' "$model" | tr -cd 'A-Za-z0-9 ._/+-')"
+  [[ -n "$model" ]] || model=disk
+  CANDIDATES+=("${name}|${size}|${human}|${model}")
+done < <(lsblk -dn -b -o NAME,SIZE,RM,TYPE | awk '$4=="disk"{print $1,$2,$3}')
 
 if [[ "${#CANDIDATES[@]}" -eq 0 ]]; then
   echo "pertisk kickstart: ERROR - no suitable HDD/NVMe found" >&2
@@ -81,28 +83,10 @@ if [[ "${#CANDIDATES[@]}" -eq 1 ]]; then
   DISK="${CANDIDATES[0]%%|*}"
   rest="${CANDIDATES[0]#*|}"
   DISK_BYTES="${rest%%|*}"
-  echo "pertisk kickstart: single disk — installing to /dev/${DISK}"
+  echo "pertisk kickstart: single disk - installing to /dev/${DISK}"
 else
-  # Multiple disks: ask on the real console (cmdline %pre has no Anaconda spoke).
-  exec </dev/console >/dev/console 2>&1 || true
-  echo
-  echo "========================================"
-  echo "  Pertisk — select install disk"
-  echo "  WARNING: the chosen disk will be WIPED"
-  echo "========================================"
-  i=1
-  for row in "${CANDIDATES[@]}"; do
-    name="${row%%|*}"
-    rest="${row#*|}"
-    bytes="${rest%%|*}"
-    rest2="${rest#*|}"
-    human="${rest2%%|*}"
-    model="${rest2#*|}"
-    printf "  %d) /dev/%-8s  %8s  %s\n" "$i" "$name" "$human" "$model"
-    i=$((i + 1))
-  done
-  echo
-  # Default to largest disk.
+  # Multiple disks: plain ASCII menu on the console (no Anaconda spoke in cmdline).
+  # Avoid permanent exec redirects (breaks Anaconda logging / layout).
   largest_i=1
   largest_b=0
   i=1
@@ -115,21 +99,64 @@ else
     fi
     i=$((i + 1))
   done
-  while true; do
-    printf "Disk number [%s]: " "$largest_i"
-    read -r choice || choice=""
-    choice="${choice:-$largest_i}"
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 && "$choice" -le "${#CANDIDATES[@]}" ]]; then
-      idx=$((choice - 1))
-      row="${CANDIDATES[$idx]}"
-      DISK="${row%%|*}"
+
+  menu_file=/tmp/pertisk-disk-menu.txt
+  {
+    echo
+    echo "========================================"
+    echo "  Pertisk - select install disk"
+    echo "  WARNING: chosen disk will be WIPED"
+    echo "========================================"
+    i=1
+    for row in "${CANDIDATES[@]}"; do
+      name="${row%%|*}"
       rest="${row#*|}"
-      DISK_BYTES="${rest%%|*}"
-      break
-    fi
-    echo "Invalid choice."
+      rest2="${rest#*|}"
+      human="${rest2%%|*}"
+      model="${rest2#*|}"
+      # One simple line per disk — no column padding (breaks on serial/VGA).
+      echo "  ${i}. /dev/${name}  ${human}  ${model}"
+      i=$((i + 1))
+    done
+    echo
+    echo "Enter number (default ${largest_i})"
+  } >"$menu_file"
+
+  # Show on VGA and serial if present.
+  for cons in /dev/console /dev/tty0 /dev/ttyS0; do
+    [[ -c "$cons" ]] || continue
+    cat "$menu_file" >"$cons" 2>/dev/null || true
   done
+  # Also keep a copy in the %pre log.
+  cat "$menu_file"
+
+  choice=""
+  # Prefer reading from console; fall back to default if non-interactive.
+  if [[ -c /dev/console ]]; then
+    # stty may fail on some consoles; ignore.
+    stty sane < /dev/console 2>/dev/null || true
+    printf 'Disk number [%s]: ' "$largest_i" >/dev/console 2>/dev/null || true
+    # shellcheck disable=SC2162
+    read -r -t 300 choice < /dev/console || choice=""
+  fi
+  choice="${choice:-$largest_i}"
+  # Strip CR and spaces from serial input.
+  choice="$(printf '%s' "$choice" | tr -d '\r[:space:]')"
+
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "${#CANDIDATES[@]}" ]]; then
+    echo "pertisk kickstart: invalid disk choice '${choice}', using ${largest_i}" >&2
+    choice=$largest_i
+  fi
+  idx=$((choice - 1))
+  row="${CANDIDATES[$idx]}"
+  DISK="${row%%|*}"
+  rest="${row#*|}"
+  DISK_BYTES="${rest%%|*}"
   echo "pertisk kickstart: installing to /dev/${DISK} (${DISK_BYTES} bytes)"
+  for cons in /dev/console /dev/tty0 /dev/ttyS0; do
+    [[ -c "$cons" ]] || continue
+    echo "Selected /dev/${DISK}" >"$cons" 2>/dev/null || true
+  done
 fi
 
 # Anaconda ignoredisk wants the kernel name without /dev/.
