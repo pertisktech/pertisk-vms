@@ -20,7 +20,7 @@ reboot
 zerombr
 clearpart --all --initlabel
 autopart --type=plain --nohome
-bootloader --append="console=tty0 console=ttyS0"
+bootloader --location=mbr --append="console=tty0 console=ttyS0"
 
 %packages
 @^minimal-environment
