@@ -19,3 +19,4 @@ crates/pertisk-daemon/static/
 iso/overlay/usr/bin/
 iso/overlay/usr/lib/cloud-hypervisor/
 terraform-provider-pertisk-vms/bin/
+packaging/rpm/rpmbuild/
