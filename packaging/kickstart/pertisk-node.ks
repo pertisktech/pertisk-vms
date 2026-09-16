@@ -18,14 +18,14 @@ firstboot --disable
 skipx
 reboot
 
-# UEFI nodes: explicit GPT + ESP (bootloader --location=mbr fails on pure UEFI).
+# UEFI: create ESP explicitly; --location=efi is invalid on RHEL/Alma 10 (use mbr).
 zerombr
 clearpart --all --initlabel
 part /boot/efi --fstype=efi --size=512
 part /boot --fstype=xfs --size=1024
 part swap --fstype=swap --size=2048
 part / --fstype=xfs --size=1 --grow
-bootloader --location=efi --append="console=tty0 console=ttyS0"
+bootloader --location=mbr --append="console=tty0 console=ttyS0"
 
 # Copy mkksiso --add payload off the boot media into a file:// repo Anaconda can use.
 %pre --erroronfail --log=/tmp/pertisk-kickstart-pre.log
