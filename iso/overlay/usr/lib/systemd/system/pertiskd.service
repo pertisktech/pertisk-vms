@@ -4,13 +4,16 @@ Documentation=https://github.com/pertisktech/pertisk-vms
 After=local-fs.target pertisk-firstboot.service
 Wants=network-online.target
 ConditionPathExists=/usr/bin/pertiskd
+# Alma first-boot: wait until pertisk-setup removes /etc/pertisk/needs-setup.
+ConditionPathExists=!/etc/pertisk/needs-setup
 
 [Service]
 Type=simple
 Environment=PERTISK_HOME=/var/lib/pertisk
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/pertisk/daemon.env
-ExecStartPre=/usr/sbin/pertisk-kvm-check
+# Missing KVM must not block the web UI; guests will fail until SVM/VT-x is on.
+ExecStartPre=-/usr/sbin/pertisk-kvm-check
 ExecStart=/usr/bin/pertiskd
 Restart=on-failure
 RestartSec=3

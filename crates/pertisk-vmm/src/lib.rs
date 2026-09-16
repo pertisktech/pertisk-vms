@@ -158,8 +158,18 @@ pub struct StartResult {
 fn qemu_system_binary() -> Option<PathBuf> {
     if cfg!(target_arch = "aarch64") {
         pertisk_types::find_in_path("qemu-system-aarch64")
+            .or_else(|| {
+                let p = PathBuf::from("/usr/libexec/qemu-kvm");
+                p.is_file().then_some(p)
+            })
     } else {
+        // Debian/Ubuntu: qemu-system-x86_64. RHEL/Alma: /usr/libexec/qemu-kvm.
         pertisk_types::find_in_path("qemu-system-x86_64")
             .or_else(|| pertisk_types::find_in_path("qemu-system-x86"))
+            .or_else(|| pertisk_types::find_in_path("qemu-kvm"))
+            .or_else(|| {
+                let p = PathBuf::from("/usr/libexec/qemu-kvm");
+                p.is_file().then_some(p)
+            })
     }
 }

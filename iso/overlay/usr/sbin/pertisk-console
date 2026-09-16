@@ -1,13 +1,24 @@
 #!/bin/bash
 # HDMI/serial console: root shell (no password). NVMe install is manual only.
 
+# Always run the Alma first-boot wizard when the flag is present (do not rely on
+# --needed / os-flavor — that previously skipped straight to a shell).
+if [[ -f /etc/pertisk/needs-setup && ! -f /var/lib/pertisk/.setup-done && -x /usr/sbin/pertisk-setup ]]; then
+  export PERTISK_SETUP_RUNNING=1
+  clear 2>/dev/null || true
+  echo "Starting Pertisk setup wizard..."
+  exec /usr/sbin/pertisk-setup
+fi
+
 echo
 echo "pertisk-vm console (root shell, no login password)"
 echo "  TUI:            pertisk-tui"
-echo "  root password:  pertisk   (for ssh)"
+echo "  root password:  pertisk   (for ssh; or password from pertisk-setup)"
 echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
 echo
-if [[ -x /usr/sbin/pertisk-install ]]; then
+if [[ -f /etc/pertisk/needs-setup ]]; then
+  echo "  Setup incomplete: run  pertisk-setup"
+elif [[ -x /usr/sbin/pertisk-install && ! -f /var/lib/pertisk/.installed-to-disk ]]; then
   echo "  Install to NVMe (wipes disk):"
   echo "    pertisk-install --auto"
   echo "  If BIOS finds no boot entry after install:"

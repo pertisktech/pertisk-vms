@@ -37,12 +37,14 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 /usr/sbin/pertisk-bootfix
 /usr/sbin/pertisk-net
 /usr/sbin/pertisk-console
+/usr/sbin/pertisk-setup
 /usr/sbin/pertisk-fix-hosts
 /usr/sbin/pertisk-fix-dns
 /usr/lib/systemd/system/pertiskd.service
 /usr/lib/systemd/system/pertisk-firstboot.service
 /usr/lib/systemd/system/pertisk-net.service
 /usr/lib/systemd/system/pertisk-bootfix.service
+/usr/lib/systemd/system/pertisk-setup.service
 /usr/lib/systemd/system-preset/50-pertisk.preset
 %config(noreplace) /etc/pertisk/config.toml
 %config(noreplace) /etc/pertisk/daemon.env
@@ -53,6 +55,7 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 /etc/modules-load.d/pertisk-net.conf
 /etc/ssh/sshd_config.d/pertisk.conf
 /etc/NetworkManager/conf.d/99-pertisk.conf
+/etc/profile.d/pertisk-setup.sh
 /etc/systemd/system/getty@tty1.service.d/autologin.conf
 /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
 /etc/systemd/journald.conf.d/pertisk-no-console.conf
@@ -65,6 +68,7 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable pertisk-firstboot.service >/dev/null 2>&1 || true
   systemctl enable pertisk-bootfix.service >/dev/null 2>&1 || true
   systemctl enable pertisk-net.service >/dev/null 2>&1 || true
+  systemctl enable pertisk-setup.service >/dev/null 2>&1 || true
   systemctl enable pertiskd.service >/dev/null 2>&1 || true
 fi
 # Do not package /etc/{hosts,hostname,motd}: setup and systemd own those files.
@@ -77,9 +81,9 @@ if [ -x /usr/sbin/pertisk-fix-hosts ]; then
 fi
 cat >/etc/motd 2>/dev/null <<'EOF' || true
 pertisk-vm node (AlmaLinux)
-Already installed to disk by Anaconda — no pertisk-install step.
-UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)
-SSH: root / pertisk
+If /etc/pertisk/needs-setup exists: answer prompts on the console (pertisk-setup).
+UI: https://<ip>:7443/  admin (see /etc/pertisk/admin)
+SSH: root (password from Anaconda or pertisk-setup)
 EOF
 # Mark disk already installed so firstboot never runs live→NVMe copy.
 mkdir -p /var/lib/pertisk

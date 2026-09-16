@@ -89,11 +89,12 @@ install -m 755 "$CLOUD_HYPERVISOR" "$PAYLOAD/usr/bin/cloud-hypervisor"
 install -m 644 "$FIRMWARE" "$PAYLOAD/usr/lib/cloud-hypervisor/hypervisor-fw"
 
 for s in pertisk-firstboot pertisk-kvm-check pertisk-host-bridge pertisk-bootfix \
-         pertisk-net pertisk-console pertisk-fix-hosts pertisk-fix-dns; do
+         pertisk-net pertisk-console pertisk-setup pertisk-fix-hosts pertisk-fix-dns; do
   install -m 755 "$OVERLAY/usr/sbin/$s" "$PAYLOAD/usr/sbin/$s"
 done
 
-for u in pertiskd.service pertisk-firstboot.service pertisk-net.service pertisk-bootfix.service; do
+for u in pertiskd.service pertisk-firstboot.service pertisk-net.service \
+         pertisk-bootfix.service pertisk-setup.service; do
   install -m 644 "$OVERLAY/usr/lib/systemd/system/$u" "$PAYLOAD/usr/lib/systemd/system/$u"
 done
 
@@ -102,6 +103,8 @@ install -m 644 "$OVERLAY/etc/pertisk/daemon.env" "$PAYLOAD/etc/pertisk/daemon.en
 install -m 644 "$OVERLAY/etc/pertisk/join" "$PAYLOAD/etc/pertisk/join"
 install -m 644 "$OVERLAY/etc/modules-load.d/pertisk-net.conf" "$PAYLOAD/etc/modules-load.d/pertisk-net.conf"
 install -m 644 "$OVERLAY/etc/ssh/sshd_config.d/pertisk.conf" "$PAYLOAD/etc/ssh/sshd_config.d/pertisk.conf"
+install -d "$PAYLOAD/etc/profile.d"
+install -m 644 "$OVERLAY/etc/profile.d/pertisk-setup.sh" "$PAYLOAD/etc/profile.d/pertisk-setup.sh"
 install -m 644 "$OVERLAY/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
   "$PAYLOAD/etc/systemd/system/getty@tty1.service.d/autologin.conf"
 install -m 644 "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \

@@ -1,6 +1,7 @@
 enable pertisk-firstboot.service
-enable pertisk-bootfix.service
+enable pertisk-bootcfg.service
 enable pertisk-net.service
+enable pertisk-setup.service
 enable pertiskd.service
 enable sshd.service
 enable NetworkManager.service

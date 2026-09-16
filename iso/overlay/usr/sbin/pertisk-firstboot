@@ -94,6 +94,37 @@ if [[ -r /etc/pertisk/join ]]; then
   set +a
 fi
 
+is_alma_kickstart() {
+  [[ -f /etc/pertisk/os-flavor ]] || return 1
+  case "$(tr -d '[:space:]' </etc/pertisk/os-flavor)" in
+    almalinux|rhel|centos|rocky) return 0 ;;
+  esac
+  return 1
+}
+
+needs_console_setup() {
+  [[ -f /etc/pertisk/needs-setup ]] && [[ ! -f "$HOME_DIR/.setup-done" ]]
+}
+
+# Alma Kickstart: admin password / hostname / LAN come from pertisk-setup on console.
+if is_alma_kickstart && needs_console_setup; then
+  echo "pertisk-firstboot: waiting for console pertisk-setup (hostname / LAN / admin)"
+  mkdir -p "$HOME_DIR/run" "$HOME_DIR/storage" "$HOME_DIR/state" /etc/pertisk /etc/issue.d
+  if [[ ! -f "$HOME_DIR/config.toml" && -f /etc/pertisk/config.toml ]]; then
+    cp /etc/pertisk/config.toml "$HOME_DIR/config.toml"
+  fi
+  cat >/etc/issue.d/pertisk.issue <<'EOF'
+pertisk-vm: run setup on console (HDMI/serial) — hostname, LAN, admin password.
+EOF
+  cat >/etc/motd <<'EOF'
+pertisk-vm: first-boot setup required.
+On HDMI/serial console: answer the prompts (or run: pertisk-setup)
+Web UI starts after setup completes.
+EOF
+  # Do not mark firstboot-done; setup wizard will.
+  exit 0
+fi
+
 if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
   PERTISK_ADMIN_PASSWORD="admin"
   echo "pertisk-firstboot: using default admin password (set PERTISK_ADMIN_PASSWORD to override)"
@@ -107,7 +138,7 @@ printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
 chmod 600 "$ENV_FILE" "$PASS_FILE"
 
 ensure_ssh_login() {
-  local oldumask
+  local oldumask created_admin=0
   oldumask="$(umask)"
   umask 022
   mkdir -p /etc/ssh/sshd_config.d
@@ -117,7 +148,10 @@ PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 UsePAM yes
 EOF
-  echo "root:pertisk" | chpasswd 2>/dev/null || true
+  # Alma Anaconda / pertisk-setup already set passwords; do not reset them.
+  if ! is_alma_kickstart; then
+    echo "root:pertisk" | chpasswd 2>/dev/null || true
+  fi
   local login_shell=/bin/bash
   [[ -x /bin/zsh ]] && login_shell=/bin/zsh
   # Debian uses `sudo`; AlmaLinux/RHEL use `wheel`.
@@ -128,11 +162,12 @@ EOF
     admin_group=sudo
   fi
   if ! id -u admin >/dev/null 2>&1; then
-    useradd -m -s "$login_shell" -G "$admin_group" admin 2>/dev/null \
-      || useradd -m -s "$login_shell" admin 2>/dev/null \
-      || true
+    if useradd -m -s "$login_shell" -G "$admin_group" admin 2>/dev/null \
+      || useradd -m -s "$login_shell" admin 2>/dev/null; then
+      created_admin=1
+    fi
   fi
-  if id -u admin >/dev/null 2>&1; then
+  if [[ "$created_admin" -eq 1 ]] && id -u admin >/dev/null 2>&1; then
     echo "admin:${PERTISK_ADMIN_PASSWORD}" | chpasswd 2>/dev/null || true
   fi
   umask "$oldumask"

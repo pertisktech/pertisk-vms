@@ -25,6 +25,7 @@ bash -n "$OVERLAY/usr/sbin/pertisk-bootfix"
 bash -n "$OVERLAY/usr/sbin/pertisk-esp-boot"
 bash -n "$OVERLAY/usr/sbin/pertisk-net"
 bash -n "$OVERLAY/usr/sbin/pertisk-console"
+bash -n "$OVERLAY/usr/sbin/pertisk-setup"
 bash -n "$OVERLAY/usr/sbin/pertisk-zsh-setup"
 bash -n "$OVERLAY/usr/sbin/pertisk-fix-hosts"
 bash -n "$OVERLAY/usr/sbin/pertisk-apt-bootstrap"
@@ -102,10 +103,38 @@ grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
   || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
 [[ -f "$ROOT/packaging/kickstart/pertisk-node.ks" ]] \
   || { echo "FAIL packaging/kickstart/pertisk-node.ks"; fail=1; }
-grep -q 'part biosboot --fstype=biosboot --size=1' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+grep -q 'pertisk-disk.ks' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must auto-generate disk layout (no Anaconda hub)"; fail=1; }
+grep -q 'ignoredisk --only-use' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart %pre must ignoredisk only-use target"; fail=1; }
+grep -q 'select install disk' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart %pre must prompt when multiple disks"; fail=1; }
+grep -q 'node_name = "' "$OVERLAY/usr/sbin/pertisk-setup" \
+  || { echo "FAIL pertisk-setup must write cluster node_name"; fail=1; }
+if grep -n "grep -q 'node_name'" "$OVERLAY/usr/sbin/pertisk-setup" >/dev/null; then
+  echo "FAIL pertisk-setup must not match node_name via bare grep (hits comments)"
+  fail=1
+fi
+grep -q 'biosboot' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must create 1 MiB BIOS boot partition"; fail=1; }
-grep -q -- '--disklabel=gpt' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart must force GPT for biosboot+ESP"; fail=1; }
+grep -q '^cmdline$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must use cmdline (no Installation Summary hub)"; fail=1; }
+grep -q '^network --bootproto=dhcp' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart needs temporary DHCP for package download"; fail=1; }
+grep -q '^rootpw ' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart needs temporary rootpw (setup wizard sets admin)"; fail=1; }
+grep -q 'needs-setup' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must set needs-setup for pertisk-setup wizard"; fail=1; }
+
+grep -q 'com_redhat_kdump --disable' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must disable kdump (Crash recovery kernel arming hang)"; fail=1; }
+grep -q 'crashkernel=no' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart bootloader must set crashkernel=no"; fail=1; }
+
+grep -q '7443:tcp,7480:tcp' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart firewall must open Pertisk UI ports"; fail=1; }
+grep -q '^qemu-kvm$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must install qemu-kvm for the qemu VMM driver"; fail=1; }
 grep -q '^iptables-nft$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must request iptables-nft (no iptables package on EL10)"; fail=1; }
 if grep -qE '^-gnome|^-kde|^-firefox|^-libreoffice' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
@@ -118,6 +147,36 @@ if grep -qE '^/etc/(hosts|hostname|motd)$' "$ROOT/packaging/rpm/pertisk-vms.spec
 fi
 grep -q 'inst.nogpgcheck' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL ISO cmdline must disable GPG for unsigned pertisk RPM"; fail=1; }
+grep -qE '^CMDLINE=.*inst.cmdline' "$ROOT/scripts/build-alma-iso.sh" \
+  || { echo "FAIL ISO cmdline must use inst.cmdline (skip Anaconda hub)"; fail=1; }
+
+grep -q 'ExecStartPre=-/usr/sbin/pertisk-kvm-check' \
+  "$OVERLAY/usr/lib/systemd/system/pertiskd.service" \
+  || { echo "FAIL pertiskd must start even if KVM is off (web UI)"; fail=1; }
+grep -q 'ConditionPathExists=!/etc/pertisk/needs-setup' \
+  "$OVERLAY/usr/lib/systemd/system/pertiskd.service" \
+  || { echo "FAIL pertiskd must wait for pertisk-setup (needs-setup gate)"; fail=1; }
+bash -n "$OVERLAY/usr/sbin/pertisk-setup" \
+  || { echo "FAIL bash -n pertisk-setup"; fail=1; }
+grep -q 'pertisk-setup' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must exec pertisk-setup when needed"; fail=1; }
+grep -q 'needs_console_setup\|needs-setup' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot must defer Alma admin seed until pertisk-setup"; fail=1; }
+grep -q 'pertisk-setup' "$ROOT/packaging/rpm/pertisk-vms.spec" \
+  || { echo "FAIL RPM must package pertisk-setup"; fail=1; }
+grep -q 'pertisk-setup.service' "$ROOT/packaging/rpm/pertisk-vms.spec" \
+  || { echo "FAIL RPM must package pertisk-setup.service"; fail=1; }
+[[ -f "$OVERLAY/usr/lib/systemd/system/pertisk-setup.service" ]] \
+  || { echo "FAIL missing pertisk-setup.service unit"; fail=1; }
+[[ -f "$OVERLAY/etc/profile.d/pertisk-setup.sh" ]] \
+  || { echo "FAIL missing profile.d pertisk-setup.sh"; fail=1; }
+grep -q 'needs-setup' "$OVERLAY/usr/sbin/pertisk-console" \
+  || { echo "FAIL console must check needs-setup file directly"; fail=1; }
+grep -q 'enable pertisk-setup.service' "$ROOT/packaging/rpm/alma-overlay/usr/lib/systemd/system-preset/50-pertisk.preset" \
+  || { echo "FAIL preset must enable pertisk-setup"; fail=1; }
+
+grep -q 'is_alma_kickstart' "$OVERLAY/usr/sbin/pertisk-firstboot" \
+  || { echo "FAIL firstboot must not reset Anaconda root/user passwords"; fail=1; }
 [[ -f "$ROOT/packaging/rpm/pertisk-vms.spec" ]] \
   || { echo "FAIL packaging/rpm/pertisk-vms.spec"; fail=1; }
 [[ -f "$ROOT/scripts/build-alma-iso.sh" ]] \

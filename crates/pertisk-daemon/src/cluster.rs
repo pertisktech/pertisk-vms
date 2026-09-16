@@ -53,6 +53,22 @@ pub fn guest_start_fits(host_mib: u64, running_mib: u64, need_mib: u64) -> bool 
     running_mib.saturating_add(need_mib) <= host_mib.saturating_sub(reserve)
 }
 
+fn host_short_name() -> Option<String> {
+    let out = std::process::Command::new("hostname")
+        .arg("-s")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() || s.eq_ignore_ascii_case("localhost") {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 fn guest_memory_capacity(n: &NodeLoad) -> u32 {
     guest_memory_budget_mib(n.memory_mib)
 }
@@ -458,7 +474,8 @@ impl Cluster {
             let self_id = NodeId::new();
             let record = NodeRecord {
                 id: self_id,
-                name: configured_name.unwrap_or_else(|| "node".into()),
+                name: configured_name
+                    .unwrap_or_else(|| host_short_name().unwrap_or_else(|| "node".into())),
                 peer_url,
                 cpus,
                 memory_mib,

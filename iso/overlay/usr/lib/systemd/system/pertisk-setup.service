@@ -1,0 +1,30 @@
+[Unit]
+Description=Pertisk first-boot setup wizard
+Documentation=https://github.com/pertisktech/pertisk-vms
+# Run late enough that /dev/tty1 exists, but do not wait on kdump/network forever.
+After=local-fs.target
+After=getty-pre.target
+Before=getty@tty1.service serial-getty@ttyS0.service
+Conflicts=getty@tty1.service serial-getty@ttyS0.service
+ConditionPathExists=/etc/pertisk/needs-setup
+ConditionPathExists=!/var/lib/pertisk/.setup-done
+# Skip if kdump somehow still blocks early boot; getty+console is the backup path.
+ConditionPathExists=/usr/sbin/pertisk-setup
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+Environment=TERM=linux
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/usr/sbin/pertisk-setup
+TimeoutStartSec=infinity
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=getty.target

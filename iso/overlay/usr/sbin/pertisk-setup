@@ -1,0 +1,380 @@
+#!/bin/bash
+# Pertisk first-boot console setup (AlmaLinux Kickstart installs).
+# Hostname, LAN (DHCP/static), admin UI password — then start pertiskd.
+set -euo pipefail
+
+NEEDS=/etc/pertisk/needs-setup
+SETUP_DONE=/var/lib/pertisk/.setup-done
+HOME_DIR="${PERTISK_HOME:-/var/lib/pertisk}"
+ENV_FILE=/etc/pertisk/daemon.env
+PASS_FILE=/etc/pertisk/admin
+NM_DIR=/etc/NetworkManager/system-connections
+
+die() { echo "pertisk-setup: $*" >&2; exit 1; }
+
+needs_setup() {
+  [[ -f "$NEEDS" ]] || return 1
+  [[ ! -f "$SETUP_DONE" ]]
+}
+
+is_alma() {
+  [[ -f /etc/pertisk/os-flavor ]] || return 1
+  case "$(tr -d '[:space:]' </etc/pertisk/os-flavor)" in
+    almalinux|rhel|centos|rocky) return 0 ;;
+  esac
+  return 1
+}
+
+prompt() {
+  local msg="$1" def="${2:-}" ans
+  if [[ -n "$def" ]]; then
+    read -r -p "$msg [$def]: " ans || true
+    echo "${ans:-$def}"
+  else
+    read -r -p "$msg: " ans || true
+    echo "$ans"
+  fi
+}
+
+prompt_secret() {
+  # Only the password may go to stdout (callers capture it). UI newlines → stderr.
+  local msg="$1" a b
+  while true; do
+    read -r -s -p "$msg: " a || true
+    printf '\n' >&2
+    read -r -s -p "Confirm password: " b || true
+    printf '\n' >&2
+    if [[ -z "$a" ]]; then
+      echo "Password cannot be empty." >&2
+      continue
+    fi
+    if [[ "$a" != "$b" ]]; then
+      echo "Passwords do not match." >&2
+      continue
+    fi
+    # Reject passwords that would break chpasswd user:pass lines.
+    if [[ "$a" == *$'\n'* || "$a" == *:* ]]; then
+      echo "Password cannot contain newlines or ':'." >&2
+      continue
+    fi
+    printf '%s' "$a"
+    return 0
+  done
+}
+
+list_nics() {
+  local path nic
+  for path in /sys/class/net/*; do
+    nic="${path##*/}"
+    case "$nic" in
+      lo|br*|docker*|veth*|tap*|wlan*|wl*|wwan*|virbr*) continue ;;
+    esac
+    [[ -d "$path/device" ]] || continue
+    echo "$nic"
+  done
+}
+
+write_nm_dhcp() {
+  local nic="$1" conn="$NM_DIR/pertisk-${nic}.nmconnection"
+  mkdir -p "$NM_DIR"
+  cat >"$conn" <<EOF
+[connection]
+id=pertisk-${nic}
+type=ethernet
+interface-name=${nic}
+autoconnect=true
+autoconnect-priority=100
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+  chmod 600 "$conn"
+}
+
+write_nm_static() {
+  local nic="$1" addr="$2" prefix="$3" gw="$4" dns="$5"
+  local conn="$NM_DIR/pertisk-${nic}.nmconnection"
+  mkdir -p "$NM_DIR"
+  cat >"$conn" <<EOF
+[connection]
+id=pertisk-${nic}
+type=ethernet
+interface-name=${nic}
+autoconnect=true
+autoconnect-priority=100
+
+[ipv4]
+method=manual
+addresses=${addr}/${prefix}
+gateway=${gw}
+dns=${dns};
+
+[ipv6]
+method=auto
+EOF
+  chmod 600 "$conn"
+}
+
+apply_hostname() {
+  local host="$1"
+  printf '%s\n' "$host" >/etc/hostname
+  if command -v hostnamectl >/dev/null 2>&1; then
+    hostnamectl set-hostname "$host" 2>/dev/null || hostname "$host" || true
+  else
+    hostname "$host" || true
+  fi
+  if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
+    /usr/sbin/pertisk-fix-hosts || true
+  fi
+}
+
+ensure_admin_user() {
+  local pass="$1" login_shell=/bin/bash admin_group=wheel
+  # Strip accidental whitespace/newlines from capture bugs.
+  pass="${pass//$'\r'/}"
+  pass="${pass//$'\n'/}"
+  [[ -n "$pass" ]] || { echo "pertisk-setup: empty password" >&2; return 1; }
+  [[ -x /bin/zsh ]] && login_shell=/bin/zsh
+  if getent group wheel >/dev/null 2>&1; then
+    admin_group=wheel
+  elif getent group sudo >/dev/null 2>&1; then
+    admin_group=sudo
+  fi
+  if ! id -u admin >/dev/null 2>&1; then
+    useradd -m -s "$login_shell" -G "$admin_group" admin 2>/dev/null \
+      || useradd -m -s "$login_shell" admin 2>/dev/null \
+      || true
+  fi
+  if id -u admin >/dev/null 2>&1; then
+    printf 'admin:%s\n' "$pass" | chpasswd
+  fi
+  # Keep root usable over SSH with the same password.
+  printf 'root:%s\n' "$pass" | chpasswd 2>/dev/null || true
+}
+
+write_admin_password() {
+  local pass="$1"
+  pass="${pass//$'\r'/}"
+  pass="${pass//$'\n'/}"
+  mkdir -p /etc/pertisk "$HOME_DIR"
+  umask 077
+  touch "$ENV_FILE"
+  if grep -q '^PERTISK_ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
+    # Use | delimiter; password may contain /.
+    sed -i "s|^PERTISK_ADMIN_PASSWORD=.*|PERTISK_ADMIN_PASSWORD=${pass}|" "$ENV_FILE"
+  else
+    printf 'PERTISK_ADMIN_PASSWORD=%s\n' "$pass" >>"$ENV_FILE"
+  fi
+  printf '%s\n' "$pass" >"$PASS_FILE"
+  chmod 600 "$ENV_FILE" "$PASS_FILE"
+}
+
+open_firewall() {
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-service=ssh 2>/dev/null || true
+    firewall-cmd --permanent --add-port=7443/tcp 2>/dev/null || true
+    firewall-cmd --permanent --add-port=7480/tcp 2>/dev/null || true
+    firewall-cmd --reload 2>/dev/null || true
+  fi
+}
+
+current_ips() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  echo "Usage: pertisk-setup"
+  echo "  First-boot console wizard: hostname, LAN, admin password."
+  exit 0
+fi
+
+if [[ "${1:-}" == "--needed" ]]; then
+  # Only the flag matters — do not require os-flavor (that skipped the wizard).
+  if needs_setup; then
+    exit 0
+  fi
+  exit 1
+fi
+
+# Re-attach to the real console if stdin is not a TTY (systemd oneshot).
+if [[ ! -t 0 || ! -t 1 ]]; then
+  if [[ -c /dev/console ]]; then
+    exec </dev/console >/dev/console 2>&1
+  elif [[ -c /dev/tty1 ]]; then
+    exec </dev/tty1 >/dev/tty1 2>&1
+  fi
+fi
+
+if ! needs_setup; then
+  echo "pertisk-setup: already completed ($SETUP_DONE)."
+  echo "UI: https://$(current_ips | awk '{print $1}'):7443/  admin / (see /etc/pertisk/admin)"
+  exit 0
+fi
+
+[[ "$(id -u)" -eq 0 ]] || die "run as root"
+
+# Ensure a usable terminal for prompts.
+export TERM="${TERM:-linux}"
+stty sane 2>/dev/null || true
+clear 2>/dev/null || true
+cat <<'EOF'
+========================================
+  Pertisk node setup
+========================================
+Configure hostname, network, and the
+web UI admin password. Disk install was
+already done by Anaconda.
+========================================
+EOF
+echo
+read -r -p "Press Enter to continue..." _ || true
+
+# --- hostname ---
+host="$(prompt "Hostname" "$(hostname -s 2>/dev/null || echo pertisk)")"
+host="$(echo "$host" | tr -d '[:space:]')"
+[[ -n "$host" ]] || die "hostname required"
+[[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] \
+  || die "invalid hostname: $host"
+
+# --- NIC ---
+mapfile -t NICS < <(list_nics)
+if [[ "${#NICS[@]}" -eq 0 ]]; then
+  die "no ethernet NICs found"
+fi
+
+echo
+echo "Network interfaces:"
+i=1
+for nic in "${NICS[@]}"; do
+  carrier="$(cat "/sys/class/net/${nic}/carrier" 2>/dev/null || echo 0)"
+  link="no-link"
+  [[ "$carrier" == "1" ]] && link="UP"
+  printf "  %d) %s  (%s)\n" "$i" "$nic" "$link"
+  i=$((i + 1))
+done
+echo
+if [[ "${#NICS[@]}" -eq 1 ]]; then
+  nic_choice=1
+  echo "Using ${NICS[0]}"
+else
+  nic_choice="$(prompt "Select NIC number" "1")"
+fi
+[[ "$nic_choice" =~ ^[0-9]+$ ]] || die "invalid NIC choice"
+idx=$((nic_choice - 1))
+[[ "$idx" -ge 0 && "$idx" -lt "${#NICS[@]}" ]] || die "NIC out of range"
+NIC="${NICS[$idx]}"
+
+# --- IPv4 ---
+echo
+echo "IPv4 mode for $NIC:"
+echo "  1) DHCP"
+echo "  2) Static"
+mode="$(prompt "Choice" "1")"
+IPV4_MODE=dhcp
+ADDR="" PREFIX="24" GW="" DNS="1.1.1.1"
+if [[ "$mode" == "2" ]]; then
+  IPV4_MODE=static
+  ADDR="$(prompt "IP address (e.g. 10.1.1.21)")"
+  PREFIX="$(prompt "Prefix length" "24")"
+  GW="$(prompt "Gateway" "${ADDR%.*}.1")"
+  DNS="$(prompt "DNS" "1.1.1.1")"
+  [[ -n "$ADDR" && -n "$GW" ]] || die "address and gateway required"
+fi
+
+# --- admin password ---
+echo
+echo "Web UI user will be: admin"
+ADMIN_PASS="$(prompt_secret "Admin password")"
+
+echo
+echo "Applying..."
+apply_hostname "$host"
+
+# Remove stale auto DHCP profiles that fight the wizard connection.
+rm -f "$NM_DIR"/pertisk-wired.nmconnection 2>/dev/null || true
+if [[ "$IPV4_MODE" == "static" ]]; then
+  write_nm_static "$NIC" "$ADDR" "$PREFIX" "$GW" "$DNS"
+else
+  write_nm_dhcp "$NIC"
+fi
+
+systemctl enable --now NetworkManager.service 2>/dev/null || true
+nmcli connection reload 2>/dev/null || true
+nmcli device connect "$NIC" 2>/dev/null || nmcli connection up "pertisk-${NIC}" 2>/dev/null || true
+
+# Wait briefly for DHCP / carrier.
+for _ in 1 2 3 4 5 6; do
+  ips="$(current_ips)"
+  [[ -n "$ips" && "$ips" != none ]] && break
+  sleep 1
+done
+
+write_admin_password "$ADMIN_PASS"
+ensure_admin_user "$ADMIN_PASS"
+open_firewall
+
+mkdir -p "$HOME_DIR"
+if [[ ! -f "$HOME_DIR/config.toml" && -f /etc/pertisk/config.toml ]]; then
+  cp /etc/pertisk/config.toml "$HOME_DIR/config.toml"
+fi
+# Set [cluster] node_name from wizard hostname (do not match "node_name" in comments).
+if [[ -f "$HOME_DIR/config.toml" ]]; then
+  if grep -qE '^[[:space:]]*node_name[[:space:]]*=' "$HOME_DIR/config.toml"; then
+    sed -i -E "s|^[[:space:]]*node_name[[:space:]]*=.*|node_name = \"${host}\"|" "$HOME_DIR/config.toml"
+  elif grep -qE '^[[:space:]]*\[cluster\]' "$HOME_DIR/config.toml"; then
+    tmp="$(mktemp)"
+    awk -v n="$host" '
+      /^[[:space:]]*\[cluster\]/ { print; print "node_name = \"" n "\""; next }
+      { print }
+    ' "$HOME_DIR/config.toml" >"$tmp"
+    mv "$tmp" "$HOME_DIR/config.toml"
+  else
+    printf '\n[cluster]\nnode_name = "%s"\n' "$host" >>"$HOME_DIR/config.toml"
+  fi
+fi
+
+rm -f "$NEEDS"
+touch "$SETUP_DONE"
+touch "$HOME_DIR/.firstboot-done"
+touch "$HOME_DIR/.installed-to-disk"
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now firewalld.service 2>/dev/null || true
+systemctl enable --now pertiskd.service 2>/dev/null || true
+systemctl restart pertiskd.service 2>/dev/null || true
+# Release the console back to getty (we Conflict'd them during setup).
+systemctl start getty@tty1.service 2>/dev/null || true
+systemctl start serial-getty@ttyS0.service 2>/dev/null || true
+
+ips="$(current_ips)"
+ips="${ips:-none}"
+primary="$(echo "$ips" | awk '{print $1}')"
+
+cat >/etc/motd <<EOF
+pertisk-vm node
+UI:  https://${primary}:7443/  or  http://${primary}:7480/
+     user admin  password in /etc/pertisk/admin
+SSH: root or admin (password you set in pertisk-setup)
+EOF
+
+echo
+echo "========================================"
+echo "  Setup complete"
+echo "========================================"
+echo "  Hostname: $host"
+echo "  NIC:      $NIC ($IPV4_MODE)"
+echo "  IP(s):    $ips"
+if [[ "$primary" != "none" && -n "$primary" ]]; then
+  echo "  UI:       https://${primary}:7443/"
+  echo "            http://${primary}:7480/"
+else
+  echo "  UI:       (no IP yet — check cable / nmcli)"
+fi
+echo "  User:     admin"
+echo "========================================"
+echo
+read -r -p "Press Enter to finish..." _ || true
+exit 0

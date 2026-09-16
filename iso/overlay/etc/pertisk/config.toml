@@ -1,4 +1,5 @@
-# Appliance defaults. First boot may rewrite listen / node_name / firmware paths.
+# Appliance defaults. First boot may rewrite listen / firmware paths.
+# pertisk-setup writes cluster.node_name from the hostname prompt.
 
 [daemon]
 listen = "0.0.0.0:7480"
