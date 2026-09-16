@@ -94,7 +94,10 @@ PAYLOAD_BYTES="$(du -sb "$ADD_DIR" | awk '{print $1}')"
 # +64 MiB slack for EFI/boot rebuild overhead
 need_free_space "$RELEASE_DIR" "$((ISO_BYTES + PAYLOAD_BYTES + 64*1024*1024))"
 
-CMDLINE="inst.ks=cdrom:/pertisk-node.ks console=tty0 console=ttyS0 inst.text"
+# ip=dhcp: inst.ks disables NM autoconnect on RHEL/Alma; bring net up in initramfs.
+# console=tty0 last: Anaconda text UI binds to /dev/console (last console=).
+# inst.cmdline: fail instead of waiting forever on any missing kickstart answer.
+CMDLINE="inst.ks=cdrom:/pertisk-node.ks ip=dhcp rd.neednet=1 inst.waitfornet=60 inst.text inst.cmdline console=ttyS0 console=tty0"
 
 echo "=== mkksiso (base=$(basename "$ALMA_ISO")) ==="
 # --ks injects the Kickstart onto the ISO; --add places RPMs at /pertisk/.

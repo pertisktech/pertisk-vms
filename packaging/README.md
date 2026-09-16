@@ -7,8 +7,10 @@ Customer x86_64 UEFI install path:
 
 The default base is the ~1 GiB network `boot.iso` (Anaconda pulls BaseOS/AppStream from
 `repo.almalinux.org`). That avoids needing ~12 GiB free to remaster the full DVD.
-Install-time network is required unless you point at a DVD/minimal ISO and switch the
-Kickstart `url`/`repo` lines to `cdrom`.
+Install-time DHCP/network is required (`ip=dhcp` is baked into the ISO cmdline).
+
+If the console looks stuck on `anaconda-nm-disable-autocons`, rebuild with the current
+script (console order + `ip=dhcp`), or attach serial / `tmux attach` on tty2.
 
 ```bash
 # On AlmaLinux/RHEL 10 x86_64 build host:
