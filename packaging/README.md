@@ -3,13 +3,24 @@
 Customer x86_64 UEFI install path:
 
 1. `scripts/build-rpm.sh` — builds `pertisk-vms` RPM (binaries + Cloud Hypervisor + units).
-2. `scripts/build-alma-iso.sh` — wraps AlmaLinux 10 DVD + Kickstart + RPM via `mkksiso`.
+2. `scripts/build-alma-iso.sh` — wraps AlmaLinux 10 **boot.iso** + Kickstart + RPM via `mkksiso`.
+
+The default base is the ~1 GiB network `boot.iso` (Anaconda pulls BaseOS/AppStream from
+`repo.almalinux.org`). That avoids needing ~12 GiB free to remaster the full DVD.
+Install-time network is required unless you point at a DVD/minimal ISO and switch the
+Kickstart `url`/`repo` lines to `cdrom`.
 
 ```bash
 # On AlmaLinux/RHEL 10 x86_64 build host:
 sudo dnf install -y lorax rpm-build
 make release-alma-iso VERSION=0.1.0
+
+# Optional: offline DVD base (needs ~12 GiB free for source + output):
+# PERTISK_ALMA_ISO_URL=https://repo.almalinux.org/almalinux/10/isos/x86_64/AlmaLinux-10.2-x86_64-dvd.iso \
+#   make release-alma-iso VERSION=0.1.0
 ```
+
+You can delete a previously cached DVD under `~/.pertisk/images/` to reclaim space.
 
 Artifacts land in `release/`:
 

@@ -1,5 +1,7 @@
 # pertisk-node.ks — AlmaLinux 10 automated node install for Pertisk.
 # Embedded into the installer ISO by scripts/build-alma-iso.sh (mkksiso).
+# Default base is AlmaLinux boot.iso (network install). For offline DVD/minimal
+# media, replace the url/repo lines with: cdrom
 # WARNING: clearpart wipes disks Anaconda selects for the install.
 
 text
@@ -8,6 +10,8 @@ keyboard us
 timezone UTC --utc
 rootpw --plaintext pertisk
 network --bootproto=dhcp --device=link --activate --onboot=on
+url --url="https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/"
+repo --name=AppStream --baseurl="https://repo.almalinux.org/almalinux/10/AppStream/x86_64/os/"
 firewall --enabled --service=ssh
 selinux --permissive
 firstboot --disable
