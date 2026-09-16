@@ -4,11 +4,13 @@
 # media, replace the url/repo lines with: cdrom
 # WARNING: clearpart wipes disks Anaconda selects for the install.
 
-text
+# Unattended; any missing answer aborts (pairs with inst.cmdline on the ISO).
+cmdline
 lang en_US.UTF-8
 keyboard us
 timezone UTC --utc
 rootpw --plaintext pertisk
+# Device activated in initramfs via ip=dhcp; this persists config for the installed system.
 network --bootproto=dhcp --device=link --activate --onboot=on
 url --url="https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/"
 repo --name=AppStream --baseurl="https://repo.almalinux.org/almalinux/10/AppStream/x86_64/os/"
