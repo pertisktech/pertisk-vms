@@ -219,8 +219,6 @@ ensure_guest_ssh_identity
 
 if [[ -x /usr/sbin/pertisk-fix-hosts ]]; then
   /usr/sbin/pertisk-fix-hosts || echo "pertisk-firstboot: hosts fix skipped" >&2
-elif ! grep -qE '^127\.0\.1\.1[[:space:]]+pertisk' /etc/hosts 2>/dev/null; then
-  echo "127.0.1.1 pertisk" >>/etc/hosts
 fi
 if [[ -x /usr/sbin/pertisk-apt-bootstrap ]]; then
   /usr/sbin/pertisk-apt-bootstrap --sources-only \

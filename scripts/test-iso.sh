@@ -142,8 +142,12 @@ grep -q 'pertisk-sync-nodename' "$OVERLAY/usr/lib/systemd/system/pertiskd.servic
   || { echo "FAIL missing pertisk-sync-nodename"; fail=1; }
 bash -n "$OVERLAY/usr/sbin/pertisk-sync-nodename" \
   || { echo "FAIL bash -n pertisk-sync-nodename"; fail=1; }
-grep -q '/etc/hostname' "$OVERLAY/usr/sbin/pertisk-sync-nodename" \
-  || { echo "FAIL sync-nodename must read Anaconda /etc/hostname"; fail=1; }
+if grep -q "printf 'pertisk" "$ROOT/packaging/rpm/pertisk-vms.spec"; then
+  echo "FAIL RPM %%post must not stamp /etc/hostname as pertisk (races Anaconda)"
+  fail=1
+fi
+grep -q 'Never invent or overwrite /etc/hostname' "$OVERLAY/usr/sbin/pertisk-fix-hosts" \
+  || { echo "FAIL pertisk-fix-hosts must not invent hostname"; fail=1; }
 
 grep -q 'com_redhat_kdump --disable' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must disable kdump (Crash recovery kernel arming hang)"; fail=1; }
@@ -238,8 +242,8 @@ grep -q 'exec /bin/zsh -l' "$OVERLAY/usr/sbin/pertisk-console" \
   || { echo "FAIL console must exec zsh"; fail=1; }
 grep -q 'pertisk-zsh-setup' "$ROOT/iso/mkosi.finalize.chroot" \
   || { echo "FAIL mkosi finalize must run zsh setup"; fail=1; }
-[[ -f "$OVERLAY/etc/hosts" ]] && grep -q '127.0.1.1' "$OVERLAY/etc/hosts" \
-  || { echo "FAIL overlay /etc/hosts must map pertisk"; fail=1; }
+[[ -f "$OVERLAY/etc/hosts" ]] && grep -q '127.0.0.1' "$OVERLAY/etc/hosts" \
+  || { echo "FAIL overlay /etc/hosts must have localhost"; fail=1; }
 grep -q 'pertisk-fix-hosts' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot must fix /etc/hosts"; fail=1; }
 grep -q -- '--any' "$OVERLAY/etc/systemd/system/systemd-networkd-wait-online.service.d/any.conf" \

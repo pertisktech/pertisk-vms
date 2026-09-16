@@ -20,12 +20,13 @@ appliance_hostname() {
   if [[ -z "$h" || "$h" == "localhost" || "$h" == "localhost.localdomain" ]]; then
     h="$(hostname -s 2>/dev/null || true)"
   fi
+  # Do not invent "pertisk" — that stamped empty hosts during RPM install and
+  # fought Anaconda. Prefer a stable placeholder only for node_name in config.
   if [[ -z "$h" || "$h" == "localhost" || "$h" == "localhost.localdomain" ]]; then
-    h="pertisk"
+    h="node"
   fi
-  # Keep kickstart-safe hostname charset.
   h="$(printf '%s' "$h" | tr -cd 'A-Za-z0-9-' | cut -c1-63)"
-  [[ -n "$h" ]] || h="pertisk"
+  [[ -n "$h" ]] || h="node"
   printf '%s' "$h"
 }
 

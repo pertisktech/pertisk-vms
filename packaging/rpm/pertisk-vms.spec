@@ -72,19 +72,16 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable pertisk-setup.service >/dev/null 2>&1 || true
   systemctl enable pertiskd.service >/dev/null 2>&1 || true
 fi
-# Do not package /etc/{hosts,hostname,motd}: setup and systemd own those files.
-# Writing them here avoids DNF "file conflicts" during Anaconda.
-if [ ! -s /etc/hostname ]; then
-  printf 'pertisk\n' >/etc/hostname 2>/dev/null || true
-fi
+# Do not package or invent /etc/hostname — Anaconda GUI owns it.
+# Writing a default here races package install (before Network & Host Name applies)
+# and permanently stamps the node as "pertisk".
 if [ -x /usr/sbin/pertisk-fix-hosts ]; then
   /usr/sbin/pertisk-fix-hosts >/dev/null 2>&1 || true
 fi
 cat >/etc/motd 2>/dev/null <<'EOF' || true
 pertisk-vm node (AlmaLinux)
-If /etc/pertisk/needs-setup exists: answer prompts on the console (pertisk-setup).
-UI: https://<ip>:7443/  admin (see /etc/pertisk/admin)
-SSH: root (password from Anaconda or pertisk-setup)
+UI: https://<ip>:7443/  user admin  password admin (change under Users)
+SSH: root or admin (password from Anaconda)
 EOF
 # Mark disk already installed so firstboot never runs live→NVMe copy.
 mkdir -p /var/lib/pertisk
