@@ -4,7 +4,7 @@
 #        make release-alma-iso VERSION=0.1.0
 #
 # Requires: Linux x86_64, lorax (mkksiso), rpm-build, cargo, npm.
-# Downloads AlmaLinux 10 DVD ISO on first run (override with PERTISK_ALMA_ISO).
+# Downloads AlmaLinux 10.2 DVD ISO on first run (override with PERTISK_ALMA_ISO).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,8 +14,9 @@ CACHE="${PERTISK_HOME:-$HOME/.pertisk}/images"
 KS="$ROOT/packaging/kickstart/pertisk-node.ks"
 VERSION="${1:-${PERTISK_VERSION:-}}"
 
-# AlmaLinux 10.0 DVD (x86_64). Override with PERTISK_ALMA_ISO=/path/to.iso
-ALMA_ISO_URL="${PERTISK_ALMA_ISO_URL:-https://repo.almalinux.org/almalinux/10/isos/x86_64/AlmaLinux-10.0-x86_64-dvd.iso}"
+# AlmaLinux 10 DVD (x86_64). Override with PERTISK_ALMA_ISO=/path/to.iso
+# Mirror listing: https://repo.almalinux.org/almalinux/10/isos/x86_64/
+ALMA_ISO_URL="${PERTISK_ALMA_ISO_URL:-https://repo.almalinux.org/almalinux/10/isos/x86_64/AlmaLinux-10.2-x86_64-dvd.iso}"
 ALMA_ISO="${PERTISK_ALMA_ISO:-}"
 
 die() { echo "build-alma-iso: $*" >&2; exit 1; }
