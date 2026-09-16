@@ -103,22 +103,36 @@ grep -q '^PERTISK_AUTO_INSTALL=0$' "$OVERLAY/etc/pertisk/install" \
   || { echo "FAIL default install is interactive (not silent firstboot wipe)"; fail=1; }
 [[ -f "$ROOT/packaging/kickstart/pertisk-node.ks" ]] \
   || { echo "FAIL packaging/kickstart/pertisk-node.ks"; fail=1; }
-grep -q 'pertisk-disk.ks' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart must auto-generate disk layout (no Anaconda hub)"; fail=1; }
-grep -q 'ignoredisk --only-use' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart %pre must ignoredisk only-use target"; fail=1; }
-grep -q 'select install disk' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart %pre must prompt when multiple disks"; fail=1; }
+grep -q '^graphical$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must use graphical Anaconda for disk pick"; fail=1; }
+if grep -qE '^(cmdline|text)$' "$ROOT/packaging/kickstart/pertisk-node.ks"; then
+  echo "FAIL kickstart must not use cmdline/text (broken disk menu / no GUI)"
+  fail=1
+fi
+grep -q 'pertisk.autodisk' "$ROOT/packaging/kickstart/pertisk-node.ks" \
+  || { echo "FAIL kickstart must support pertisk.autodisk serial fallback"; fail=1; }
+grep -q 'inst.graphical' "$ROOT/scripts/build-alma-iso.sh" \
+  || { echo "FAIL ISO cmdline must force inst.graphical"; fail=1; }
+if grep -qE '^CMDLINE=.*console=ttyS0' "$ROOT/scripts/build-alma-iso.sh"; then
+  echo "FAIL ISO cmdline must not use dual console=ttyS0 (scrambles installer UI)"
+  fail=1
+fi
+if grep -qE '^CMDLINE=.*inst\.cmdline' "$ROOT/scripts/build-alma-iso.sh"; then
+  echo "FAIL ISO cmdline must not use inst.cmdline (hides disk UI)"
+  fail=1
+fi
+# Top-level kickstart must not force a disk (only %pre autodisk heredoc may).
+if awk '/^%pre/{exit} /^(clearpart|zerombr|ignoredisk|part )/{found=1} END{exit !found}' \
+  "$ROOT/packaging/kickstart/pertisk-node.ks"; then
+  echo "FAIL kickstart must omit top-level disk commands (Anaconda GUI selects disk)"
+  fail=1
+fi
 grep -q 'node_name = "' "$OVERLAY/usr/sbin/pertisk-setup" \
   || { echo "FAIL pertisk-setup must write cluster node_name"; fail=1; }
 if grep -n "grep -q 'node_name'" "$OVERLAY/usr/sbin/pertisk-setup" >/dev/null; then
   echo "FAIL pertisk-setup must not match node_name via bare grep (hits comments)"
   fail=1
 fi
-grep -q 'biosboot' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart must create 1 MiB BIOS boot partition"; fail=1; }
-grep -q '^cmdline$' "$ROOT/packaging/kickstart/pertisk-node.ks" \
-  || { echo "FAIL kickstart must use cmdline (no Installation Summary hub)"; fail=1; }
 grep -q '^network --bootproto=dhcp' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart needs temporary DHCP for package download"; fail=1; }
 grep -q '^rootpw ' "$ROOT/packaging/kickstart/pertisk-node.ks" \
@@ -147,8 +161,6 @@ if grep -qE '^/etc/(hosts|hostname|motd)$' "$ROOT/packaging/rpm/pertisk-vms.spec
 fi
 grep -q 'inst.nogpgcheck' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL ISO cmdline must disable GPG for unsigned pertisk RPM"; fail=1; }
-grep -qE '^CMDLINE=.*inst.cmdline' "$ROOT/scripts/build-alma-iso.sh" \
-  || { echo "FAIL ISO cmdline must use inst.cmdline (skip Anaconda hub)"; fail=1; }
 
 grep -q 'ExecStartPre=-/usr/sbin/pertisk-kvm-check' \
   "$OVERLAY/usr/lib/systemd/system/pertiskd.service" \
