@@ -1,16 +1,13 @@
-# pertisk-node.ks — AlmaLinux 10 automated node install for Pertisk.
-# Embedded into the installer ISO by scripts/build-alma-iso.sh (mkksiso).
-# Default base is AlmaLinux boot.iso (network install). For offline DVD/minimal
-# media, replace the url/repo lines with: cdrom
+# pertisk-node.ks - AlmaLinux 10 automated node install for Pertisk.
+# Embedded by scripts/build-alma-iso.sh (mkksiso).
+# Default: network install from boot.iso. For offline DVD/minimal, use: cdrom
 # WARNING: clearpart wipes disks Anaconda selects for the install.
 
-# Unattended; any missing answer aborts (pairs with inst.cmdline on the ISO).
-cmdline
+text
 lang en_US.UTF-8
-keyboard us
-timezone UTC --utc
+keyboard --vckeymap=us
+timezone Etc/UTC --utc
 rootpw --plaintext pertisk
-# Device activated in initramfs via ip=dhcp; this persists config for the installed system.
 network --bootproto=dhcp --device=link --activate --onboot=on
 url --url="https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/"
 repo --name=AppStream --baseurl="https://repo.almalinux.org/almalinux/10/AppStream/x86_64/os/"
@@ -23,7 +20,7 @@ reboot
 zerombr
 clearpart --all --initlabel
 autopart --type=plain --nohome
-bootloader --location=mbr --append="console=tty0 console=ttyS0"
+bootloader --append="console=tty0 console=ttyS0"
 
 %packages
 @^minimal-environment
@@ -66,7 +63,7 @@ if [[ -z "$RPM" ]]; then
 fi
 
 [[ -n "$RPM" && -f "$RPM" ]] || {
-  echo "pertisk kickstart: ERROR — pertisk-vms RPM not found on install media" >&2
+  echo "pertisk kickstart: ERROR - pertisk-vms RPM not found on install media" >&2
   ls -laR /run/install 2>/dev/null || true
   exit 1
 }
@@ -101,7 +98,7 @@ EOF
 fi
 
 systemctl enable NetworkManager.service sshd.service \
-  pertisk-firstboot.service pertisk-bootfix.service \
+  pertisk-firstboot.service pertisk-bootcfg.service \
   pertisk-net.service pertiskd.service
 
 echo "pertisk kickstart: done"
