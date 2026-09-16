@@ -36,35 +36,36 @@ NetworkManager-tui
 -libreoffice*
 %end
 
+# Boot.iso + url= means /run/install/repo is the *network* mirror, not the USB.
+# mkksiso --add files stay on the boot media — copy them before chroot.
+%post --nochroot --erroronfail --log=/mnt/sysimage/root/pertisk-kickstart-nochroot.log
+set -euo pipefail
+
+echo "pertisk kickstart: searching boot media for RPM"
+RPM=""
+while IFS= read -r -d '' f; do
+  RPM="$f"
+  break
+done < <(find /run/install /run/media /media /mnt -name 'pertisk-vms-*.rpm' 2>/dev/null -print0)
+
+if [[ -z "$RPM" ]]; then
+  echo "pertisk kickstart: ERROR - pertisk-vms RPM not on boot media" >&2
+  find /run/install /run/media /media -maxdepth 5 -type d 2>/dev/null || true
+  ls -la / 2>/dev/null || true
+  exit 1
+fi
+
+echo "pertisk kickstart: found $RPM"
+mkdir -p /mnt/sysimage/root/pertisk-rpms
+cp -f "$RPM" /mnt/sysimage/root/pertisk-rpms/
+%end
+
 %post --erroronfail --log=/root/pertisk-kickstart-post.log
 set -euo pipefail
 
-echo "pertisk kickstart: locating RPM on install media"
-RPM=""
-for d in \
-  /run/install/repo/pertisk \
-  /mnt/install/pertisk \
-  /run/install/sources/mount-000010-cdrom/pertisk \
-  /tmp/pertisk-rpms
-do
-  if compgen -G "$d"/pertisk-vms-*.rpm >/dev/null 2>&1; then
-    RPM="$(ls -1 "$d"/pertisk-vms-*.rpm | head -n1)"
-    break
-  fi
-done
-
-if [[ -z "$RPM" ]]; then
-  for m in /run/media/*/* /media/*; do
-    if compgen -G "$m"/pertisk/pertisk-vms-*.rpm >/dev/null 2>&1; then
-      RPM="$(ls -1 "$m"/pertisk/pertisk-vms-*.rpm | head -n1)"
-      break
-    fi
-  done
-fi
-
-[[ -n "$RPM" && -f "$RPM" ]] || {
-  echo "pertisk kickstart: ERROR - pertisk-vms RPM not found on install media" >&2
-  ls -laR /run/install 2>/dev/null || true
+RPM="$(ls -1 /root/pertisk-rpms/pertisk-vms-*.rpm | head -n1)"
+[[ -f "$RPM" ]] || {
+  echo "pertisk kickstart: ERROR - RPM missing under /root/pertisk-rpms" >&2
   exit 1
 }
 

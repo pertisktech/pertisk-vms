@@ -229,6 +229,7 @@ ensure_fstab() {
 }
 
 show_install_hint() {
+  [[ -x /usr/sbin/pertisk-install ]] || return 1
   [[ -f "$HOME_DIR/.installed-to-disk" ]] && return 1
   is_installer_media
 }

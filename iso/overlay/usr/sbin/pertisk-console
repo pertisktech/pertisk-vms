@@ -7,11 +7,16 @@ echo "  TUI:            pertisk-tui"
 echo "  root password:  pertisk   (for ssh)"
 echo "  UI:             http://<ip>:7480/  admin / (see /etc/pertisk/admin)"
 echo
-echo "  Install to NVMe (wipes disk):"
-echo "    pertisk-install --auto"
-echo "  If BIOS finds no boot entry after install:"
-echo "    pertisk-fix-nvme-boot /dev/nvme0n1"
-echo "  Then power OFF, UNPLUG USB, BIOS → Windows Boot Manager"
+if [[ -x /usr/sbin/pertisk-install ]]; then
+  echo "  Install to NVMe (wipes disk):"
+  echo "    pertisk-install --auto"
+  echo "  If BIOS finds no boot entry after install:"
+  echo "    pertisk-fix-nvme-boot /dev/nvme0n1"
+  echo "  Then power OFF, UNPLUG USB, BIOS → Windows Boot Manager"
+else
+  echo "  Disk install: already done (Kickstart/Anaconda)."
+  echo "  Check:        systemctl status pertiskd"
+fi
 echo
 ip -br a 2>/dev/null || ip -br link 2>/dev/null || true
 echo

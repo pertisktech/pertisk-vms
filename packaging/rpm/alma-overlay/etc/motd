@@ -1,0 +1,4 @@
+pertisk-vm node (AlmaLinux)
+Already installed to disk by Anaconda — no pertisk-install step.
+UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)
+SSH: root / pertisk
