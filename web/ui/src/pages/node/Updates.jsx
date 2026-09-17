@@ -27,6 +27,7 @@ export default function NodeUpdates() {
 
   async function refresh() {
     setBusy('refresh')
+    setError('')
     try {
       const result = await api('/v1/updates/refresh', { method: 'POST' })
       setLog(result?.log || '')
@@ -43,12 +44,13 @@ export default function NodeUpdates() {
     const ok = await confirm({
       title: 'Upgrade this node',
       message:
-        'Install available apt packages on this hypervisor (not inside guests). Running guests stay on disk. A kernel update needs a reboot afterwards.',
+        'Install available host packages on this hypervisor (apt or dnf). Guests stay on disk. A kernel update needs a reboot afterwards.',
       confirmLabel: 'Upgrade',
       tone: 'danger',
     })
     if (!ok) return
     setBusy('upgrade')
+    setError('')
     try {
       const result = await api('/v1/updates/upgrade', { method: 'POST' })
       setLog(result?.log || '')
@@ -80,24 +82,26 @@ export default function NodeUpdates() {
   }
 
   const packages = asList(status?.packages)
-  const apt = status?.apt !== false
+  const ready = status?.apt !== false
+  const busyLabel =
+    busy === 'refresh' ? 'Refreshing package lists…' : busy === 'upgrade' ? 'Installing updates…' : busy === 'reboot' ? 'Restarting node…' : ''
 
   return (
-    <div className="dash-page">
+    <div className="dash-page updates-page">
       <div className="page-head">
         <div>
           <h1>
             <Icon name="updates" size={20} />
             Updates
           </h1>
-          <p className="dash-lead muted">In-place apt upgrades for this node. Guests are not reflashed.</p>
+          <p className="dash-lead muted">In-place host upgrades (apt / dnf). Guests are not reflashed.</p>
         </div>
         {canWrite && (
           <div className="dash-resources-actions">
-            <Btn icon="refresh" variant="secondary" disabled={!!busy} onClick={refresh}>
+            <Btn icon="refresh" variant="secondary" disabled={!!busy || !ready} onClick={refresh}>
               {busy === 'refresh' ? 'Refreshing…' : 'Refresh'}
             </Btn>
-            <Btn icon="updates" disabled={!!busy || !apt} onClick={upgrade}>
+            <Btn icon="updates" disabled={!!busy || !ready} onClick={upgrade}>
               {busy === 'upgrade' ? 'Upgrading…' : 'Upgrade'}
             </Btn>
             {status?.reboot_required && (
@@ -108,61 +112,72 @@ export default function NodeUpdates() {
           </div>
         )}
       </div>
-      {error && (
-        <div className="banner danger">
-          {error}
-          <button type="button" className="banner-dismiss" onClick={() => setError('')}>
-            ×
-          </button>
-        </div>
-      )}
-      {status?.reboot_required && (
-        <div className="banner">A reboot is required to finish a kernel or firmware update.</div>
-      )}
-      {!apt && (
-        <div className="dash-empty card">
-          <strong>No apt on this node</strong>
-          <p className="muted">{status?.reason || 'This host is not a Debian Pertisk appliance.'}</p>
-        </div>
-      )}
-      {apt && status?.reason && <div className="banner danger">{status.reason}</div>}
-      {apt && (
-        <section className="card table-card">
-          <div className="table-meta">
-            {packages.length ? `${packages.length} package${packages.length === 1 ? '' : 's'} to upgrade` : 'Already up to date'}
+
+      <div className="updates-body">
+        {error && (
+          <div className="banner danger">
+            {error}
+            <button type="button" className="banner-dismiss" onClick={() => setError('')}>
+              ×
+            </button>
           </div>
-          {packages.length === 0 ? (
-            <p className="muted">Refresh to check Debian and other enabled repositories.</p>
-          ) : (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Package</th>
-                    <th>Version</th>
-                    <th>Available</th>
-                    <th>Origin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {packages.map((pkg) => (
-                    <tr key={`${pkg.name}:${pkg.arch || ''}`}>
-                      <td>
-                        {pkg.name}
-                        {pkg.arch ? <span className="muted">:{pkg.arch}</span> : null}
-                      </td>
-                      <td className="mono-inline">{pkg.version || '—'}</td>
-                      <td className="mono-inline">{pkg.available || '—'}</td>
-                      <td className="muted">{pkg.origin || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        )}
+        {busyLabel && <div className="banner">{busyLabel}</div>}
+        {status?.reboot_required && !busy && (
+          <div className="banner">A reboot is required to finish a kernel or firmware update.</div>
+        )}
+        {!ready && (
+          <div className="dash-empty card">
+            <strong>No package manager on this node</strong>
+            <p className="muted">{status?.reason || 'Need apt-get (Debian) or dnf (AlmaLinux).'}</p>
+          </div>
+        )}
+        {ready && status?.reason && <div className="banner danger">{status.reason}</div>}
+        {ready && (
+          <section className="card table-card updates-table">
+            <div className="table-meta">
+              {packages.length
+                ? `${packages.length} package${packages.length === 1 ? '' : 's'} to upgrade`
+                : 'Already up to date'}
             </div>
-          )}
-        </section>
-      )}
-      {log ? <pre className="update-log">{log}</pre> : null}
+            {packages.length === 0 ? (
+              <p className="muted">Refresh to check enabled repositories (Debian apt or AlmaLinux dnf).</p>
+            ) : (
+              <div className="table-shell">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Package</th>
+                      <th>Version</th>
+                      <th>Available</th>
+                      <th>Origin</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {packages.map((pkg) => (
+                      <tr key={`${pkg.name}:${pkg.arch || ''}:${pkg.available || ''}`}>
+                        <td>
+                          {pkg.name}
+                          {pkg.arch ? <span className="muted">:{pkg.arch}</span> : null}
+                        </td>
+                        <td className="mono-inline">{pkg.version || '—'}</td>
+                        <td className="mono-inline">{pkg.available || '—'}</td>
+                        <td className="muted">{pkg.origin || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+        {log ? (
+          <section className="card updates-log-card">
+            <div className="table-meta">Output</div>
+            <pre className="update-log">{log}</pre>
+          </section>
+        ) : null}
+      </div>
     </div>
   )
 }

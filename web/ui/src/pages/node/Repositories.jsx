@@ -75,7 +75,7 @@ export default function NodeRepositories() {
             <Icon name="repo" size={20} />
             Repositories
           </h1>
-          <p className="dash-lead muted">Apt sources used when you Refresh / Upgrade this node.</p>
+          <p className="dash-lead muted">Package sources used when you Refresh / Upgrade this node (apt or dnf).</p>
         </div>
         {canWrite && (
           <Btn icon="plus" onClick={() => setOpen(true)}>

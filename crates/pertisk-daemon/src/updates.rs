@@ -1,4 +1,5 @@
-//! Host apt updates and repositories (Proxmox-style, in-place — not a reflash).
+//! Host package updates and repositories (Proxmox-style, in-place — not a reflash).
+//! Debian/Ubuntu: apt-get. AlmaLinux/RHEL/Rocky: dnf.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,43 +10,96 @@ use pertisk_types::{
     UpdatesStatus,
 };
 
+#[derive(Clone, Debug)]
+enum PkgMgr {
+    Apt(PathBuf),
+    Dnf(PathBuf),
+}
+
 pub fn list_updates() -> Result<UpdatesStatus, String> {
-    if find_apt().is_none() {
+    let Some(mgr) = find_pkg_mgr() else {
         return Ok(UpdatesStatus {
             apt: false,
-            reason: Some("apt-get not found on this node".into()),
+            reason: Some("no apt-get or dnf on this node".into()),
             packages: Vec::new(),
             reboot_required: reboot_required(),
         });
-    }
-    let output = match run_apt(&[
-        "-s",
-        "-o",
-        "Debug::NoLocking=true",
-        "-o",
-        "APT::Get::Show-User-Simulation-Note=false",
-        "dist-upgrade",
-    ]) {
-        Ok(log) => log,
-        Err(err) => {
-            return Ok(UpdatesStatus {
-                apt: true,
-                reason: Some(err),
-                packages: Vec::new(),
-                reboot_required: reboot_required(),
-            });
-        }
     };
-    Ok(UpdatesStatus {
-        apt: true,
-        reason: None,
-        packages: parse_inst_lines(&output),
-        reboot_required: reboot_required(),
-    })
+    match list_updates_for(&mgr) {
+        Ok(packages) => Ok(UpdatesStatus {
+            apt: true,
+            reason: None,
+            packages,
+            reboot_required: reboot_required(),
+        }),
+        Err(err) => Ok(UpdatesStatus {
+            apt: true,
+            reason: Some(err),
+            packages: Vec::new(),
+            reboot_required: reboot_required(),
+        }),
+    }
+}
+
+fn list_updates_for(mgr: &PkgMgr) -> Result<Vec<UpdatePackage>, String> {
+    match mgr {
+        PkgMgr::Apt(_) => {
+            let output = run_apt(&[
+                "-s",
+                "-o",
+                "Debug::NoLocking=true",
+                "-o",
+                "APT::Get::Show-User-Simulation-Note=false",
+                "dist-upgrade",
+            ])?;
+            Ok(parse_inst_lines(&output))
+        }
+        PkgMgr::Dnf(_) => {
+            let (status, log) = run_dnf_status(&["--quiet", "check-update"])?;
+            // dnf: 0 = none, 100 = updates available, other = error
+            if status == 0 {
+                return Ok(Vec::new());
+            }
+            if status != 100 && !log_has_dnf_packages(&log) {
+                return Err(if log.trim().is_empty() {
+                    format!("dnf check-update failed (exit {status})")
+                } else {
+                    log
+                });
+            }
+            Ok(parse_dnf_check_update(&log))
+        }
+    }
 }
 
 pub fn refresh() -> Result<AptActionResult, String> {
-    let log = run_apt(&["update"])?;
+    let mgr = find_pkg_mgr().ok_or_else(|| "no apt-get or dnf on this node".to_string())?;
+    let log = match mgr {
+        PkgMgr::Apt(_) => run_apt(&["update"])?,
+        PkgMgr::Dnf(_) => {
+            let (status, mut log) = run_dnf_status(&["-y", "makecache"])?;
+            if status != 0 {
+                return Err(if log.trim().is_empty() {
+                    format!("dnf makecache failed (exit {status})")
+                } else {
+                    log
+                });
+            }
+            if !log.contains("Metadata cache created")
+                && !log.to_lowercase().contains("complete")
+                && !log.is_empty()
+            {
+                // keep log as-is
+            }
+            if !log.is_empty() && !log.ends_with('\n') {
+                log.push('\n');
+            }
+            if !log.contains("Finished.") {
+                log.push_str("Finished.\n");
+            }
+            log
+        }
+    };
     Ok(AptActionResult {
         ok: true,
         log,
@@ -54,14 +108,28 @@ pub fn refresh() -> Result<AptActionResult, String> {
 }
 
 pub fn upgrade() -> Result<AptActionResult, String> {
-    let log = run_apt(&[
-        "-y",
-        "-o",
-        "Dpkg::Options::=--force-confold",
-        "-o",
-        "Dpkg::Options::=--force-confdef",
-        "dist-upgrade",
-    ])?;
+    let mgr = find_pkg_mgr().ok_or_else(|| "no apt-get or dnf on this node".to_string())?;
+    let log = match mgr {
+        PkgMgr::Apt(_) => run_apt(&[
+            "-y",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "dist-upgrade",
+        ])?,
+        PkgMgr::Dnf(_) => {
+            let (status, log) = run_dnf_status(&["-y", "upgrade"])?;
+            if status != 0 {
+                return Err(if log.trim().is_empty() {
+                    format!("dnf upgrade failed (exit {status})")
+                } else {
+                    log
+                });
+            }
+            log
+        }
+    };
     Ok(AptActionResult {
         ok: true,
         log,
@@ -70,15 +138,37 @@ pub fn upgrade() -> Result<AptActionResult, String> {
 }
 
 pub fn list_repos() -> Result<Vec<AptRepository>, String> {
-    list_repos_at(&apt_root())
+    let root = pkg_root();
+    if root.join("etc/apt/sources.list").is_file()
+        || root.join("etc/apt/sources.list.d").is_dir()
+    {
+        let repos = list_repos_at(&root)?;
+        if !repos.is_empty() || find_apt().is_some() {
+            return Ok(repos);
+        }
+    }
+    if root.join("etc/yum.repos.d").is_dir() || find_dnf().is_some() {
+        return list_dnf_repos_at(&root);
+    }
+    list_repos_at(&root)
 }
 
 pub fn add_repo(req: AddRepositoryRequest) -> Result<AptRepository, String> {
-    add_repo_at(&apt_root(), req)
+    let root = pkg_root();
+    if find_dnf().is_some() && find_apt().is_none() {
+        return add_dnf_repo_at(&root, req);
+    }
+    add_repo_at(&root, req)
 }
 
 pub fn set_repo(req: SetRepositoryRequest) -> Result<AptRepository, String> {
-    set_repo_at(&apt_root(), req)
+    let root = pkg_root();
+    if let Some(repo) = list_repos()?.into_iter().find(|r| r.id == req.id) {
+        if repo.file.contains("yum.repos.d") {
+            return set_dnf_repo_at(&root, req);
+        }
+    }
+    set_repo_at(&root, req)
 }
 
 fn list_repos_at(root: &Path) -> Result<Vec<AptRepository>, String> {
@@ -168,10 +258,22 @@ fn set_repo_at(root: &Path, req: SetRepositoryRequest) -> Result<AptRepository, 
         .ok_or_else(|| "updated repository but failed to read it back".into())
 }
 
-fn apt_root() -> PathBuf {
+fn pkg_root() -> PathBuf {
     std::env::var("PERTISK_APT_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+#[allow(dead_code)]
+fn apt_root() -> PathBuf {
+    pkg_root()
+}
+
+fn find_pkg_mgr() -> Option<PkgMgr> {
+    if let Some(apt) = find_apt() {
+        return Some(PkgMgr::Apt(apt));
+    }
+    find_dnf().map(PkgMgr::Dnf)
 }
 
 fn find_apt() -> Option<PathBuf> {
@@ -185,12 +287,46 @@ fn find_apt() -> Option<PathBuf> {
     pertisk_types::find_in_path("apt-get")
 }
 
+fn find_dnf() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        "/usr/bin/dnf",
+        "/bin/dnf",
+        "/usr/bin/dnf5",
+        "/usr/bin/yum",
+    ];
+    for path in CANDIDATES {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    pertisk_types::find_in_path("dnf")
+        .or_else(|| pertisk_types::find_in_path("dnf5"))
+        .or_else(|| pertisk_types::find_in_path("yum"))
+}
+
 fn reboot_required() -> bool {
-    apt_root().join("var/run/reboot-required").is_file()
+    let root = pkg_root();
+    if root.join("var/run/reboot-required").is_file() {
+        return true;
+    }
+    // RHEL/Alma: needs-restarting -r exits 1 when a reboot is needed.
+    if Path::new("/usr/bin/needs-restarting").is_file() {
+        return Command::new("/usr/bin/needs-restarting")
+            .arg("-r")
+            .env(
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )
+            .status()
+            .map(|s| s.code() == Some(1))
+            .unwrap_or(false);
+    }
+    false
 }
 
 fn run_apt(args: &[&str]) -> Result<String, String> {
-    ensure_apt_dns();
+    ensure_pkg_dns("deb.debian.org");
     let bin = find_apt().ok_or_else(|| "apt-get not found on this node".to_string())?;
     let mut cmd = if Path::new("/usr/bin/timeout").is_file() {
         let mut wrapped = Command::new("/usr/bin/timeout");
@@ -225,7 +361,7 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     );
     let output = cmd.output().map_err(|err| format!("run apt-get: {err}"))?;
-    let mut log = tidy_apt_log(&output.stdout, &output.stderr);
+    let mut log = tidy_pkg_log(&output.stdout, &output.stderr);
     if log.len() > 64 * 1024 {
         let keep = 64 * 1024;
         log = format!("…\n{}", &log[log.len() - keep..]);
@@ -233,7 +369,7 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
     if output.status.code() == Some(124) {
         return Err("apt-get timed out after 120s (mirror or DNS too slow)".into());
     }
-    if apt_dns_failed(&log) {
+    if pkg_dns_failed(&log) {
         return Err(
             "No DNS: cannot reach deb.debian.org. Plug the LAN in, wait for DHCP, then Refresh again."
                 .into(),
@@ -255,7 +391,44 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
     Ok(log)
 }
 
-fn tidy_apt_log(stdout: &[u8], stderr: &[u8]) -> String {
+fn run_dnf_status(args: &[&str]) -> Result<(i32, String), String> {
+    ensure_pkg_dns("repo.almalinux.org");
+    let bin = find_dnf().ok_or_else(|| "dnf not found on this node".to_string())?;
+    let mut cmd = if Path::new("/usr/bin/timeout").is_file() {
+        let mut wrapped = Command::new("/usr/bin/timeout");
+        wrapped.args(["-k", "10", "180"]);
+        wrapped.arg(&bin);
+        wrapped
+    } else {
+        Command::new(&bin)
+    };
+    cmd.args(args);
+    cmd.env("LC_ALL", "C");
+    cmd.env("TERM", "dumb");
+    cmd.env(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    let output = cmd.output().map_err(|err| format!("run dnf: {err}"))?;
+    let mut log = tidy_pkg_log(&output.stdout, &output.stderr);
+    if log.len() > 64 * 1024 {
+        let keep = 64 * 1024;
+        log = format!("…\n{}", &log[log.len() - keep..]);
+    }
+    let code = output.status.code().unwrap_or(1);
+    if code == 124 {
+        return Err("dnf timed out after 180s (mirror or DNS too slow)".into());
+    }
+    if pkg_dns_failed(&log) {
+        return Err(
+            "No DNS: cannot reach AlmaLinux mirrors. Plug the LAN in, wait for DHCP, then Refresh again."
+                .into(),
+        );
+    }
+    Ok((code, log))
+}
+
+fn tidy_pkg_log(stdout: &[u8], stderr: &[u8]) -> String {
     let mut raw = String::from_utf8_lossy(stdout).into_owned();
     if !stderr.is_empty() {
         if !raw.is_empty() && !raw.ends_with('\n') {
@@ -271,10 +444,12 @@ fn tidy_apt_log(stdout: &[u8], stderr: &[u8]) -> String {
         .join("\n")
 }
 
-fn apt_dns_failed(log: &str) -> bool {
+fn pkg_dns_failed(log: &str) -> bool {
     log.contains("Temporary failure resolving")
         || log.contains("Could not resolve '")
         || log.contains("Failed to resolve")
+        || log.contains("Curl error (6):")
+        || log.contains("Could not resolve host")
 }
 
 fn host_resolves(name: &str) -> bool {
@@ -289,12 +464,12 @@ fn host_resolves(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_apt_dns() {
-    if host_resolves("deb.debian.org") {
+fn ensure_pkg_dns(probe_host: &str) {
+    if host_resolves(probe_host) {
         return;
     }
     let _ = Command::new("/usr/sbin/pertisk-fix-dns").status();
-    if host_resolves("deb.debian.org") {
+    if host_resolves(probe_host) {
         return;
     }
     let path = Path::new("/etc/resolv.conf");
@@ -354,6 +529,236 @@ pub(crate) fn parse_inst_lines(text: &str) -> Vec<UpdatePackage> {
         });
     }
     packages
+}
+
+/// `dnf check-update` lines look like: `bash.x86_64  5.2.26-6.el10  baseos`
+pub(crate) fn parse_dnf_check_update(text: &str) -> Vec<UpdatePackage> {
+    let mut packages = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with("Last metadata")
+            || line.starts_with("Security:")
+            || line.starts_with("Obsoleting")
+            || line.starts_with("Extra Packages")
+            || line.starts_with("---")
+        {
+            continue;
+        }
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 2 {
+            continue;
+        }
+        let nevra = cols[0];
+        // skip header-ish tokens
+        if !nevra.contains('.') && !nevra.contains('-') {
+            continue;
+        }
+        let (name, arch) = match nevra.rsplit_once('.') {
+            Some((n, a))
+                if !a.is_empty()
+                    && a.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                (n.to_string(), a.to_string())
+            }
+            _ => (nevra.to_string(), String::new()),
+        };
+        // Heuristic: real package lines have name.arch version repo
+        if name.eq_ignore_ascii_case("Package") || name.eq_ignore_ascii_case("Available") {
+            continue;
+        }
+        let available = cols.get(1).unwrap_or(&"").to_string();
+        // version numbers usually contain a digit
+        if !available.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let origin = cols.get(2).unwrap_or(&"").to_string();
+        packages.push(UpdatePackage {
+            name,
+            version: String::new(),
+            available,
+            arch,
+            origin,
+        });
+    }
+    packages
+}
+
+fn log_has_dnf_packages(log: &str) -> bool {
+    !parse_dnf_check_update(log).is_empty()
+}
+
+fn list_dnf_repos_at(root: &Path) -> Result<Vec<AptRepository>, String> {
+    let dir = root.join("etc/yum.repos.d");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files: Vec<_> = fs::read_dir(&dir)
+        .map_err(|err| format!("read {}: {err}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("repo"))
+        .collect();
+    files.sort();
+    let mut repos = Vec::new();
+    for path in files {
+        parse_yum_repo_file(root, &path, &mut repos)?;
+    }
+    Ok(repos)
+}
+
+fn parse_yum_repo_file(
+    root: &Path,
+    path: &Path,
+    out: &mut Vec<AptRepository>,
+) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let file = rel_file(root, path);
+    let mut section = String::new();
+    let mut enabled = true;
+    let mut name = String::new();
+    let mut uri = String::new();
+    let flush = |section: &str,
+                 enabled: bool,
+                 name: &str,
+                 uri: &str,
+                 file: &str,
+                 out: &mut Vec<AptRepository>| {
+        if section.is_empty() {
+            return;
+        }
+        out.push(AptRepository {
+            id: format!("{file}:{section}"),
+            enabled,
+            file: file.to_string(),
+            types: "rpm".into(),
+            uri: if uri.is_empty() {
+                name.to_string()
+            } else {
+                uri.to_string()
+            },
+            suite: section.to_string(),
+            components: String::new(),
+        });
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[')
+            && let Some(end) = rest.find(']')
+        {
+            flush(&section, enabled, &name, &uri, &file, out);
+            section = rest[..end].to_string();
+            enabled = true;
+            name.clear();
+            uri.clear();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "name" => name = value.to_string(),
+            "baseurl" | "metalink" | "mirrorlist" => {
+                if uri.is_empty() {
+                    uri = value.to_string();
+                }
+            }
+            "enabled" => enabled = value != "0" && !value.eq_ignore_ascii_case("false"),
+            _ => {}
+        }
+    }
+    flush(&section, enabled, &name, &uri, &file, out);
+    Ok(())
+}
+
+fn add_dnf_repo_at(root: &Path, req: AddRepositoryRequest) -> Result<AptRepository, String> {
+    let name = sanitize_repo_name(&req.name)?;
+    let uri = req.uri.trim();
+    if uri.is_empty() {
+        return Err("uri (baseurl) is required".into());
+    }
+    let dir = root.join("etc/yum.repos.d");
+    fs::create_dir_all(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
+    let path = dir.join(format!("{name}.repo"));
+    if path.exists() {
+        return Err(format!(
+            "repository file already exists: {}",
+            path.display()
+        ));
+    }
+    let body = format!(
+        "[{name}]\nname={name}\nbaseurl={uri}\nenabled=1\ngpgcheck=0\n"
+    );
+    fs::write(&path, body).map_err(|err| format!("write {}: {err}", path.display()))?;
+    list_dnf_repos_at(root)?
+        .into_iter()
+        .find(|r| r.file.ends_with(&format!("{name}.repo")))
+        .ok_or_else(|| "added repository but failed to read it back".into())
+}
+
+fn set_dnf_repo_at(root: &Path, req: SetRepositoryRequest) -> Result<AptRepository, String> {
+    let mut repos = list_dnf_repos_at(root)?;
+    let Some(idx) = repos.iter().position(|r| r.id == req.id) else {
+        return Err(format!("repository not found: {}", req.id));
+    };
+    if repos[idx].enabled == req.enabled {
+        return Ok(repos.remove(idx));
+    }
+    let section = repos[idx].suite.clone();
+    let file = PathBuf::from(&repos[idx].file);
+    let abs = if file.is_absolute() {
+        file
+    } else {
+        root.join(file)
+    };
+    let text = fs::read_to_string(&abs).map_err(|err| format!("read {}: {err}", abs.display()))?;
+    let updated = set_yum_section_enabled(&text, &section, req.enabled)?;
+    fs::write(&abs, updated).map_err(|err| format!("write {}: {err}", abs.display()))?;
+    list_dnf_repos_at(root)?
+        .into_iter()
+        .find(|r| r.id == req.id)
+        .ok_or_else(|| "updated repository but failed to read it back".into())
+}
+
+fn set_yum_section_enabled(text: &str, section: &str, enabled: bool) -> Result<String, String> {
+    let target = format!("[{section}]");
+    let mut out = String::new();
+    let mut in_section = false;
+    let mut saw_enabled = false;
+    let want = if enabled { "1" } else { "0" };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if in_section && !saw_enabled {
+                out.push_str(&format!("enabled={want}\n"));
+            }
+            in_section = trimmed == target;
+            saw_enabled = false;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_section && trimmed.to_ascii_lowercase().starts_with("enabled=") {
+            out.push_str(&format!("enabled={want}\n"));
+            saw_enabled = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if in_section && !saw_enabled {
+        out.push_str(&format!("enabled={want}\n"));
+    }
+    if !text.contains(&target) {
+        return Err(format!("section [{section}] not found"));
+    }
+    Ok(out)
 }
 
 fn rel_file(root: &Path, path: &Path) -> String {
@@ -617,6 +1022,56 @@ Conf linux-image-amd64 (6.12.22-1 Debian:13/stable [amd64])
     }
 
     #[test]
+    fn parses_dnf_check_update_lines() {
+        let text = "\
+Last metadata expiration check: 0:01:00 ago on Thu 17 Sep 2026.
+bash.x86_64                  5.2.26-6.el10_2              baseos
+kernel.x86_64                6.12.0-55.27.1.el10_2        baseos
+Security: 0
+";
+        let pkgs = parse_dnf_check_update(text);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "bash");
+        assert_eq!(pkgs[0].arch, "x86_64");
+        assert_eq!(pkgs[0].available, "5.2.26-6.el10_2");
+        assert_eq!(pkgs[0].origin, "baseos");
+        assert_eq!(pkgs[1].name, "kernel");
+    }
+
+    #[test]
+    fn list_and_toggle_yum_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let yum = root.join("etc/yum.repos.d");
+        fs::create_dir_all(&yum).unwrap();
+        fs::write(
+            yum.join("alma.repo"),
+            "[baseos]\n\
+             name=AlmaLinux BaseOS\n\
+             baseurl=https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/\n\
+             enabled=1\n\
+             gpgcheck=0\n",
+        )
+        .unwrap();
+        let repos = list_dnf_repos_at(root).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert!(repos[0].enabled);
+        assert_eq!(repos[0].suite, "baseos");
+        let id = repos[0].id.clone();
+        let disabled = set_dnf_repo_at(
+            root,
+            SetRepositoryRequest {
+                id: id.clone(),
+                enabled: false,
+            },
+        )
+        .unwrap();
+        assert!(!disabled.enabled);
+        let text = fs::read_to_string(yum.join("alma.repo")).unwrap();
+        assert!(text.contains("enabled=0"));
+    }
+
+    #[test]
     fn detects_apt_dns_failure() {
         let log = "\
 Ign:1 http://deb.debian.org/debian trixie InRelease
@@ -624,15 +1079,15 @@ Err:1 http://deb.debian.org/debian trixie InRelease
   Temporary failure resolving 'deb.debian.org'
 W: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving 'deb.debian.org'
 ";
-        assert!(apt_dns_failed(log));
-        assert!(!apt_dns_failed(
+        assert!(pkg_dns_failed(log));
+        assert!(!pkg_dns_failed(
             "Hit:1 http://deb.debian.org/debian trixie InRelease\n"
         ));
     }
 
     #[test]
     fn tidy_apt_progress_overwrites() {
-        let log = tidy_apt_log(
+        let log = tidy_pkg_log(
             b"Hit:1 http://deb.debian.org/debian trixie InRelease\n",
             b"Reading package lists...\rReading package lists... Done\n",
         );
