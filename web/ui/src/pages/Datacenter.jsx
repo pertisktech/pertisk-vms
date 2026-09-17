@@ -25,7 +25,10 @@ export default function Datacenter() {
       name={inv.cluster?.name || 'pertisk'}
       crumbs={['Datacenter']}
       status={
-        inv.cluster?.fenced ? <span className="badge error">fenced</span> : null
+        <>
+          {inv.cluster?.ha_armed === false ? <span className="badge pending">HA disarmed</span> : null}
+          {inv.cluster?.fenced ? <span className="badge error">fenced</span> : null}
+        </>
       }
       tabs={tabs}
       actions={<JoinCluster canWrite={canWrite} inv={inv} />}

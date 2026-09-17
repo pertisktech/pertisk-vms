@@ -287,7 +287,9 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/users/{id}/password": { "post": { "summary": "Set a user's password (admin)" } },
             "/v1/cluster": { "get": { "summary": "Cluster membership and quorum" } },
             "/v1/cluster/join": { "post": { "summary": "Join an existing cluster" } },
-            "/v1/vms/{id}/migrate": { "post": { "summary": "Migrate VM to another node" } },
+            "/v1/cluster/ha": { "post": { "summary": "Arm or disarm HA failover (planned maintenance)" } },
+            "/v1/cluster/drain": { "post": { "summary": "Restart-migrate running guests off a node" } },
+            "/v1/vms/{id}/migrate": { "post": { "summary": "Restart-migrate VM to another node (not live)" } },
             "/v1/vms/{id}/clone": { "post": { "summary": "Clone a VM or cloud template" } },
             "/v1/vms/{id}/template": { "post": { "summary": "Convert a stopped VM into a cloud template" } },
             "/v1/vms/{id}/backups": {

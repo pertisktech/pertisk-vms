@@ -33,7 +33,7 @@ This document summarizes the complete implementation of pertisk-vm as of 2026-08
 │  │ - Heartbeat protocol (1s tick)                       │   │
 │  │ - Fencing (kill VMs on quorum loss)                  │   │
 │  │ - HA restart (reschedule to healthy node)            │   │
-│  │ - Live migration (VMM-level)                         │   │
+│  │ - Restart-migrate (not VMM live migrate)             │   │
 │  │ - Scheduler (least-loaded, volume affinity)          │   │
 │  └──────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -108,7 +108,7 @@ This document summarizes the complete implementation of pertisk-vm as of 2026-08
 - [x] Join/leave cluster (HTTP handshake)
 - [x] Quorum + fencing (kill VMs on lost quorum)
 - [x] HA restart (reschedule to healthy node)
-- [x] Live migration (VMM live migration support)
+- [ ] Live migration (restart-migrate only today)
 - [x] Scheduler (least-loaded, CPU overcommit 8x, volume affinity)
 
 ### ✅ Phase 4.5: Graphics Console (NEW!)

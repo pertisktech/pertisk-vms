@@ -179,7 +179,7 @@ export default function GuestView() {
       {migrateOpen && (
         <Modal
           title={`Migrate ${vm.spec?.name || vmId}`}
-          hint="Pick an online node. Empty target lets the scheduler choose."
+          hint="Restarts the guest on the target (not live migrate). Empty target lets the scheduler choose."
           onClose={() => setMigrateOpen(false)}
           footer={
             <>

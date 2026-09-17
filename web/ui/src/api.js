@@ -267,6 +267,17 @@ export function cloudInitHasLogin(password, sshKey) {
   return Boolean(String(password || '').trim() || String(sshKey || '').trim())
 }
 
+/** Replica files are lab-only. Ceph RBD is the production HA store. */
+export function haDurable(host) {
+  return host?.ha_durable === true || host?.storage_backend === 'rbd'
+}
+
+/** Installer ISOs that Cloud Hypervisor cannot graphics/EFI-boot cleanly. */
+export function riskyInstallerIso(name) {
+  const n = String(name || '').toLowerCase()
+  return /ubuntu|debian|windows|\bwin(10|11)?\b|desktop|mini\.iso/.test(n)
+}
+
 /** RAM a guest can be started with on this node. */
 export function guestMemoryBudgetMib(cluster) {
   const members = cluster?.members || []

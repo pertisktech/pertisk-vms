@@ -1,7 +1,7 @@
 # Cluster Operations Guide
 
 ## Overview
-Pertisk now supports **multi-node clustering** with automatic failover (HA), live migration, and quorum-based consistency. This is **Phase 5** of the project.
+Pertisk supports **multi-node clustering** with quorum, HA restart-on-failure (when armed), and restart-migrate. Replica file storage is lab-only; production HA should use Ceph RBD.
 
 ## Quick Start: 3-Node Cluster
 
@@ -149,9 +149,30 @@ HA-disabled VMs won't restart on node failure. Good for:
 - Single-node deployments
 - Stateless workloads that can be manually migrated
 
-## Live Migration
+### Cluster HA arm / disarm (maintenance)
 
-### Migrate VM to Specific Node
+Pause failover and quorum fencing while you reboot or upgrade a node:
+
+```bash
+pertisk cluster ha-disarm
+# ... planned work ...
+pertisk cluster ha-arm
+```
+
+Web UI: Datacenter → Cluster → Disarm HA / Arm HA.
+
+### Drain a node
+
+Restart-migrate running guests off this node (not live migrate):
+
+```bash
+pertisk cluster drain
+pertisk cluster drain --node <node-id>
+```
+
+## Migration (restart)
+
+### Move VM to another node
 ```bash
 pertisk vm migrate 100 --target <node-id>
 
@@ -159,17 +180,18 @@ pertisk vm migrate 100 --target <node-id>
 pertisk vm migrate 100
 ```
 
-### What Happens
-1. VM must be **running**
-2. Source node initiates VMM live migration
-3. Memory + state transferred to destination
-4. Network connections preserved (if using TAP)
-5. Ownership updated in cluster inventory
+### What happens
+1. Guest must be **running**
+2. Destination starts a new hypervisor process
+3. Source is stopped
+4. Ownership updates in cluster inventory
+
+This is **not** Cloud Hypervisor live migrate (no memory transfer, guest reboots). Live migrate is not implemented yet.
 
 ### Limitations
 - Both nodes must have quorum
 - Destination must have capacity
-- Requires compatible VMM on both (e.g., Cloud Hypervisor)
+- Replica storage may copy the disk first; RBD does not
 
 ## Scheduler Behavior
 

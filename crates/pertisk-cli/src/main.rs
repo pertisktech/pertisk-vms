@@ -11,9 +11,9 @@ use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
     ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
-    DEFAULT_LISTEN, DiskSpec, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
+    DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
     JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId, VmRecord, VmSpec,
+    SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId, VmRecord, VmSpec,
     VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
@@ -142,6 +142,17 @@ enum ClusterCommand {
         password: String,
     },
     Leave,
+    /// Arm HA failover after planned maintenance.
+    #[command(name = "ha-arm")]
+    HaArm,
+    /// Disarm HA failover and fencing for planned maintenance.
+    #[command(name = "ha-disarm")]
+    HaDisarm,
+    /// Restart-migrate running guests off this node (or --node).
+    Drain {
+        #[arg(long)]
+        node: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -747,7 +758,7 @@ async fn run() -> Result<()> {
             ClusterCommand::Status => {
                 let status: ClusterStatus = get_json(&client, &cli.url, "/v1/cluster").await?;
                 println!(
-                    "cluster {} gen {} leader {} quorum {} fenced {}",
+                    "cluster {} gen {} leader {} quorum {} fenced {} ha {}",
                     status.name,
                     status.generation,
                     status
@@ -755,7 +766,8 @@ async fn run() -> Result<()> {
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "-".into()),
                     status.quorum,
-                    status.fenced
+                    status.fenced,
+                    if status.ha_armed { "armed" } else { "disarmed" }
                 );
                 println!(
                     "{:<38} {:<12} {:<8} {:<12} {:<16} {}",
@@ -812,6 +824,52 @@ async fn run() -> Result<()> {
                 let status: ClusterStatus =
                     post_empty(&client, &cli.url, "/v1/cluster/leave").await?;
                 println!("solo {} quorum {}", status.name, status.quorum);
+            }
+            ClusterCommand::HaArm => {
+                let status: ClusterStatus = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/cluster/ha",
+                    &SetHaArmedRequest { armed: true },
+                )
+                .await?;
+                println!("HA armed (failover on)");
+                println!(
+                    "cluster {} quorum {} fenced {}",
+                    status.name, status.quorum, status.fenced
+                );
+            }
+            ClusterCommand::HaDisarm => {
+                let status: ClusterStatus = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/cluster/ha",
+                    &SetHaArmedRequest { armed: false },
+                )
+                .await?;
+                println!("HA disarmed (failover off; planned maintenance)");
+                println!("cluster {} quorum {}", status.name, status.quorum);
+            }
+            ClusterCommand::Drain { node } => {
+                let target = node
+                    .map(|s| s.parse())
+                    .transpose()
+                    .context("invalid --node")?;
+                let result: pertisk_types::DrainResponse = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/cluster/drain",
+                    &DrainRequest { node: target },
+                )
+                .await?;
+                println!(
+                    "drained {} ({} guests moved; restart migrate, not live)",
+                    result.node_id,
+                    result.moved.len()
+                );
+                for vm in result.moved {
+                    print_vm(&vm);
+                }
             }
         },
         Command::Template { command } => match command {

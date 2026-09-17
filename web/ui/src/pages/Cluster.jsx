@@ -1,6 +1,7 @@
 import { Link, useLocation, useOutletContext } from 'react-router-dom'
-import { asList, publicIpv6 } from '../api'
-import { Icon } from '../components/Icons'
+import { api, asList, haDurable, publicIpv6 } from '../api'
+import { Btn, Icon } from '../components/Icons'
+import { useConfirm } from '../components/Confirm'
 import { parseResourceRoute, resourceLink } from '../resourceRoutes'
 import { useMetrics } from '../useMetrics'
 
@@ -40,14 +41,42 @@ function nodeAddress(member) {
 }
 
 export default function Cluster() {
-  const { inv } = useOutletContext()
+  const { canWrite, inv } = useOutletContext()
   const { cluster, host, error, setError } = inv
+  const confirm = useConfirm()
   const metrics = useMetrics('cluster')
   const members = asList(cluster?.members)
   const currentRoute = parseResourceRoute(useLocation().pathname)
   const liveById = new Map(
     asList(metrics.data?.nodes).map((n) => [String(n.node_id), n]),
   )
+  const durable = haDurable(host)
+  const haArmed = cluster?.ha_armed !== false
+  const peers = members.filter((m) => m.id !== cluster?.self_id && m.online !== false)
+
+  async function setHaArmed(armed) {
+    if (!armed) {
+      const ok = await confirm({
+        title: 'Disarm HA',
+        message:
+          'Failover and quorum fencing pause until you arm HA again. Use this for planned node maintenance.',
+        confirmLabel: 'Disarm',
+      })
+      if (!ok) return
+    }
+    await inv.mutate(() => api('/v1/cluster/ha', { method: 'POST', body: { armed } }))
+  }
+
+  async function drainSelf() {
+    const ok = await confirm({
+      title: 'Drain this node',
+      message:
+        'Running guests restart on another node (not live migrate). Continue?',
+      confirmLabel: 'Drain',
+    })
+    if (!ok) return
+    await inv.mutate(() => api('/v1/cluster/drain', { method: 'POST', body: {} }))
+  }
 
   return (
     <div className="pve-tab-page">
@@ -57,6 +86,35 @@ export default function Cluster() {
           <button type="button" className="banner-dismiss" onClick={() => setError('')}>
             ×
           </button>
+        </div>
+      )}
+      {!durable && (
+        <div className="banner">
+          Local replica storage is for lab use. HA restart does not protect unsynced writes. Production HA
+          needs <code>storage.backend = &quot;rbd&quot;</code>.
+        </div>
+      )}
+      {!haArmed && (
+        <div className="banner">
+          Cluster HA is disarmed. Nodes will not fail over guests or fence on quorum loss.
+        </div>
+      )}
+      {canWrite && (
+        <div className="pve-action-row">
+          {haArmed ? (
+            <Btn icon="stop" variant="secondary" onClick={() => setHaArmed(false)}>
+              Disarm HA
+            </Btn>
+          ) : (
+            <Btn icon="play" onClick={() => setHaArmed(true)}>
+              Arm HA
+            </Btn>
+          )}
+          {peers.length > 0 && (
+            <Btn icon="migrate" variant="secondary" onClick={drainSelf}>
+              Drain this node
+            </Btn>
+          )}
         </div>
       )}
 

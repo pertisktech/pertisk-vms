@@ -65,7 +65,13 @@ export default function GuestSummary() {
           <dt>ID</dt>
           <dd className="mono-inline">{vm.id}</dd>
           <dt>High availability</dt>
-          <dd>{vm.spec?.ha !== false ? 'restart on node loss' : 'off'}</dd>
+          <dd>
+            {vm.spec?.ha !== false
+              ? inv.host?.ha_durable
+                ? 'restart on node loss'
+                : 'restart on node loss (replica: not crash-safe)'
+              : 'off'}
+          </dd>
           <dt>Start at boot</dt>
           <dd>
             {vm.spec?.autostart

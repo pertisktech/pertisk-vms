@@ -23,8 +23,8 @@ run_dir = "/tmp/pertisk-run"
 [storage]
 root = "storage"
 # qemu_img = "/usr/local/bin/qemu-img"
-# replica = replicated files across cluster nodes (default)
-# rbd = Ceph RBD when the `rbd` CLI is installed
+# replica = lab file copies (HA restart is not crash-safe)
+# rbd = Ceph RBD — recommended for production HA when the `rbd` CLI is installed
 backend = "replica"
 replica_count = 2
 # rbd_pool = "rbd"

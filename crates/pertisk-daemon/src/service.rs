@@ -9,7 +9,8 @@ use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
     CloudInitNetwork, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DriverKind,
+    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DrainResponse,
+    DriverKind,
     HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec, NetworkId,
     NetworkMode, NetworkRecord, NodeId, NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest,
     SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
@@ -550,6 +551,41 @@ impl Service {
 
     pub fn cluster_status(&self) -> Result<pertisk_types::ClusterStatus, DaemonError> {
         Ok(self.cluster.status(&self.loads()?))
+    }
+
+    pub fn set_ha_armed(&self, armed: bool) -> Result<pertisk_types::ClusterStatus, DaemonError> {
+        self.require_quorum()?;
+        self.cluster.set_ha_armed(armed)?;
+        self.cluster.bump()?;
+        if armed {
+            tracing::info!("cluster HA armed");
+        } else {
+            tracing::warn!("cluster HA disarmed; failover and fencing paused");
+        }
+        self.cluster_status()
+    }
+
+    /// Restart-migrate running guests off a node (not Cloud Hypervisor live migrate).
+    pub async fn drain_node(
+        &self,
+        node: Option<pertisk_types::NodeId>,
+    ) -> Result<DrainResponse, DaemonError> {
+        self.require_quorum()?;
+        let node = node.unwrap_or_else(|| self.cluster.self_id());
+        let vms = self.store.list()?;
+        let mut moved = Vec::new();
+        for vm in vms {
+            if vm.template || vm.node_id != Some(node) || vm.state != VmState::Running {
+                continue;
+            }
+            let dest = self.pick_node_excluding(&vm.spec, node)?;
+            tracing::info!(vm = %vm.id, from = %node, to = %dest, "drain migrate");
+            moved.push(self.migrate(vm.id, Some(dest)).await?);
+        }
+        Ok(DrainResponse {
+            node_id: node,
+            moved,
+        })
     }
 
     pub fn set_peer_url(&self, url: String) -> Result<(), DaemonError> {
@@ -2538,6 +2574,22 @@ impl Service {
             .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
     }
 
+    fn pick_node_excluding(
+        &self,
+        spec: &VmSpec,
+        exclude: pertisk_types::NodeId,
+    ) -> Result<pertisk_types::NodeId, DaemonError> {
+        self.cluster.touch_self();
+        let loads: Vec<_> = self
+            .loads()?
+            .into_iter()
+            .filter(|n| n.id != exclude)
+            .collect();
+        let affinity = self.volume_affinity(spec);
+        cluster::schedule_storage(&loads, spec, None, &affinity)
+            .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
+    }
+
     /// Place a defined guest (create / template import). RAM is checked on start.
     fn pick_node_define(
         &self,
@@ -2800,12 +2852,19 @@ impl Service {
         // guests the other node already owns (that dual-run then stop/start-loops).
         self.send_heartbeats().await;
         let quorum = self.cluster.has_quorum();
-        if self.cluster.set_fenced(!quorum) && !quorum {
-            self.fence_local().await;
+        let ha_armed = self.cluster.is_ha_armed();
+        if ha_armed {
+            if self.cluster.set_fenced(!quorum) && !quorum {
+                self.fence_local().await;
+            }
+        } else if quorum {
+            let _ = self.cluster.set_fenced(false);
         }
         self.reconcile_local_vms().await;
         if quorum {
-            self.recover_ha().await?;
+            if ha_armed {
+                self.recover_ha().await?;
+            }
             self.autostart_local().await;
         }
         // Replica rebuild copies disk images and can run for minutes. Never await it
@@ -3022,8 +3081,12 @@ impl Service {
     }
 
     async fn recover_ha(&self) -> Result<(), DaemonError> {
+        if !self.cluster.is_ha_armed() {
+            return Ok(());
+        }
         let loads = self.loads()?;
         let vms = self.store.list()?;
+        let replica_ha = self.config.storage.backend != StorageBackend::Rbd;
         for mut vm in vms {
             if vm.template || !vm.spec.ha || vm.state != VmState::Running {
                 continue;
@@ -3057,6 +3120,12 @@ impl Service {
                 continue;
             }
             tracing::warn!(vm = %vm.id, from = %owner, to = %dest, "ha restart");
+            if replica_ha {
+                tracing::warn!(
+                    vm = %vm.id,
+                    "HA restart on replica storage; unsynced writes since last stop may be lost"
+                );
+            }
             let mut moving = vm.clone();
             moving.node_id = Some(dest);
             moving.state = VmState::Created;
@@ -4489,6 +4558,25 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
             .await
             .unwrap();
         assert!(running.spec.ha);
+    }
+
+    #[test]
+    fn set_ha_armed_toggles_cluster_status() {
+        let (svc, _dir) = service();
+        assert!(svc.cluster_status().unwrap().ha_armed);
+        let status = svc.set_ha_armed(false).unwrap();
+        assert!(!status.ha_armed);
+        assert!(!svc.cluster_status().unwrap().ha_armed);
+        assert!(svc.set_ha_armed(true).unwrap().ha_armed);
+    }
+
+    #[tokio::test]
+    async fn drain_single_node_is_unschedulable() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(210), spec("drain")).await.unwrap();
+        svc.start(vm.id).await.unwrap();
+        let err = svc.drain_node(None).await.unwrap_err();
+        assert!(matches!(err, DaemonError::Unschedulable(_)));
     }
 
     #[tokio::test]

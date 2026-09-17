@@ -13,6 +13,8 @@ firmware = "/usr/lib/cloud-hypervisor/hypervisor-fw"
 
 [storage]
 root = "/var/lib/pertisk/storage"
+# replica = lab/single-node file copies. HA restart does not protect in-flight writes.
+# rbd = recommended for production HA (needs the rbd CLI and a Ceph pool).
 backend = "replica"
 replica_count = 2
 qemu_img = "/usr/bin/qemu-img"

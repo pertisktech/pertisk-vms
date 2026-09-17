@@ -32,7 +32,7 @@ All cluster commands fully implemented and working.
   - Fencing: automatic VM stop on quorum loss
   - HA restart: reschedule VMs to healthy nodes
   - Scheduler: least-loaded node placement
-  - Live migration: VMM-level VM transfer
+  - Restart-migrate: start on dest, stop source (not live)
 
 ### ✅ D) Final Polish & Documentation
 Created 3 comprehensive guides:

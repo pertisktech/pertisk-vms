@@ -24,7 +24,7 @@ use pertisk_types::{
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord, ResizeVolumeRequest,
-    SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
+    SetHaArmedRequest, DrainRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
     VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
@@ -120,6 +120,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/cluster", get(cluster_status))
         .route("/v1/cluster/join", post(cluster_join))
         .route("/v1/cluster/leave", post(cluster_leave))
+        .route("/v1/cluster/ha", post(cluster_ha))
+        .route("/v1/cluster/drain", post(cluster_drain))
         .route("/v1/cluster/accept", post(cluster_accept))
         .route("/v1/peer/heartbeat", post(peer_heartbeat))
         .route("/v1/peer/snapshot", post(peer_snapshot))
@@ -1533,6 +1535,49 @@ async fn cluster_join(
 
 async fn cluster_leave(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.leave_cluster().await?))
+}
+
+async fn cluster_ha(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<SetHaArmedRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let kind = if req.armed {
+        "cluster.ha-arm"
+    } else {
+        "cluster.ha-disarm"
+    };
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            kind,
+            "cluster".into(),
+            async { service.set_ha_armed(req.armed) },
+        )
+        .await?,
+    ))
+}
+
+async fn cluster_drain(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Json(req): Json<DrainRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let target = req
+        .node
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "self".into());
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "cluster.drain",
+            target,
+            service.drain_node(req.node),
+        )
+        .await?,
+    ))
 }
 
 async fn cluster_accept(

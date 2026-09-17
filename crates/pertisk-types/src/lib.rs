@@ -326,6 +326,9 @@ pub struct ClusterStatus {
     pub leader_id: Option<NodeId>,
     pub quorum: bool,
     pub fenced: bool,
+    /// When false, skip HA failover and quorum fencing (planned maintenance).
+    #[serde(default = "default_true")]
+    pub ha_armed: bool,
     pub members: Vec<ClusterMemberStatus>,
 }
 
@@ -340,6 +343,23 @@ pub struct JoinClusterRequest {
 pub struct MigrateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetHaArmedRequest {
+    pub armed: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DrainRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DrainResponse {
+    pub node_id: NodeId,
+    pub moved: Vec<VmRecord>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -560,6 +580,11 @@ impl StorageBackend {
             Self::Replica => "replica",
             Self::Rbd => "rbd",
         }
+    }
+
+    /// Replica files are lab/single-node. HA restart does not protect in-flight writes.
+    pub fn ha_durable(self) -> bool {
+        matches!(self, Self::Rbd)
     }
 }
 
@@ -1066,6 +1091,8 @@ pub struct ClusterSnapshot {
     pub vms: Vec<VmRecord>,
     #[serde(default)]
     pub volumes: Vec<VolumeRecord>,
+    #[serde(default = "default_true")]
+    pub ha_armed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1381,6 +1408,9 @@ pub struct HostInfo {
     pub replica_count: u8,
     #[serde(default)]
     pub rbd: bool,
+    /// True when this node's storage backend can survive owner crash (Ceph RBD).
+    #[serde(default)]
+    pub ha_durable: bool,
     #[serde(default)]
     pub version: String,
     /// Operator public keys injected into cloud clones (`/etc/pertisk/ssh/authorized_keys`).
@@ -1558,6 +1588,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         storage_backend: config.storage.backend,
         replica_count: config.storage.replica_count.max(1),
         rbd: find_in_path("rbd").is_some(),
+        ha_durable: config.storage.backend.ha_durable(),
         version: VERSION.to_string(),
         ssh_authorized_keys: Vec::new(),
         uptime_secs: host_uptime_secs(),

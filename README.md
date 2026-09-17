@@ -25,9 +25,9 @@ PERTISK_HOME=/tmp/p3 cargo run -p pertisk-daemon -- --listen 127.0.0.1:7483 --no
 
 Join from a running node: `pertisk --url http://127.0.0.1:7482 cluster join --peer http://127.0.0.1:7481 -u admin -p admin`.
 
-Writes require majority quorum. A node that loses quorum fences itself (stops local VMs) so the majority can HA-restart them. `pertisk vm migrate <id>` moves a guest (mock starts on the destination before tearing down the source).
+Writes require majority quorum. A node that loses quorum fences itself (stops local VMs) so the majority can HA-restart them, unless HA is **disarmed** for maintenance (`pertisk cluster ha-disarm`). `pertisk vm migrate` and `pertisk cluster drain` **restart** the guest on the destination, then stop it on the source. That is not Cloud Hypervisor live migrate (memory transfer while running).
 
-**Storage:** volumes are replicated as sparse files on N cluster nodes (`storage.backend = "replica"`, default `replica_count = 2`). HA and migrate prefer a node that already holds a replica, so the VM disk is already on the destination — no copy at fail time. Runtime writes land on the running node; they are pushed to other replicas on stop and before migrate. If the owner dies mid-run, unsynced writes after the last stop can be lost. Optional `backend = "rbd"` uses Ceph RBD when the `rbd` CLI is on PATH.
+**Storage:** default `storage.backend = "replica"` copies sparse files across nodes. Runtime writes stay on the owner and sync on stop / before migrate. **If the owner dies mid-run, unsynced writes can be lost.** Treat replica as lab/single-node. Production HA needs `backend = "rbd"` (Ceph RBD; `rbd` CLI on PATH). The UI warns when HA is enabled on replica.
 
 Web UI: [http://127.0.0.1:7480/](http://127.0.0.1:7480/)  
 OpenAPI: [http://127.0.0.1:7480/v1/openapi.json](http://127.0.0.1:7480/v1/openapi.json)

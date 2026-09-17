@@ -272,7 +272,11 @@ export default function GuestOptions() {
                 <span className="chk-box" />
                 <span className="chk-label">
                   Restart on another node if this one is lost
-                  <small>High availability</small>
+                  <small>
+                    {inv.host?.ha_durable || inv.host?.storage_backend === 'rbd'
+                      ? 'High availability (Ceph RBD)'
+                      : 'Restart only — replica storage can lose unsynced writes'}
+                  </small>
                 </span>
               </label>
             )}

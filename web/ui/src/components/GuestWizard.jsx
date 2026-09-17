@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, cloudInitHasLogin, detectCloudOs, guestMemoryBudgetMib, isCloudInitIso, nextVmId } from '../api'
+import { api, cloudInitHasLogin, detectCloudOs, guestMemoryBudgetMib, haDurable, isCloudInitIso, nextVmId, riskyInstallerIso } from '../api'
 import Modal from './Modal'
 
 const STEPS = [
@@ -29,7 +29,7 @@ const EMPTY = {
   name: '',
   vcpus: 1,
   memory_mib: 1024,
-  ha: true,
+  ha: false,
   autostart: false,
   graphics: false,
   diskMode: 'new',
@@ -58,6 +58,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     vcpus: defaultCpus(),
     memory_mib: budget && budget >= 64 ? Math.min(defaultMemory(), budget) : defaultMemory(),
     graphics: host?.driver === 'qemu',
+    ha: haDurable(host),
     iso: isos[0]?.name || '',
     networkId: networks[0]?.id || '',
   }))
@@ -392,7 +393,11 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <span className="chk-box" />
                 <span className="chk-label">
                   Restart on another node if this one is lost
-                  <small>High availability</small>
+                  <small>
+                    {haDurable(host)
+                      ? 'High availability (Ceph RBD)'
+                      : 'Restart only — replica storage can lose unsynced writes'}
+                  </small>
                 </span>
               </label>
               <label className="chk">
@@ -555,10 +560,10 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                   </p>
                 )}
                 {form.iso && host?.driver === 'cloud-hypervisor' && (
-                  <p className="muted">
-                    Console is serial only. Ubuntu/Debian installer ISOs cannot EFI-boot (Secure Boot shim);
-                    pertisk boots their installer kernel on ttyS0 instead. Alpine virt works. Ubuntu Desktop
-                    and Windows need VGA (not available).
+                  <p className={riskyInstallerIso(form.iso) ? 'banner danger' : 'muted'}>
+                    {riskyInstallerIso(form.iso)
+                      ? 'This installer ISO is a poor fit for Cloud Hypervisor (no VGA; Ubuntu/Debian cannot EFI-boot). Prefer Alpine virt, or a cloud image + cloud-init on the Templates tab.'
+                      : 'Console is serial only. Alpine virt works. Ubuntu Desktop and Windows need QEMU + VGA.'}
                   </p>
                 )}
               </div>
@@ -673,7 +678,13 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               </div>
               <div>
                 <dt>HA</dt>
-                <dd>{form.ha ? 'Restart on node loss' : 'Pinned to this node'}</dd>
+                <dd>
+                  {form.ha
+                    ? haDurable(host)
+                      ? 'Restart on node loss (RBD)'
+                      : 'Restart on node loss (replica: not crash-safe)'
+                    : 'Pinned to this node'}
+                </dd>
               </div>
               <div>
                 <dt>Start at boot</dt>

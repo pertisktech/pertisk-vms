@@ -149,6 +149,12 @@ export default function Storage() {
           </Btn>
         </div>
       )}
+      {inv.host && inv.host.storage_backend !== 'rbd' && (
+        <div className="banner">
+          Replica volumes are local files. Treat HA as experimental; unsynced writes can be lost if the
+          owner node dies. Use Ceph RBD for production.
+        </div>
+      )}
       {error && (
         <div className="banner danger">
           {error}

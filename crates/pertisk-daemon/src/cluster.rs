@@ -380,6 +380,10 @@ fn member_is_online(member: &MemberState, self_id: NodeId, now: u64, timeout: u6
     member.record.id == self_id || now.saturating_sub(member.last_seen_ms) <= timeout
 }
 
+fn default_ha_armed() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Persisted {
     self_id: NodeId,
@@ -387,6 +391,8 @@ struct Persisted {
     secret: String,
     generation: u64,
     members: Vec<NodeRecord>,
+    #[serde(default = "default_ha_armed")]
+    ha_armed: bool,
 }
 
 #[derive(Clone)]
@@ -402,6 +408,7 @@ struct Inner {
     generation: u64,
     members: BTreeMap<NodeId, MemberState>,
     fenced: bool,
+    ha_armed: bool,
 }
 
 pub struct Cluster {
@@ -469,6 +476,7 @@ impl Cluster {
                 generation: persisted.generation,
                 members,
                 fenced: false,
+                ha_armed: persisted.ha_armed,
             }
         } else {
             let self_id = NodeId::new();
@@ -497,6 +505,7 @@ impl Cluster {
                 generation: 1,
                 members,
                 fenced: false,
+                ha_armed: true,
             }
         };
         let cluster = Self {
@@ -731,6 +740,18 @@ impl Cluster {
         entered
     }
 
+    pub fn is_ha_armed(&self) -> bool {
+        self.inner.lock().expect("cluster lock").ha_armed
+    }
+
+    pub fn set_ha_armed(&self, armed: bool) -> Result<(), DaemonError> {
+        {
+            let mut inner = self.inner.lock().expect("cluster lock");
+            inner.ha_armed = armed;
+        }
+        self.persist()
+    }
+
     pub fn add_member(&self, mut record: NodeRecord) -> Result<(), DaemonError> {
         {
             let mut inner = self.inner.lock().expect("cluster lock");
@@ -843,6 +864,7 @@ impl Cluster {
             }
             inner.members = next;
             inner.fenced = false;
+            inner.ha_armed = snap.ha_armed;
         }
         self.persist()
     }
@@ -856,6 +878,7 @@ impl Cluster {
             members: inner.members.values().map(|m| m.record.clone()).collect(),
             vms: vec![],
             volumes: vec![],
+            ha_armed: inner.ha_armed,
         }
     }
 
@@ -890,6 +913,7 @@ impl Cluster {
                 members: inner.members.values().map(|m| m.record.clone()).collect(),
                 vms: vec![],
                 volumes: vec![],
+                ha_armed: inner.ha_armed,
             }),
         }
     }
@@ -928,6 +952,7 @@ impl Cluster {
             leader_id,
             quorum,
             fenced: inner.fenced || !quorum,
+            ha_armed: inner.ha_armed,
             members,
         }
     }
@@ -940,6 +965,7 @@ impl Cluster {
             secret: inner.secret.clone(),
             generation: inner.generation,
             members: inner.members.values().map(|m| m.record.clone()).collect(),
+            ha_armed: inner.ha_armed,
         };
         drop(inner);
         let json = serde_json::to_vec_pretty(&persisted)?;
@@ -1278,6 +1304,7 @@ mod tests {
             ],
             vms: vec![],
             volumes: vec![],
+            ha_armed: true,
         };
         assert!(high_gen > snap.generation);
         cluster.apply_membership(&snap).unwrap();
@@ -1446,6 +1473,20 @@ mod tests {
         assert_eq!(status.members.len(), 1);
         assert!(reopened.has_quorum());
         assert!(reopened.is_leader());
+        assert!(reopened.is_ha_armed());
+    }
+
+    #[test]
+    fn ha_armed_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = HostConfig::default_for(dir.path());
+        let path = dir.path().join("cluster.json");
+        let cluster = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        cluster.set_ha_armed(false).unwrap();
+        drop(cluster);
+        let reopened = Cluster::open(&path, &config, "127.0.0.1:7480").unwrap();
+        assert!(!reopened.is_ha_armed());
+        assert!(!reopened.status(&[]).ha_armed);
     }
 
     #[test]
