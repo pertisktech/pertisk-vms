@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { getToken } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import { useTheme } from '../../ThemeContext'
+import { applyXtermTheme } from '../../termTheme'
 import { useGuest } from '../GuestView'
 
 function scheduleFit(fit) {
@@ -168,13 +169,7 @@ export default function GuestConsole() {
     const term = termRef.current
     const host = termHostRef.current
     if (!term || !host) return
-    term.options.theme = terminalTheme
-    host.style.background = terminalTheme.background
-    try {
-      term.refresh(0, Math.max(0, term.rows - 1))
-    } catch {
-      /* ignore */
-    }
+    applyXtermTheme(term, host, terminalTheme)
     scheduleFit(fitRef.current)
   }, [tab, terminalTheme])
 

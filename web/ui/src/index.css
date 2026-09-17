@@ -64,9 +64,8 @@
   --color-bg-gradient-end: var(--background);
   --color-status-ready: var(--success-token);
   --color-status-ready-bg: color-mix(in srgb, var(--success-token) 15%, transparent);
-  /* Terminal stays dark in both appearances, matching the console well. */
-  --color-console: oklch(0.145 0.028 290);
-  --color-console-fg: #e7e1f5;
+  --color-console: #f6f2fb;
+  --color-console-fg: #2c2542;
 
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -154,7 +153,8 @@
   --color-bg-gradient-end: var(--background);
   --color-status-ready: var(--success-token);
   --color-status-ready-bg: color-mix(in srgb, var(--success-token) 15%, transparent);
-  --color-console: oklch(0.145 0.028 290);
+  --color-console: #17132a;
+  --color-console-fg: #e7e1f5;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
   --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.35);
   --shadow-glow: 0 0 24px color-mix(in srgb, var(--color-primary) 16%, transparent);
@@ -2336,7 +2336,7 @@ a.guest-card:hover { color: inherit; }
   border: 1px solid var(--border);
   border-bottom: 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--color-card);
+  background: color-mix(in srgb, var(--color-console) 42%, var(--color-card));
   color: var(--color-text);
 }
 .console-traffic {
@@ -2381,7 +2381,14 @@ a.guest-card:hover { color: inherit; }
   height: auto;
 }
 .pve-console-hint { display: none; }
-.console-tabs { display: inline-flex; gap: 0.25rem; background: color-mix(in srgb, var(--bg) 70%, #000); border: 1px solid var(--border); border-radius: 8px; padding: 0.15rem; }
+.console-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  background: color-mix(in srgb, var(--color-console-fg) 6%, var(--color-card));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.15rem;
+}
 .console-tab {
   border: 0;
   background: transparent;
@@ -2391,7 +2398,10 @@ a.guest-card:hover { color: inherit; }
   font-size: 0.8rem;
   cursor: pointer;
 }
-.console-tab.active { background: color-mix(in srgb, var(--accent, #5b8def) 35%, transparent); color: var(--color-text); }
+.console-tab.active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--color-card));
+  color: var(--color-text);
+}
 .console-tab:disabled { opacity: 0.45; cursor: not-allowed; }
 .ssh-user-field {
   display: inline-flex;
@@ -2439,11 +2449,12 @@ a.guest-card:hover { color: inherit; }
 .pve-ssh-window .console-pane-stack {
   min-height: 0;
 }
-.console-xterm { padding: 0; background: var(--color-console); min-height: 0; }
+.console-xterm { padding: 0; background: var(--color-console); min-height: 0; color: var(--color-console-fg); }
 .console-xterm .xterm {
   width: 100% !important;
   height: 100% !important;
   padding: 0;
+  color: var(--color-console-fg);
   background: var(--color-console);
 }
 .console-xterm .xterm-viewport {
@@ -2795,8 +2806,8 @@ a.guest-card:hover { color: inherit; }
   font-family: var(--mono);
   font-size: 0.75rem;
   line-height: 1.45;
-  background: var(--color-console, var(--color-surface));
-  color: var(--color-console-fg, #e7e1f5);
+  background: var(--color-console);
+  color: var(--color-console-fg);
   border: 0;
   border-radius: 0;
   white-space: pre-wrap;
@@ -2837,11 +2848,15 @@ a.guest-card:hover { color: inherit; }
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+  background: var(--color-console);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
-.updates-log-card > .table-meta {
-  padding: 0.65rem 1rem 0;
-  flex: 0 0 auto;
+.updates-log-card > .pve-console-bar {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .pve-tabbody .updates-page {

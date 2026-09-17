@@ -4,17 +4,18 @@ export const THEME_APPEARANCE_KEY = 'pertisk_theme_appearance'
 const CONSOLE_TERM_DARK = {
   background: '#17132a',
   foreground: '#e7e1f5',
-  cursor: '#b79cff',
+  cursor: '#c4b5fd',
   cursorAccent: '#17132a',
   selectionBackground: '#4c3f7a',
-  black: '#2a2440',
+  selectionInactiveBackground: '#322a52',
+  black: '#1e1a30',
   red: '#ff7b72',
   green: '#8ce39b',
   yellow: '#f0d98c',
   blue: '#a78bfa',
   magenta: '#c792ea',
   cyan: '#89ddff',
-  white: '#e7e1f5',
+  white: '#d4cce8',
   brightBlack: '#6b6390',
   brightRed: '#ff8a84',
   brightGreen: '#7aecb8',
@@ -23,6 +24,31 @@ const CONSOLE_TERM_DARK = {
   brightMagenta: '#e0c4ff',
   brightCyan: '#a5f3fc',
   brightWhite: '#ffffff',
+}
+
+const CONSOLE_TERM_LIGHT = {
+  background: '#f6f2fb',
+  foreground: '#2c2542',
+  cursor: '#6d4ad4',
+  cursorAccent: '#f6f2fb',
+  selectionBackground: '#ddd4f5',
+  selectionInactiveBackground: '#ece7f6',
+  black: '#2c2542',
+  red: '#c23d48',
+  green: '#217a4c',
+  yellow: '#8f6410',
+  blue: '#5340c5',
+  magenta: '#933a9e',
+  cyan: '#147a8e',
+  white: '#d8d2e6',
+  brightBlack: '#6e668c',
+  brightRed: '#dc4d56',
+  brightGreen: '#1d9460',
+  brightYellow: '#b07a14',
+  brightBlue: '#6b57db',
+  brightMagenta: '#b04ab8',
+  brightCyan: '#1a8fa6',
+  brightWhite: '#1f1a32',
 }
 
 const LEGACY_INLINE_TOKENS = [
@@ -99,6 +125,5 @@ export function initTheme() {
 }
 
 export function terminalPalette(appearance) {
-  void appearance
-  return CONSOLE_TERM_DARK
+  return normalizeAppearance(appearance) === 'light' ? CONSOLE_TERM_LIGHT : CONSOLE_TERM_DARK
 }

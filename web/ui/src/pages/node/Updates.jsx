@@ -176,8 +176,15 @@ export default function NodeUpdates() {
             )}
           </section>
         )}
-        <section className="card updates-log-card">
-          <div className="table-meta">Output</div>
+        <section className="updates-log-card">
+          <div className="pve-console-bar">
+            <span className="console-traffic" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </span>
+            <span>Output</span>
+          </div>
           <pre className="update-log">
             {log || 'Refresh or Upgrade to see package-manager output here.'}
           </pre>
