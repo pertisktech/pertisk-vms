@@ -66,6 +66,7 @@
   --color-status-ready-bg: color-mix(in srgb, var(--success-token) 15%, transparent);
   /* Terminal stays dark in both appearances, matching the console well. */
   --color-console: oklch(0.145 0.028 290);
+  --color-console-fg: #e7e1f5;
 
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -2795,7 +2796,7 @@ a.guest-card:hover { color: inherit; }
   font-size: 0.75rem;
   line-height: 1.45;
   background: var(--color-console, var(--color-surface));
-  color: var(--color-naturals-n0, inherit);
+  color: var(--color-console-fg, #e7e1f5);
   border: 0;
   border-radius: 0;
   white-space: pre-wrap;
@@ -2844,7 +2845,9 @@ a.guest-card:hover { color: inherit; }
 }
 
 .pve-tabbody .updates-page {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .repo-enable {
   display: inline-flex;

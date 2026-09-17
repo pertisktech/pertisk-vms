@@ -25,16 +25,22 @@ export default function NodeUpdates() {
     load()
   }, [load])
 
+  function applyLog(result) {
+    const text = typeof result?.log === 'string' ? result.log.trim() : ''
+    setLog(text || 'Finished.')
+  }
+
   async function refresh() {
     setBusy('refresh')
     setError('')
+    setLog('Refreshing package lists…')
     try {
       const result = await api('/v1/updates/refresh', { method: 'POST' })
-      setLog(result?.log || '')
+      applyLog(result)
       await load()
       inv.refresh()
     } catch (err) {
-      setError(err.message || String(err))
+      setLog(err.message || String(err))
     } finally {
       setBusy('')
     }
@@ -51,13 +57,14 @@ export default function NodeUpdates() {
     if (!ok) return
     setBusy('upgrade')
     setError('')
+    setLog('Installing updates…')
     try {
       const result = await api('/v1/updates/upgrade', { method: 'POST' })
-      setLog(result?.log || '')
+      applyLog(result)
       await load()
       inv.refresh()
     } catch (err) {
-      setError(err.message || String(err))
+      setLog(err.message || String(err))
     } finally {
       setBusy('')
     }
@@ -83,8 +90,6 @@ export default function NodeUpdates() {
 
   const packages = asList(status?.packages)
   const ready = status?.apt !== false
-  const busyLabel =
-    busy === 'refresh' ? 'Refreshing package lists…' : busy === 'upgrade' ? 'Installing updates…' : busy === 'reboot' ? 'Restarting node…' : ''
 
   return (
     <div className="dash-page updates-page">
@@ -122,7 +127,7 @@ export default function NodeUpdates() {
             </button>
           </div>
         )}
-        {busyLabel && <div className="banner">{busyLabel}</div>}
+        {busy === 'reboot' && <div className="banner">Restarting node…</div>}
         {status?.reboot_required && !busy && (
           <div className="banner">A reboot is required to finish a kernel or firmware update.</div>
         )}
@@ -171,12 +176,12 @@ export default function NodeUpdates() {
             )}
           </section>
         )}
-        {log ? (
-          <section className="card updates-log-card">
-            <div className="table-meta">Output</div>
-            <pre className="update-log">{log}</pre>
-          </section>
-        ) : null}
+        <section className="card updates-log-card">
+          <div className="table-meta">Output</div>
+          <pre className="update-log">
+            {log || 'Refresh or Upgrade to see package-manager output here.'}
+          </pre>
+        </section>
       </div>
     </div>
   )
