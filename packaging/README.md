@@ -3,7 +3,8 @@
 Customer x86_64 UEFI install path:
 
 1. `scripts/build-rpm.sh` — builds `pertisk-vms` RPM (binaries + Cloud Hypervisor + units).
-2. `scripts/build-alma-iso.sh` — wraps AlmaLinux 10 **boot.iso** + Kickstart + RPM via `mkksiso`.
+2. `scripts/build-alma-iso.sh` — wraps AlmaLinux 10 **boot.iso** + Kickstart + RPM via `mkksiso`,
+   and injects Anaconda `images/product.img` branding from [`anaconda-branding/`](anaconda-branding/).
 
 The default base is the ~1 GiB network `boot.iso` (Anaconda pulls BaseOS/AppStream from
 `repo.almalinux.org`). That avoids needing ~12 GiB free to remaster the full DVD.

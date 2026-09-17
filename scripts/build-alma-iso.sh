@@ -98,6 +98,12 @@ fi
 OUT_ISO="$RELEASE_DIR/pertisk-node-${VERSION}-x86_64.iso"
 rm -f "$OUT_ISO"
 
+echo "=== Anaconda product.img (Pertisk branding) ==="
+chmod +x "$ROOT/packaging/anaconda-branding/build-product-img.sh"
+PRODUCT_IMG="$ADD_DIR/product.img"
+"$ROOT/packaging/anaconda-branding/build-product-img.sh" "$VERSION" "$PRODUCT_IMG"
+[[ -f "$PRODUCT_IMG" ]] || die "failed to build product.img"
+
 # xorriso writes a full new image ≈ input size + payload; need that free on $RELEASE_DIR.
 ISO_BYTES="$(stat -c%s "$ALMA_ISO" 2>/dev/null || stat -f%z "$ALMA_ISO")"
 PAYLOAD_BYTES="$(du -sb "$ADD_DIR" | awk '{print $1}')"
@@ -113,12 +119,33 @@ CMDLINE="inst.ks=cdrom:/pertisk-node.ks ip=dhcp rd.neednet=1 inst.waitfornet=60 
 
 echo "=== mkksiso (base=$(basename "$ALMA_ISO")) ==="
 # --ks injects the Kickstart onto the ISO; --add places RPMs at /pertisk/.
+# GRUB menu labels: AlmaLinux → Pertisk VM.
+# --updates: Anaconda also loads this as an updates.img-style overlay (backup if
+# /images/product.img path is missing or ignored on some media layouts).
 mkksiso \
   --ks "$KS" \
   --add "$ADD_DIR/pertisk" \
+  --updates "$PRODUCT_IMG" \
   --cmdline "$CMDLINE" \
+  --replace "Install AlmaLinux 10.2" "Install Pertisk VM" \
+  --replace "Test this media & install AlmaLinux 10.2" "Test this media & install Pertisk VM" \
+  --replace "Install AlmaLinux 10.2 in FIPS mode" "Install Pertisk VM in FIPS mode" \
+  --replace "Install AlmaLinux 10.2 in basic graphics mode" "Install Pertisk VM in basic graphics mode" \
+  --replace "Rescue an AlmaLinux system" "Rescue a Pertisk VM system" \
   "$ALMA_ISO" \
   "$OUT_ISO"
+
+# Anaconda auto-loads /images/product.img (pixmaps + .buildstamp product name).
+# mkksiso --add only maps to the ISO root basename, so inject with xorriso.
+echo "=== inject images/product.img ==="
+OUT_TMP="$OUT_ISO.tmp"
+rm -f "$OUT_TMP"
+xorriso -indev "$OUT_ISO" -outdev "$OUT_TMP" -boot_image any replay \
+  -map "$PRODUCT_IMG" /images/product.img
+mv -f "$OUT_TMP" "$OUT_ISO"
+if command -v implantisomd5 >/dev/null; then
+  implantisomd5 "$OUT_ISO" >/dev/null || true
+fi
 
 echo
 echo "=== iso ==="
@@ -126,3 +153,4 @@ ls -lh "$OUT_ISO"
 echo "Build host only: copy $OUT_ISO to a machine with the USB stick, then flash there."
 echo "  sudo dd if=pertisk-node-${VERSION}-x86_64.iso of=/dev/sdY bs=4M status=progress conv=fsync"
 echo "Boot UEFI with Secure Boot disabled. Anaconda installs AlmaLinux + pertiskd (network required for boot.iso)."
+echo "Installer UI: Pertisk branding (product.img) — logo, sidebar, product name."

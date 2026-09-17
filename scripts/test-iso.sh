@@ -123,6 +123,20 @@ grep -q 'pertisk.autodisk' "$ROOT/packaging/kickstart/pertisk-node.ks" \
   || { echo "FAIL kickstart must support pertisk.autodisk serial fallback"; fail=1; }
 grep -q 'inst.graphical' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL ISO cmdline must force inst.graphical"; fail=1; }
+grep -q 'images/product.img' "$ROOT/scripts/build-alma-iso.sh" \
+  || { echo "FAIL Alma ISO build must inject Anaconda product.img branding"; fail=1; }
+grep -q 'Install Pertisk VM' "$ROOT/scripts/build-alma-iso.sh" \
+  || { echo "FAIL Alma ISO build must rebrand GRUB Install menu"; fail=1; }
+[[ -f "$ROOT/packaging/anaconda-branding/pixmaps/sidebar-logo.png" ]] \
+  || { echo "FAIL missing Anaconda sidebar-logo.png"; fail=1; }
+[[ -f "$ROOT/packaging/anaconda-branding/redhat.css" ]] \
+  || { echo "FAIL missing Anaconda redhat.css branding"; fail=1; }
+grep -q '^Product=Pertisk VM$' "$ROOT/packaging/anaconda-branding/buildstamp" \
+  || { echo "FAIL Anaconda buildstamp Product must be Pertisk VM"; fail=1; }
+grep -qF 'Product=Pertisk VM ${VERSION}' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
+  || { echo "FAIL build-product-img must put full VERSION in Product (Anaconda trims X.Y.Z→X.Y)"; fail=1; }
+bash -n "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
+  || { echo "FAIL bash -n build-product-img.sh"; fail=1; }
 if grep -qE '^CMDLINE=.*console=ttyS0' "$ROOT/scripts/build-alma-iso.sh"; then
   echo "FAIL ISO cmdline must not use dual console=ttyS0 (scrambles installer UI)"
   fail=1

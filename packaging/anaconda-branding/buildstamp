@@ -1,0 +1,9 @@
+[Main]
+Product=Pertisk VM
+Version=
+BugURL=https://github.com/pertisktech/pertisk-vms/issues
+IsFinal=True
+UUID=pertisk.x86_64
+Variant=Node
+[Compose]
+Lorax=pertisk-node

@@ -1,0 +1,39 @@
+/* Pertisk Anaconda GTK overrides (replaces AlmaLinux redhat.css via product.img).
+ * Must override AlmaLinux purple (@almalinux / @redhat) — left panel uses these. */
+
+@define-color almalinux #121418;
+@define-color redhat #121418;
+@define-color product_bg_color #121418;
+@define-color pertisk #121418;
+
+.logo-sidebar {
+    background-image: url('/usr/share/anaconda/pixmaps/sidebar-bg.png');
+    background-color: #121418;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-position: top left;
+}
+
+/* Wordmark: keep large enough that "PERTISK" stays readable in the ~200px rail. */
+.logo {
+    background-image: url('/usr/share/anaconda/pixmaps/sidebar-logo.png');
+    background-position: 50% 24px;
+    background-repeat: no-repeat;
+    background-size: 92% auto;
+    background-color: transparent;
+    min-height: 120px;
+}
+
+.product-logo {
+    background-image: none;
+    background-color: transparent;
+}
+
+AnacondaSpokeWindow #nav-box {
+    background-color: #121418;
+    background-image: url('/usr/share/anaconda/pixmaps/topbar-bg.png');
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-position: top left;
+    color: white;
+}
