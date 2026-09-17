@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { disksOf, isCloudInitIso, isTemplate, netsOf } from '../api'
 import { Btn, Icon } from '../components/Icons'
+import { hclLines } from '../hclHighlight'
 
 function quote(value) {
   return `"${String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
@@ -215,8 +216,22 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
   return `${chunks.join('\n\n')}\n`
 }
 
+function HclLine({ tokens }) {
+  return tokens.map((tok, i) =>
+    tok.type === 'ws' ? (
+      tok.text
+    ) : (
+      <span key={i} className={`tf-tok tf-tok-${tok.type}`}>
+        {tok.text}
+      </span>
+    ),
+  )
+}
+
 function CodeBlock({ value, label }) {
   const [copied, setCopied] = useState(false)
+  const lines = useMemo(() => hclLines(value), [value])
+  const digits = String(lines.length).length
 
   async function copy() {
     try {
@@ -230,10 +245,29 @@ function CodeBlock({ value, label }) {
 
   return (
     <div className="tf-code-wrap">
-      <Btn icon={copied ? 'check' : 'clone'} variant="secondary" className="tf-copy" onClick={copy}>
-        {copied ? 'Copied' : label || 'Copy'}
-      </Btn>
-      <pre className="tf-code">{value}</pre>
+      <div className="tf-code-bar">
+        <span className="tf-lang">
+          <Icon name="terraform" size={14} />
+          HCL
+        </span>
+        <Btn icon={copied ? 'check' : 'clone'} variant="secondary" className="tf-copy" onClick={copy}>
+          {copied ? 'Copied' : label || 'Copy'}
+        </Btn>
+      </div>
+      <pre className="tf-code" translate="no" tabIndex={0}>
+        <code className="tf-code-inner" style={{ '--tf-ln-cols': String(digits) }}>
+          {lines.map((tokens, i) => (
+            <span className="tf-line" key={i}>
+              <span className="tf-ln" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="tf-line-src">
+                <HclLine tokens={tokens} />
+              </span>
+            </span>
+          ))}
+        </code>
+      </pre>
     </div>
   )
 }
