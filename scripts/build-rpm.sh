@@ -34,7 +34,8 @@ VERSION="${VERSION:-$(cargo_version)}"
 [[ -n "$VERSION" ]] || die "set VERSION"
 VERSION="${VERSION#v}"
 # RPM versions cannot contain some git dirty markers cleanly; sanitize lightly.
-RPM_VERSION="$(echo "$VERSION" | tr -c 'A-Za-z0-9._+' '_')"
+# Use printf (not echo): echo appends a newline, and tr -c turns that into a trailing '_'.
+RPM_VERSION="$(printf '%s' "$VERSION" | tr -c 'A-Za-z0-9._+' '_')"
 
 TOP="$ROOT/packaging/rpm/rpmbuild"
 PAYLOAD="$TOP/SOURCES/payload"
