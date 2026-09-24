@@ -39,6 +39,13 @@ cat >"$PROD/etc/anaconda/conf.d/90-pertisk-branding.conf" <<'EOF'
 # Pertisk product.img branding — stylesheet path matches AlmaLinux (rhel) profile.
 [User Interface]
 custom_stylesheet = /usr/share/anaconda/pixmaps/redhat.css
+
+# AlmaLinux caps / at 70 GiB and gives the rest to /home. VM disks live under
+# /var/lib/pertisk, so the grow volume must be that mount, not /home.
+[Storage]
+default_partitioning =
+    /                 (min 10 GiB, max 70 GiB)
+    /var/lib/pertisk  (min 10 GiB)
 EOF
 
 if [[ -z "$OUT" ]]; then

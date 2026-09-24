@@ -84,7 +84,8 @@ host_arch() {
 }
 
 [[ "$(uname -s)" == "Linux" ]] || die "build the image on Linux (this host is $(uname -s))"
-export PATH="${HOME}/.local/bin:${PATH}"
+# sudo's secure_path often omits /usr/local/bin and ~/.local/bin (where pip mkosi lands).
+export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
 command -v cargo >/dev/null || die "cargo not in PATH"
 command -v mkosi >/dev/null || die "install mkosi (https://github.com/systemd/mkosi). Debian: apt install mkosi  |  CI: ./scripts/ci-install-deps.sh"
 command -v curl >/dev/null || die "curl not in PATH"

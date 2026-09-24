@@ -135,6 +135,8 @@ grep -q '^Product=Pertisk VM$' "$ROOT/packaging/anaconda-branding/buildstamp" \
   || { echo "FAIL Anaconda buildstamp Product must be Pertisk VM"; fail=1; }
 grep -qF 'Product=Pertisk VM ${VERSION}' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
   || { echo "FAIL build-product-img must put full VERSION in Product (Anaconda trims X.Y.Z→X.Y)"; fail=1; }
+grep -q '/var/lib/pertisk' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
+  || { echo "FAIL Anaconda default layout must grow /var/lib/pertisk not /home"; fail=1; }
 bash -n "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
   || { echo "FAIL bash -n build-product-img.sh"; fail=1; }
 if grep -qE '^CMDLINE=.*console=ttyS0' "$ROOT/scripts/build-alma-iso.sh"; then
