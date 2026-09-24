@@ -1,0 +1,18 @@
+[Unit]
+Description=pertisk-vm IPv4 (NetworkManager) + console IP
+After=NetworkManager.service network-online.target
+Wants=NetworkManager.service
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/pertisk-net
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

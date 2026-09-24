@@ -114,17 +114,20 @@ install -m 644 "$OVERLAY/etc/systemd/system/serial-getty@ttyS0.service.d/autolog
 install -m 644 "$OVERLAY/etc/systemd/journald.conf.d/pertisk-no-console.conf" \
   "$PAYLOAD/etc/systemd/journald.conf.d/pertisk-no-console.conf"
 
-# Alma-specific overlays (install policy, NM, presets).
+# Alma-specific overlays (install policy, NM, presets, Alma pertisk-net).
 cp -a "$ALMA_OVERLAY"/. "$PAYLOAD"/
 # setup/systemd already own these; packaging them causes Anaconda DNF file conflicts.
 rm -f "$PAYLOAD/etc/hostname" "$PAYLOAD/etc/hosts" "$PAYLOAD/etc/motd"
 printf '%s\n' "$VERSION" >"$PAYLOAD/etc/pertisk/version"
+chmod 755 "$PAYLOAD/usr/sbin/"* 2>/dev/null || true
 
-# After=network-online is enough; NetworkManager provides it on Alma.
-tmp="$(mktemp)"
-sed 's/After=systemd-networkd.service/After=network-online.target NetworkManager.service/;s/Wants=systemd-networkd.service/Wants=network-online.target/' \
-  "$PAYLOAD/usr/lib/systemd/system/pertisk-net.service" >"$tmp"
-mv "$tmp" "$PAYLOAD/usr/lib/systemd/system/pertisk-net.service"
+# Ensure Alma unit waits on NetworkManager if overlay did not replace it.
+if grep -q systemd-networkd "$PAYLOAD/usr/lib/systemd/system/pertisk-net.service" 2>/dev/null; then
+  tmp="$(mktemp)"
+  sed 's/After=systemd-networkd.service/After=network-online.target NetworkManager.service/;s/Wants=systemd-networkd.service/Wants=NetworkManager.service/' \
+    "$PAYLOAD/usr/lib/systemd/system/pertisk-net.service" >"$tmp"
+  mv "$tmp" "$PAYLOAD/usr/lib/systemd/system/pertisk-net.service"
+fi
 
 cp "$SPEC" "$TOP/SPECS/pertisk-vms.spec"
 

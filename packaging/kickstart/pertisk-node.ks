@@ -128,6 +128,46 @@ touch /var/lib/pertisk/.setup-done
 
 mkdir -p /etc/NetworkManager/system-connections
 
+# Ensure Anaconda-written keyfiles autoconnect after reboot (nmcli may be unavailable in %post).
+for f in /etc/NetworkManager/system-connections/*; do
+  [[ -f "$f" ]] || continue
+  grep -q '^\[connection\]' "$f" 2>/dev/null || continue
+  if grep -q '^autoconnect=' "$f" 2>/dev/null; then
+    sed -i 's/^autoconnect=.*/autoconnect=true/' "$f" || true
+  else
+    sed -i '/^\[connection\]/a autoconnect=true' "$f" || true
+  fi
+  if grep -q '^\[ipv4\]' "$f" 2>/dev/null; then
+    if grep -qE '^method=(disabled|link-local)' "$f" 2>/dev/null; then
+      sed -i 's/^method=disabled$/method=auto/;s/^method=link-local$/method=auto/' "$f" || true
+    elif ! grep -q '^method=' "$f" 2>/dev/null; then
+      sed -i '/^\[ipv4\]/a method=auto' "$f" || true
+    fi
+  fi
+  chmod 600 "$f" || true
+done
+# Low-priority fallback if the GUI left no ethernet connection.
+if [[ ! -f /etc/NetworkManager/system-connections/pertisk-ethernet-fallback.nmconnection ]]; then
+  cat >/etc/NetworkManager/system-connections/pertisk-ethernet-fallback.nmconnection <<'EOF'
+[connection]
+id=pertisk-ethernet-fallback
+uuid=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+type=ethernet
+autoconnect=true
+autoconnect-priority=-900
+multi-connect=3
+
+[ethernet]
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+  chmod 600 /etc/NetworkManager/system-connections/pertisk-ethernet-fallback.nmconnection
+fi
+
 if command -v firewall-offline-cmd >/dev/null 2>&1; then
   firewall-offline-cmd --add-service=ssh || true
   firewall-offline-cmd --add-port=7443/tcp || true
