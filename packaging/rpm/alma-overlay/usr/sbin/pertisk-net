@@ -1,0 +1,108 @@
+#!/bin/bash
+# AlmaLinux: ensure IPv4 via NetworkManager (not systemd-networkd).
+# Recovers when Anaconda/br0 autoconnect loses the race after firstboot.
+set -euo pipefail
+
+mkdir -p /run /etc/issue.d
+exec 9>/run/pertisk-net.lock
+flock -n 9 || exit 0
+
+ISSUE=/etc/issue.d/pertisk-ip.issue
+
+have_ip() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | grep -q /
+}
+
+have_ip_on() {
+  ip -4 -o addr show dev "$1" scope global 2>/dev/null | awk '{print $4}' | grep -q /
+}
+
+systemctl start NetworkManager.service >/dev/null 2>&1 || true
+for _ in 1 2 3 4 5 6 7 8; do
+  if command -v nmcli >/dev/null && nmcli -t general status >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+# Bring physical NICs up so carrier is visible.
+for path in /sys/class/net/*; do
+  nic="${path##*/}"
+  case "$nic" in lo|br*|docker*|veth*|tap*|wlan*|wl*|wwan*) continue ;; esac
+  [[ -d "$path/device" ]] || continue
+  ip link set "$nic" up 2>/dev/null || true
+done
+sleep 2
+
+nm_up() {
+  command -v nmcli >/dev/null || return 1
+  # Prefer LAN bridge (Proxmox-style) when present.
+  if [[ -d /sys/class/net/br0/bridge ]]; then
+    nmcli -g connection.uuid connection show br0 >/dev/null 2>&1 \
+      && nmcli connection up br0 >/dev/null 2>&1 || true
+    nmcli device connect br0 >/dev/null 2>&1 || true
+  fi
+  # Activate any ethernet connection that should autoconnect.
+  while IFS=: read -r name uuid type; do
+    [[ "$type" == "802-3-ethernet" || "$type" == "bridge" ]] || continue
+    nmcli connection up uuid "$uuid" >/dev/null 2>&1 || true
+  done < <(nmcli -t -f NAME,UUID,TYPE connection show 2>/dev/null || true)
+  # Last resort: connect every cabled ethernet device.
+  for path in /sys/class/net/*; do
+    nic="${path##*/}"
+    case "$nic" in lo|docker*|veth*|tap*|wlan*|wl*|wwan*) continue ;; esac
+    [[ -d "$path/device" || -d "$path/bridge" ]] || continue
+    carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
+    [[ "$carrier" == "1" ]] || continue
+    # Skip bridge ports — IP belongs on the bridge.
+    [[ -e "/sys/class/net/$nic/master" ]] && continue
+    if have_ip_on "$nic" || { [[ -d /sys/class/net/br0/bridge ]] && have_ip_on br0; }; then
+      continue
+    fi
+    nmcli device connect "$nic" >/dev/null 2>&1 || true
+  done
+}
+
+cabled=0
+for path in /sys/class/net/*; do
+  nic="${path##*/}"
+  case "$nic" in lo|docker*|veth*|tap*|wlan*|wl*|wwan*) continue ;; esac
+  [[ -d "$path/device" || -d "$path/bridge" ]] || continue
+  carrier="$(cat "$path/carrier" 2>/dev/null || echo 0)"
+  if [[ "$carrier" == "1" ]]; then
+    cabled=1
+    break
+  fi
+done
+
+if [[ "$cabled" -eq 0 ]]; then
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm  no cable — plug a LAN port.
+EOF
+  echo "pertisk-net: no carrier"
+  ip -br link || true
+  exit 0
+fi
+
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  have_ip && break
+  nm_up
+  sleep 2
+done
+
+ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+if [[ -n "$ips" ]]; then
+  printf 'pertisk-vm  http://%s:7480/  user admin  password in /etc/pertisk/admin\n' "$ips" >"$ISSUE"
+  echo "pertisk-net: $ips"
+  if [[ -x /usr/sbin/pertisk-fix-dns ]]; then
+    /usr/sbin/pertisk-fix-dns || true
+  fi
+else
+  cat >"$ISSUE" <<'EOF'
+pertisk-vm  cable up but no IPv4. Check DHCP/switch, then: nmcli networking on && nmcli device status
+EOF
+  echo "pertisk-net: carrier but no IPv4"
+  command -v nmcli >/dev/null && nmcli -t device status || true
+fi
+ip -br a || true
+exit 0

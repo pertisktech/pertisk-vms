@@ -58,6 +58,20 @@ if command -v nmcli >/dev/null 2>&1 && {
   systemctl is-active --quiet NetworkManager 2>/dev/null \
     || [[ -d /etc/NetworkManager ]]
 }; then
+  # Remember IPv4 mode from the active Anaconda connection (static vs DHCP).
+  ipv4_method=auto
+  ipv4_addr=""
+  ipv4_gw=""
+  ipv4_dns=""
+  while IFS=: read -r uuid device _; do
+    [[ "$device" == "$nic" ]] || continue
+    ipv4_method="$(nmcli -g ipv4.method connection show "$uuid" 2>/dev/null || echo auto)"
+    ipv4_addr="$(nmcli -g ipv4.addresses connection show "$uuid" 2>/dev/null || true)"
+    ipv4_gw="$(nmcli -g ipv4.gateway connection show "$uuid" 2>/dev/null || true)"
+    ipv4_dns="$(nmcli -g ipv4.dns connection show "$uuid" 2>/dev/null || true)"
+    break
+  done < <(nmcli -t -f UUID,DEVICE connection show --active 2>/dev/null || true)
+
   while IFS=: read -r uuid device _; do
     [[ "$device" == "$nic" ]] || continue
     nmcli connection down "$uuid" >/dev/null 2>&1 || true
@@ -65,14 +79,35 @@ if command -v nmcli >/dev/null 2>&1 && {
   done < <(nmcli -t -f UUID,DEVICE connection show 2>/dev/null || true)
   nmcli connection delete "$BRIDGE" >/dev/null 2>&1 || true
   nmcli connection delete "${BRIDGE}-${nic}" >/dev/null 2>&1 || true
+
   nmcli connection add type bridge ifname "$BRIDGE" con-name "$BRIDGE" \
-    connection.autoconnect yes bridge.stp no \
-    ipv4.method auto ipv6.method auto \
+    connection.autoconnect yes connection.autoconnect-priority 100 \
+    bridge.stp no \
+    ipv4.method "$ipv4_method" ipv6.method auto \
     ${mac:+ethernet.cloned-mac-address "$mac"} >/dev/null
+  if [[ "$ipv4_method" == "manual" && -n "$ipv4_addr" ]]; then
+    nmcli connection modify "$BRIDGE" ipv4.addresses "$ipv4_addr" >/dev/null
+    [[ -n "$ipv4_gw" ]] && nmcli connection modify "$BRIDGE" ipv4.gateway "$ipv4_gw" >/dev/null
+    [[ -n "$ipv4_dns" ]] && nmcli connection modify "$BRIDGE" ipv4.dns "$ipv4_dns" >/dev/null
+  fi
   nmcli connection add type ethernet ifname "$nic" con-name "${BRIDGE}-${nic}" \
-    slave-type bridge master "$BRIDGE" connection.autoconnect yes >/dev/null
-  nmcli connection up "$BRIDGE" >/dev/null || true
-  nmcli connection up "${BRIDGE}-${nic}" >/dev/null || true
+    slave-type bridge master "$BRIDGE" \
+    connection.autoconnect yes connection.autoconnect-priority 100 >/dev/null
+
+  # Slave then bridge; retry — NM often needs a few seconds after create.
+  ok=0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    nmcli connection up "${BRIDGE}-${nic}" >/dev/null 2>&1 || true
+    nmcli connection up "$BRIDGE" >/dev/null 2>&1 || true
+    if ip -4 -o addr show dev "$BRIDGE" scope global 2>/dev/null | grep -q /; then
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$ok" -ne 1 ]]; then
+    echo "pertisk-host-bridge: br0 created but no IPv4 yet (pertisk-net will retry)" >&2
+  fi
   exit 0
 fi
 
