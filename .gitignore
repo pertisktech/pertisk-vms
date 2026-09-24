@@ -10,6 +10,8 @@ terraform-provider-pertisk-vms/terraform-provider-pertisk-vms
 /data
 /out
 /release
+# mkosi host tools tree (built locally; large, not source)
+iso/mkosi.tools/
 iso/overlay/etc/pertisk/version
 *.swp
 web/ui/node_modules
