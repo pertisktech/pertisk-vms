@@ -1,5 +1,5 @@
 [Main]
-Product=Pertisk VM
+Product=Pertisk Vms
 Version=
 BugURL=https://github.com/pertisktech/pertisk-vms/issues
 IsFinal=True

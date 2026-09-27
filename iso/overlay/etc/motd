@@ -1,4 +1,4 @@
-pertisk-vm node
+Pertisk Vms node
 Install to NVMe:  pertisk-install --auto
 Repair NVMe boot: pertisk-fix-nvme-boot /dev/nvme0n1
 Unplug USB after install. UI: http://<ip>:7480/  admin (see /etc/pertisk/admin)

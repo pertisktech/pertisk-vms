@@ -1,5 +1,5 @@
 [Unit]
-Description=Pertisk first-boot setup wizard
+Description=Pertisk Vms first-boot setup wizard
 Documentation=https://github.com/pertisktech/pertisk-vms
 # Run late enough that /dev/tty1 exists, but do not wait on kdump/network forever.
 After=local-fs.target

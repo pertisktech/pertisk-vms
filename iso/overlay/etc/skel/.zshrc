@@ -16,7 +16,7 @@ if [[ -z "${_pertisk_plain:-}" && -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-insta
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
-# pertisk-vm host shell: Oh My Zsh + Powerlevel10k
+# Pertisk Vms host shell: Oh My Zsh + Powerlevel10k
 # Prompt style is the shipped ~/.p10k.zsh (from `p10k configure`). Re-run that
 # only to change the look; image/deploy copies this file so the wizard is reused.
 

@@ -222,7 +222,7 @@ pub fn openapi_json() -> serde_json::Value {
     serde_json::json!({
         "openapi": "3.0.3",
         "info": {
-            "title": "pertisk-vm API",
+            "title": "Pertisk Vms API",
             "version": "0.1.0",
             "description": "Virtualization control plane (single-node or clustered)"
         },

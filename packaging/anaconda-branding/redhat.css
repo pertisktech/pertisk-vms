@@ -14,7 +14,7 @@
     background-position: top left;
 }
 
-/* Wordmark: keep large enough that "PERTISK" stays readable in the ~200px rail. */
+/* Wordmark: "Pertisk Vms" fills the pixmap so the ~200px rail stays readable. */
 .logo {
     background-image: url('/usr/share/anaconda/pixmaps/sidebar-logo.png');
     background-position: 50% 24px;

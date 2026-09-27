@@ -362,7 +362,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
                   <p className="field-hint">
                     Paste one public key per line, or leave this empty if the node already has keys in{' '}
                     <code>/etc/pertisk/ssh/authorized_keys</code>. Same as a normal cloud VM: <code>ssh {sshUser}@…</code>{' '}
-                    with your key. A password is optional; Pertisk never expires it.
+                    with your key. A password is optional; Pertisk Vms never expires it.
                   </p>
                 </div>
                 {!accessOk && (

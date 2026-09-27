@@ -43,12 +43,12 @@ fn serve(path: &str) -> Response {
         }
         None => {
             let html = r#"<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/><title>Pertisk VM</title>
+<html lang="en"><head><meta charset="utf-8"/><title>Pertisk Vms</title>
 <style>body{font-family:Inter,system-ui,sans-serif;background:#0c0d18;color:#e6e7f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .card{max-width:32rem;padding:2rem;border:1px solid #23253c;border-radius:12px;background:#131421}
 code{background:#0c0d18;padding:0.2em 0.4em;border-radius:4px}
 a{color:#9a7bf7}</style></head>
-<body><div class="card"><h1>Pertisk VM</h1>
+<body><div class="card"><h1>Pertisk Vms</h1>
 <p>API is up. Build the UI with <code>npm install && npm run build</code> in <code>web/ui</code>, then rebuild pertiskd.</p>
 <p><a href="/v1/health">/v1/health</a></p></div></body></html>"#;
             Response::builder()

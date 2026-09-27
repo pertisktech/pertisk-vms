@@ -4,7 +4,7 @@
 Name:           pertisk-vms
 Version:        %{?pertisk_version}%{!?pertisk_version:0.1.0}
 Release:        1%{?dist}
-Summary:        Pertisk virtualization control plane (node daemon + CLI)
+Summary:        Pertisk Vms virtualization control plane (node daemon + CLI)
 License:        Proprietary
 URL:            https://github.com/pertisktech/pertisk-vms
 BuildArch:      x86_64
@@ -16,7 +16,7 @@ Requires:       NetworkManager
 Requires:       /usr/bin/ssh-keygen
 
 %description
-Pertisk node appliance: pertiskd HTTP/TLS API, CLI, TUI, Cloud Hypervisor
+Pertisk Vms node appliance: pertiskd HTTP/TLS API, CLI, TUI, Cloud Hypervisor
 binary, and systemd units for first boot and networking.
 
 %install
@@ -79,7 +79,7 @@ if [ -x /usr/sbin/pertisk-fix-hosts ]; then
   /usr/sbin/pertisk-fix-hosts >/dev/null 2>&1 || true
 fi
 cat >/etc/motd 2>/dev/null <<'EOF' || true
-pertisk-vm node (AlmaLinux)
+Pertisk Vms node (AlmaLinux)
 UI: https://<ip>:7443/  user admin  password admin (change under Users)
 SSH: root or admin (password from Anaconda)
 EOF

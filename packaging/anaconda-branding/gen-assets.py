@@ -34,16 +34,40 @@ def vertical_gradient(
     return im
 
 
+FONT_CANDIDATES = (
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/google-noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/gnu-free/FreeSansBold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+)
+
+
 def find_font(size: int) -> ImageFont.ImageFont:
-    for path in (
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/google-noto/NotoSans-Bold.ttf",
-        "/usr/share/fonts/gnu-free/FreeSansBold.ttf",
-    ):
+    for path in FONT_CANDIDATES:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
+
+
+def fit_font(text: str, max_width: int, max_height: int) -> ImageFont.ImageFont:
+    """Largest bold face that stays inside the wordmark canvas."""
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    lo, hi = 24, 400
+    best = find_font(lo)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = find_font(mid)
+        bbox = probe.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if tw <= max_width and th <= max_height:
+            best = font
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 def main() -> None:
@@ -59,17 +83,18 @@ def main() -> None:
     ImageDraw.Draw(top).rectangle([0, 126, 1920, 132], fill=(*ACCENT, 255))
     top.save(OUT / "topbar-bg.png", optimize=True)
 
-    # sidebar-logo: fill the canvas like AlmaLinux's wordmark so 70% scale stays readable.
+    # sidebar-logo: fill the canvas like AlmaLinux's wordmark so sidebar scale stays readable.
     # Transparent background; near-white text (Alma uses ~RGB 223,229,219).
-    logo = Image.new("RGBA", (2000, 386), (0, 0, 0, 0))
+    logo_w, logo_h = 2000, 386
+    logo = Image.new("RGBA", (logo_w, logo_h), (0, 0, 0, 0))
     ld = ImageDraw.Draw(logo)
-    title = find_font(160)
-    text = "Pertisk VM"
+    text = "Pertisk Vms"
+    title = fit_font(text, int(logo_w * 0.92), int(logo_h * 0.72))
     ink = (236, 240, 245, 255)
     bbox = ld.textbbox((0, 0), text, font=title)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (2000 - tw) // 2
-    y = (386 - th) // 2
+    x = (logo_w - tw) // 2 - bbox[0]
+    y = (logo_h - th) // 2 - bbox[1]
     ld.text((x, y), text, font=title, fill=ink)
     logo.save(OUT / "sidebar-logo.png", optimize=True)
 

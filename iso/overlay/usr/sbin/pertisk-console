@@ -11,7 +11,7 @@ if [[ -f /etc/pertisk/needs-setup && ! -f /var/lib/pertisk/.setup-done && -x /us
 fi
 
 echo
-echo "pertisk-vm console (root shell, no login password)"
+echo "Pertisk Vms console (root shell, no login password)"
 echo "  TUI:            pertisk-tui"
 echo "  SSH root/admin: password you set in Anaconda"
 echo "  Web UI:         https://<ip>:7443/  user admin  password admin"

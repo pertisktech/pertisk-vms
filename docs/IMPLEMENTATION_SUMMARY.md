@@ -2,7 +2,7 @@
 
 ## Project Status: v1.0 (MVP) + Phase 5 (Cluster) + Graphics Console
 
-This document summarizes the complete implementation of pertisk-vm as of 2026-08-29.
+This document summarizes the complete implementation of Pertisk Vms as of 2026-08-29.
 
 ## Architecture Overview
 

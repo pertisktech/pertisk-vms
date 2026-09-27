@@ -257,7 +257,7 @@ export default function GuestOptions() {
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
                 <p className="field-hint">
-                  This is the name in Pertisk. The Linux hostname is applied by cloud-init on first boot
+                  This is the name in Pertisk Vms. The Linux hostname is applied by cloud-init on first boot
                   (clone again after changing it).
                 </p>
               </div>

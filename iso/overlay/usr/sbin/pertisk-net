@@ -53,7 +53,7 @@ done
 
 if [[ "$cabled" -eq 0 ]]; then
   cat >"$ISSUE" <<'EOF'
-pertisk-vm  no cable — plug either 2.5G LAN port.
+Pertisk Vms  no cable — plug either 2.5G LAN port.
 NVMe: pertisk-install --auto   repair: pertisk-fix-nvme-boot /dev/nvme0n1
 EOF
   echo "pertisk-net: no carrier (plug a LAN cable)"
@@ -82,14 +82,14 @@ done
 
 ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 if [[ -n "$ips" ]]; then
-  printf 'pertisk-vm  http://%s:7480/  user admin  password in /etc/pertisk/admin\n' "$ips" >"$ISSUE"
+  printf 'Pertisk Vms  http://%s:7480/  user admin  password in /etc/pertisk/admin\n' "$ips" >"$ISSUE"
   echo "pertisk-net: $ips"
   if [[ -x /usr/sbin/pertisk-fix-dns ]]; then
     /usr/sbin/pertisk-fix-dns || true
   fi
 else
   cat >"$ISSUE" <<'EOF'
-pertisk-vm  cable up but no DHCP. Check the switch/router.
+Pertisk Vms  cable up but no DHCP. Check the switch/router.
 NVMe: pertisk-install --auto   repair: pertisk-fix-nvme-boot /dev/nvme0n1
 EOF
   echo "pertisk-net: carrier but no IPv4"

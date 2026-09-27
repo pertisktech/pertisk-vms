@@ -25,10 +25,10 @@ cp -f "$BRAND/redhat.css" "$PROD/usr/share/anaconda/pixmaps/redhat.css"
 # Anaconda hub title: "%(productName)s %(productVersion)s INSTALLATION" (uppercased).
 # trim_product_version_for_ui() keeps only major.minor when Version has ≥2 dots
 # (0.1.26 → 0.1). Put the full release in Product and leave Version empty so the
-# banner reads "PERTISK VM 0.1.26 INSTALLATION".
+# banner reads "PERTISK VMS 0.1.26 INSTALLATION".
 {
   echo "[Main]"
-  echo "Product=Pertisk VM ${VERSION}"
+  echo "Product=Pertisk Vms ${VERSION}"
   echo "Version="
   sed -n '/^BugURL=/,$p' "$BRAND/buildstamp"
 } >"$PROD/.buildstamp"

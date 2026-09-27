@@ -685,7 +685,7 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
         ]),
     ];
     let block = Block::default()
-        .title(format!(" pertisk-vm v{VERSION} "))
+        .title(format!(" Pertisk Vms v{VERSION} "))
         .borders(Borders::ALL);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }

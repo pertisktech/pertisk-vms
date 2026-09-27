@@ -125,15 +125,15 @@ grep -q 'inst.graphical' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL ISO cmdline must force inst.graphical"; fail=1; }
 grep -q 'images/product.img' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL Alma ISO build must inject Anaconda product.img branding"; fail=1; }
-grep -q 'Install Pertisk VM' "$ROOT/scripts/build-alma-iso.sh" \
+grep -q 'Install Pertisk Vms' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL Alma ISO build must rebrand GRUB Install menu"; fail=1; }
 [[ -f "$ROOT/packaging/anaconda-branding/pixmaps/sidebar-logo.png" ]] \
   || { echo "FAIL missing Anaconda sidebar-logo.png"; fail=1; }
 [[ -f "$ROOT/packaging/anaconda-branding/redhat.css" ]] \
   || { echo "FAIL missing Anaconda redhat.css branding"; fail=1; }
-grep -q '^Product=Pertisk VM$' "$ROOT/packaging/anaconda-branding/buildstamp" \
-  || { echo "FAIL Anaconda buildstamp Product must be Pertisk VM"; fail=1; }
-grep -qF 'Product=Pertisk VM ${VERSION}' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
+grep -q '^Product=Pertisk Vms$' "$ROOT/packaging/anaconda-branding/buildstamp" \
+  || { echo "FAIL Anaconda buildstamp Product must be Pertisk Vms"; fail=1; }
+grep -qF 'Product=Pertisk Vms ${VERSION}' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
   || { echo "FAIL build-product-img must put full VERSION in Product (Anaconda trims X.Y.Z→X.Y)"; fail=1; }
 grep -q '/var/lib/pertisk' "$ROOT/packaging/anaconda-branding/build-product-img.sh" \
   || { echo "FAIL Anaconda default layout must grow /var/lib/pertisk not /home"; fail=1; }

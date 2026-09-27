@@ -1,4 +1,4 @@
-# pertisk-vm
+# Pertisk Vms
 
 Virtualization control plane in Rust (phases 0–7).
 Default driver on macOS is `mock`. Real guests need Linux KVM + Cloud Hypervisor.

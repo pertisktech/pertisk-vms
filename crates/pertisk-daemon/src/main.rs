@@ -10,7 +10,7 @@ use pertisk_vmm::VmmBackend;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "pertiskd", about = "pertisk-vm node daemon")]
+#[command(name = "pertiskd", about = "Pertisk Vms node daemon")]
 struct Args {
     /// Override PERTISK_HOME (~/.pertisk by default).
     #[arg(long, env = "PERTISK_HOME")]

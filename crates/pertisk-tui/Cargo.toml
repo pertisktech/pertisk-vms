@@ -3,7 +3,7 @@ name = "pertisk-tui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Terminal console for pertisk-vm nodes (IPs, admin password, VM power)"
+description = "Terminal console for Pertisk Vms nodes (IPs, admin password, VM power)"
 
 [[bin]]
 name = "pertisk-tui"

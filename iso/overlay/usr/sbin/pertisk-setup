@@ -354,7 +354,7 @@ ips="${ips:-none}"
 primary="$(echo "$ips" | awk '{print $1}')"
 
 cat >/etc/motd <<EOF
-pertisk-vm node
+Pertisk Vms node
 UI:  https://${primary}:7443/  or  http://${primary}:7480/
      user admin  password in /etc/pertisk/admin
 SSH: root or admin (password you set in pertisk-setup)

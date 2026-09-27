@@ -110,10 +110,10 @@ if is_alma_kickstart && needs_console_setup; then
     cp /etc/pertisk/config.toml "$HOME_DIR/config.toml"
   fi
   cat >/etc/issue.d/pertisk.issue <<'EOF'
-pertisk-vm: run setup on console (HDMI/serial) — hostname, LAN, admin password.
+Pertisk Vms: run setup on console (HDMI/serial) — hostname, LAN, admin password.
 EOF
   cat >/etc/motd <<'EOF'
-pertisk-vm: first-boot setup required.
+Pertisk Vms: first-boot setup required.
 On HDMI/serial console: answer the prompts (or run: pertisk-setup)
 Web UI starts after setup completes.
 EOF
@@ -327,18 +327,18 @@ fi
 
 if [[ "$kvm_ok" -eq 0 ]]; then
   cat >"$ISSUE" <<'EOF'
-pertisk-vm: enable SVM/VT-x in firmware for guests. Disk install does not need it.
+Pertisk Vms: enable SVM/VT-x in firmware for guests. Disk install does not need it.
 Then: systemctl restart pertiskd
 EOF
 else
   cat >"$ISSUE" <<EOF
-pertisk-vm  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
+Pertisk Vms  http://${ips}:7480/   user admin   password ${PERTISK_ADMIN_PASSWORD}
 No IP yet? Plug a LAN cable.
 EOF
 fi
 
 {
-  echo "pertisk-vm node"
+  echo "Pertisk Vms node"
   if show_install_hint; then
     echo "Install to NVMe:   pertisk-install --auto"
     echo "Repair NVMe boot:  pertisk-fix-nvme-boot /dev/nvme0n1"

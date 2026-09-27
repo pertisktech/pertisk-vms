@@ -287,7 +287,7 @@ export default function Layout() {
             </span>
             <span className="pve-brand-copy">
               <span className="pve-brand-text">
-                Pertisk <span className="accent">VM</span>
+                Pertisk <span className="accent">Vms</span>
               </span>
               <span className="pve-brand-ver">{version ? `v${version}` : 'Virtual Environment'}</span>
             </span>

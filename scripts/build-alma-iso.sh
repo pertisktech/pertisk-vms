@@ -119,7 +119,7 @@ CMDLINE="inst.ks=cdrom:/pertisk-node.ks ip=dhcp rd.neednet=1 inst.waitfornet=60 
 
 echo "=== mkksiso (base=$(basename "$ALMA_ISO")) ==="
 # --ks injects the Kickstart onto the ISO; --add places RPMs at /pertisk/.
-# GRUB menu labels: AlmaLinux → Pertisk VM.
+# GRUB menu labels: AlmaLinux → Pertisk Vms.
 # --updates: Anaconda also loads this as an updates.img-style overlay (backup if
 # /images/product.img path is missing or ignored on some media layouts).
 mkksiso \
@@ -127,11 +127,11 @@ mkksiso \
   --add "$ADD_DIR/pertisk" \
   --updates "$PRODUCT_IMG" \
   --cmdline "$CMDLINE" \
-  --replace "Install AlmaLinux 10.2" "Install Pertisk VM" \
-  --replace "Test this media & install AlmaLinux 10.2" "Test this media & install Pertisk VM" \
-  --replace "Install AlmaLinux 10.2 in FIPS mode" "Install Pertisk VM in FIPS mode" \
-  --replace "Install AlmaLinux 10.2 in basic graphics mode" "Install Pertisk VM in basic graphics mode" \
-  --replace "Rescue an AlmaLinux system" "Rescue a Pertisk VM system" \
+  --replace "Install AlmaLinux 10.2" "Install Pertisk Vms" \
+  --replace "Test this media & install AlmaLinux 10.2" "Test this media & install Pertisk Vms" \
+  --replace "Install AlmaLinux 10.2 in FIPS mode" "Install Pertisk Vms in FIPS mode" \
+  --replace "Install AlmaLinux 10.2 in basic graphics mode" "Install Pertisk Vms in basic graphics mode" \
+  --replace "Rescue an AlmaLinux system" "Rescue a Pertisk Vms system" \
   "$ALMA_ISO" \
   "$OUT_ISO"
 

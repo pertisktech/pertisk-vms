@@ -78,7 +78,7 @@ export default function Login() {
           </span>
           <div>
             <h1>
-              Pertisk <span className="accent">VM</span>
+              Pertisk <span className="accent">Vms</span>
             </h1>
             {version ? <p className="login-version">v{version}</p> : null}
           </div>

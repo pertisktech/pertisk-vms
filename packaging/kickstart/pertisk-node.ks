@@ -1,4 +1,4 @@
-# pertisk-node.ks - AlmaLinux 10 node install for Pertisk.
+# pertisk-node.ks - AlmaLinux 10 node install for Pertisk Vms.
 # Embedded by scripts/build-alma-iso.sh (mkksiso).
 #
 # Anaconda GRAPHICAL configures everything interactive:
@@ -52,7 +52,7 @@ cp -a "${SRC}/." /run/pertisk-repo/
 ls -la /run/pertisk-repo/
 
 if [[ -c /dev/tty0 ]]; then
-  printf '\n*** PERTISK 0.1.29 - Anaconda GUI: disk, network, hostname, root/user ***\n' >/dev/tty0 || true
+  printf '\n*** Pertisk Vms 0.1.29 - Anaconda GUI: disk, network, hostname, root/user ***\n' >/dev/tty0 || true
 fi
 
 if ! grep -qw pertisk.autodisk /proc/cmdline 2>/dev/null; then

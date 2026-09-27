@@ -198,7 +198,7 @@ if [[ ! -f "$MNT/etc/fstab" ]]; then
 fi
 
 cat >"$MNT/etc/motd" <<'EOF'
-pertisk-vm node
+Pertisk Vms node
 Running from disk (no pertisk-install needed on Proxmox VM).
 Console TUI:      pertisk-tui
 UI:               https://<this-host>:7443/  user admin  password in /etc/pertisk/admin

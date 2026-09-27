@@ -18,7 +18,7 @@ use pertisk_types::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "pertisk", about = "Operator CLI for pertisk-vm", version)]
+#[command(name = "pertisk", about = "Operator CLI for Pertisk Vms", version)]
 struct Cli {
     #[arg(long, env = "PERTISK_URL", default_value = "http://127.0.0.1:7480")]
     url: String,
