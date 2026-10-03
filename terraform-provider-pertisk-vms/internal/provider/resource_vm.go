@@ -912,6 +912,9 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 			out[i].IP = knownOrNull(out[i].IP)
 			out[i].Tap = knownOrNull(out[i].Tap)
 			out[i].MAC = knownOrNull(out[i].MAC)
+			if out[i].DualStack.IsNull() || out[i].DualStack.IsUnknown() {
+				out[i].DualStack = types.BoolValue(false)
+			}
 			continue
 		}
 		n := vm.Spec.Nets[i]
@@ -923,7 +926,11 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 		} else {
 			out[i].IP = knownOrNull(out[i].IP)
 		}
-		out[i].DualStack = types.BoolValue(n.DualStack)
+		// dual_stack is user config. Older nodes omit it, which decodes as false
+		// and makes Terraform reject the apply ("was true, now false").
+		if out[i].DualStack.IsNull() || out[i].DualStack.IsUnknown() {
+			out[i].DualStack = types.BoolValue(n.DualStack)
+		}
 		if n.Tap != "" {
 			out[i].Tap = types.StringValue(n.Tap)
 		} else {

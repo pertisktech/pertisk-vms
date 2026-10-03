@@ -133,6 +133,21 @@ func TestKeepPlannedBlocksPreservesStarted(t *testing.T) {
 	}
 }
 
+func TestNicsToModelKeepsPlannedDualStack(t *testing.T) {
+	prev := []nicModel{{
+		NetworkID: types.StringValue("net-1"),
+		DualStack: types.BoolValue(true),
+	}}
+	vm := &client.VM{Spec: client.VMSpec{Nets: []client.Nic{{
+		NetworkID: "net-1",
+		IP:        "10.1.1.5",
+	}}}}
+	out := nicsToModel(vm, prev)
+	if len(out) != 1 || !out[0].DualStack.ValueBool() {
+		t.Fatalf("planned dual_stack=true must stay true when the API omits it: %#v", out)
+	}
+}
+
 func TestGuestMatchesPlan(t *testing.T) {
 	plan := vmModel{Name: types.StringValue("rocky-1")}
 	ok := &client.VM{ID: "105", Spec: client.VMSpec{Name: "rocky-1"}}
