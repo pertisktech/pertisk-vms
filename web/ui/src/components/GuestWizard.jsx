@@ -46,6 +46,7 @@ const EMPTY = {
   ciSshKey: '',
   networkId: '',
   nicIp: '',
+  dualStack: false,
   start: true,
 }
 
@@ -137,6 +138,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               autostart: form.autostart,
               network_id: form.networkId || undefined,
               ip: form.nicIp.trim() || undefined,
+              dual_stack: Boolean(form.networkId && form.dualStack),
               cloud_init: form.cloudInit
                 ? {
                     hostname: form.name.trim(),
@@ -229,7 +231,11 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
         await run('Attach NIC', () =>
           api(`/v1/vms/${vm.id}/nics`, {
             method: 'POST',
-            body: { network_id: form.networkId, ip: form.nicIp.trim() || undefined },
+            body: {
+              network_id: form.networkId,
+              ip: form.nicIp.trim() || undefined,
+              dual_stack: form.dualStack,
+            },
           }),
         )
       }
@@ -659,6 +665,20 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 />
               </div>
             )}
+            {form.networkId && (
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.dualStack}
+                  onChange={(e) => set({ dualStack: e.target.checked })}
+                />
+                <span className="chk-box" />
+                <span className="chk-label">
+                  Dual stack
+                  <small>IPv4 plus IPv6 SLAAC. Leave off for IPv4 only.</small>
+                </span>
+              </label>
+            )}
           </>
         )}
 
@@ -703,6 +723,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <dd>
                   {netLabel}
                   {form.networkId && form.nicIp.trim() ? ` · ${form.nicIp.trim()}` : ''}
+                  {form.networkId ? (form.dualStack ? ' · dual stack' : ' · IPv4 only') : ''}
                 </dd>
               </div>
             </dl>

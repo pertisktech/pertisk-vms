@@ -64,6 +64,7 @@ resource "pertisk_vms_vm" "web" {
 
   nic {
     network_id = pertisk_vms_network.lan.id
+    # dual_stack = true  # IPv4 plus IPv6 SLAAC; default is IPv4 only
   }
 
   cloud_init {

@@ -1094,6 +1094,7 @@ impl Service {
                 AttachNicRequest {
                     network_id,
                     ip: req.ip.clone(),
+                    dual_stack: req.dual_stack,
                 },
             )?;
         }
@@ -1169,6 +1170,7 @@ impl Service {
                         ipv4: ipv4_i.as_deref(),
                         gateway: gw_i.as_deref(),
                         prefix: prefix_i,
+                        dual_stack: net.as_ref().is_some_and(|n| n.dual_stack),
                     },
                 )
             })
@@ -1244,6 +1246,7 @@ impl Service {
             ipv4: nic.ip.clone(),
             gateway: net.and_then(|n| n.gateway),
             prefix,
+            dual_stack: nic.dual_stack,
         })
     }
 
@@ -2081,7 +2084,7 @@ impl Service {
             .filter_map(|nic| nic.mac.clone())
             .collect();
         let nic_index = u8::try_from(vm.spec.nets.len()).unwrap_or(0);
-        let nic = self.networks.allocate_nic(
+        let mut nic = self.networks.allocate_nic(
             req.network_id,
             vm.id,
             nic_index,
@@ -2090,6 +2093,7 @@ impl Service {
             &used_macs,
             &self.cluster.self_id().as_bytes(),
         )?;
+        nic.dual_stack = req.dual_stack;
         vm.spec.nets.push(nic);
         self.store.upsert(vm.clone())?;
         Ok(vm)
@@ -4400,6 +4404,7 @@ mod tests {
                     autostart_order: None,
                     network_id: None,
                     ip: None,
+                    dual_stack: false,
                     cloud_init: None,
                     disk_size_bytes: None,
                     start: false,
@@ -4444,6 +4449,7 @@ mod tests {
                     autostart_order: None,
                     network_id: None,
                     ip: None,
+                    dual_stack: false,
                     cloud_init: None,
                     disk_size_bytes: None,
                     start: false,
@@ -4758,6 +4764,7 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
                 AttachNicRequest {
                     network_id: net.id,
                     ip: None,
+                    dual_stack: false,
                 },
             )
             .unwrap();

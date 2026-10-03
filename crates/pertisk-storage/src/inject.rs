@@ -22,6 +22,8 @@ pub struct GuestIdentity<'a> {
     pub ipv4: Option<&'a str>,
     pub gateway: Option<&'a str>,
     pub prefix: Option<u8>,
+    /// IPv4 plus IPv6 SLAAC. False is IPv4 only.
+    pub dual_stack: bool,
 }
 
 /// No-op for tiny raw test images. Linked qcow2 overlays are small on disk but
@@ -47,6 +49,7 @@ pub fn inject_guest_identity(disk: &Path, id: &GuestIdentity<'_>) -> Result<()> 
         ipv4: id.ipv4,
         gateway: id.gateway,
         prefix: id.prefix,
+        dual_stack: id.dual_stack,
     };
     // Hold the NBD lock for attach + LVM + mount. Linked clones share VG
     // UUIDs; activating two at once makes vgchange refuse the second disk.
@@ -514,6 +517,7 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
             ipv4: id.ipv4,
             gateway: id.gateway,
             prefix: id.prefix,
+            dual_stack: id.dual_stack,
         },
         &hostname,
     )?;
@@ -1063,9 +1067,8 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
     let mut cfg = format!(
         "datasource_list: [ NoCloud, ConfigDrive, None ]\nssh_pwauth: true\nprefer_fqdn_over_hostname: false\npreserve_hostname: false\nhostname: {hostname}\nfqdn: {hostname}\nmanage_etc_hosts: true\n"
     );
-    // Always disable cloud-init networking. AlmaLinux otherwise gets a second
-    // IPv6 from DHCP+NetworkManager (DAD drops SSH). Ubuntu 26.04 otherwise
-    // races netplan/networkd units we write below and can lose IPv4 after boot.
+    // Always disable cloud-init networking so it cannot add IPv6 or race the
+    // IPv4-only NetworkManager / netplan / networkd config written below.
     cfg.push_str("network: {config: disabled}\n");
     let _ = fs::write(cfg_dir.join("99-pertisk.cfg"), cfg);
     Ok(())
@@ -1087,10 +1090,12 @@ fn reset_cloud_init_instance(root: &Path) {
     let _ = fs::remove_file(root.join("var/lib/dbus/machine-id"));
 }
 
-/// Let the guest OS own the NIC (same as an ISO install). Cloud-init network
-/// + the image's NetworkManager profile assigns two IPv6 addresses; DAD drops SSH.
+/// IPv4 only unless `dual_stack`: then SLAAC, and a KOS-style ULA if no GUA arrives.
 fn write_guest_network(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
-    write_ipv6_sysctl(root);
+    write_ipv6_sysctl(root, id.dual_stack);
+    if id.dual_stack {
+        schedule_dual_stack_ula(root);
+    }
     if root.join("etc/netplan").is_dir() {
         write_netplan(root, id)?;
         // Ubuntu 26.04 netplan generate can skip /etc/netplan; networkd still
@@ -1108,13 +1113,83 @@ fn write_guest_network(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     Ok(())
 }
 
-fn write_ipv6_sysctl(root: &Path) {
+/// Same fallback as Pertisk KOS `ensure_stable_ula`: wait briefly for a SLAAC
+/// GUA, otherwise add `fd00:{a}:{b}:{c}::{d}/64` from the guest IPv4. If a GUA
+/// shows up, drop that synthetic ULA.
+fn schedule_dual_stack_ula(root: &Path) {
+    let libexec = root.join("usr/libexec");
+    let _ = fs::create_dir_all(&libexec);
+    let script = r#"#!/bin/sh
+# Pertisk KOS dual-stack: GUA wins; otherwise a stable ULA from IPv4.
+i=0
+while [ "$i" -lt 16 ]; do
+  if ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -viE '^(fd|fc)' | grep -q .
+  then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.5
+done
+line=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 != "lo" {print $2, $4; exit}')
+iface=${line%% *}
+v4=${line#* }
+v4=${v4%%/*}
+[ -n "$iface" ] && [ -n "$v4" ] || exit 0
+o1=$(echo "$v4" | cut -d. -f1)
+o2=$(echo "$v4" | cut -d. -f2)
+o3=$(echo "$v4" | cut -d. -f3)
+o4=$(echo "$v4" | cut -d. -f4)
+ula=$(printf 'fd00:%x:%x:%x::%x' "$o1" "$o2" "$o3" "$o4")
+if ip -6 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -viE '^(fd|fc)' | grep -q .
+then
+  ip -6 addr del "${ula}/64" dev "$iface" 2>/dev/null || true
+  exit 0
+fi
+if ip -6 -o addr show dev "$iface" scope global 2>/dev/null | grep -q .
+then
+  exit 0
+fi
+ip -6 addr add "${ula}/64" dev "$iface" 2>/dev/null || true
+"#;
+    let script_path = libexec.join("pertisk-dual-stack");
+    let _ = fs::write(&script_path, script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755));
+    }
+    let unit_dir = root.join("etc/systemd/system");
+    let _ = fs::create_dir_all(&unit_dir);
+    let unit = "\
+[Unit]\n\
+Description=Pertisk dual-stack ULA fallback\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=/bin/sh /usr/libexec/pertisk-dual-stack\n\
+\n\
+[Install]\n\
+WantedBy=multi-user.target\n";
+    let _ = fs::write(unit_dir.join("pertisk-dual-stack.service"), unit);
+    let wants = unit_dir.join("multi-user.target.wants");
+    let _ = fs::create_dir_all(&wants);
+    let link = wants.join("pertisk-dual-stack.service");
+    if !link.exists() {
+        let _ = std::os::unix::fs::symlink("../pertisk-dual-stack.service", &link);
+    }
+}
+
+fn write_ipv6_sysctl(root: &Path, dual_stack: bool) {
     let dir = root.join("etc/sysctl.d");
     let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(
-        dir.join("99-pertisk-ipv6.conf"),
-        "net.ipv6.conf.all.disable_ipv6 = 0\nnet.ipv6.conf.default.disable_ipv6 = 0\nnet.ipv6.conf.all.accept_ra = 1\nnet.ipv6.conf.default.accept_ra = 1\n",
-    );
+    let body = if dual_stack {
+        "net.ipv6.conf.all.disable_ipv6 = 0\nnet.ipv6.conf.default.disable_ipv6 = 0\nnet.ipv6.conf.all.accept_ra = 1\nnet.ipv6.conf.default.accept_ra = 1\n"
+    } else {
+        "net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\nnet.ipv6.conf.all.accept_ra = 0\nnet.ipv6.conf.default.accept_ra = 0\n"
+    };
+    let _ = fs::write(dir.join("99-pertisk-ipv6.conf"), body);
 }
 
 fn write_nm_connection(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
@@ -1136,7 +1211,11 @@ fn write_nm_connection(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     }
     body.push('\n');
     body.push_str(&nm_ipv4(id));
-    body.push_str("[ipv6]\nmethod=auto\naddr-gen-mode=eui64\nip6-privacy=0\nmay-fail=true\n");
+    if id.dual_stack {
+        body.push_str("[ipv6]\nmethod=auto\naddr-gen-mode=eui64\nip6-privacy=0\nmay-fail=true\n");
+    } else {
+        body.push_str("[ipv6]\nmethod=disabled\n");
+    }
     let path = dir.join("pertisk.nmconnection");
     fs::write(&path, body)?;
     #[cfg(unix)]
@@ -1194,6 +1273,11 @@ fn write_netplan(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     } else {
         yaml.push_str("      dhcp4: true\n");
     }
+    if id.dual_stack {
+        yaml.push_str("      dhcp6: false\n      accept-ra: true\n");
+    } else {
+        yaml.push_str("      dhcp6: false\n      accept-ra: false\n      link-local: []\n");
+    }
     let path = dir.join("99-pertisk.yaml");
     fs::write(&path, yaml)?;
     #[cfg(unix)]
@@ -1223,7 +1307,9 @@ fn write_networkd(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
         } else {
             format!("{ip}/{prefix}")
         };
-        body.push_str("[Network]\nDHCP=no\nIPv6AcceptRA=yes\nAddress=");
+        body.push_str("[Network]\nDHCP=no\n");
+        body.push_str(networkd_ipv6(id.dual_stack));
+        body.push_str("Address=");
         body.push_str(&addr);
         body.push('\n');
         if let Some(gw) = id.gateway.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1232,10 +1318,19 @@ fn write_networkd(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
             body.push('\n');
         }
     } else {
-        body.push_str("[Network]\nDHCP=ipv4\nIPv6AcceptRA=yes\nLinkLocalAddressing=ipv6\n");
+        body.push_str("[Network]\nDHCP=ipv4\n");
+        body.push_str(networkd_ipv6(id.dual_stack));
     }
     fs::write(dir.join("15-pertisk.network"), body)?;
     Ok(())
+}
+
+fn networkd_ipv6(dual_stack: bool) -> &'static str {
+    if dual_stack {
+        "IPv6AcceptRA=yes\nLinkLocalAddressing=yes\n"
+    } else {
+        "IPv6AcceptRA=no\nLinkLocalAddressing=ipv4\n"
+    }
 }
 
 fn hash_password(password: &str) -> Result<String> {
@@ -1405,6 +1500,7 @@ mod tests {
                 ipv4: None,
                 gateway: None,
                 prefix: None,
+                dual_stack: false,
             },
         )
         .unwrap();
@@ -1482,15 +1578,20 @@ mod tests {
                 ipv4: None,
                 gateway: None,
                 prefix: None,
+                dual_stack: false,
             },
         )
         .unwrap();
         let yaml = fs::read_to_string(root.join("etc/netplan/99-pertisk.yaml")).unwrap();
         assert!(yaml.contains("dhcp4: true"), "{yaml}");
+        assert!(yaml.contains("dhcp6: false"), "{yaml}");
+        assert!(yaml.contains("accept-ra: false"), "{yaml}");
         assert!(yaml.contains("renderer: networkd"), "{yaml}");
         assert!(!yaml.contains("ipv6-address-generation"), "{yaml}");
         let net = fs::read_to_string(root.join("etc/systemd/network/15-pertisk.network")).unwrap();
         assert!(net.contains("DHCP=ipv4"), "{net}");
+        assert!(net.contains("IPv6AcceptRA=no"), "{net}");
+        assert!(net.contains("LinkLocalAddressing=ipv4"), "{net}");
         let cfg = fs::read_to_string(root.join("etc/cloud/cloud.cfg.d/99-pertisk.cfg")).unwrap();
         assert!(
             cfg.contains("network: {config: disabled}"),
@@ -1504,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn injects_single_nm_profile_with_slaac() {
+    fn injects_single_nm_profile_ipv4_only() {
         let root = fixture_root();
         fs::create_dir_all(root.join("etc/NetworkManager")).unwrap();
         apply_identity(
@@ -1518,6 +1619,7 @@ mod tests {
                 ipv4: None,
                 gateway: None,
                 prefix: None,
+                dual_stack: false,
             },
         )
         .unwrap();
@@ -1526,14 +1628,49 @@ mod tests {
         )
         .unwrap();
         assert!(nm.contains("[ipv4]\nmethod=auto"), "{nm}");
-        assert!(nm.contains("[ipv6]\nmethod=auto"), "{nm}");
-        assert!(nm.contains("addr-gen-mode=eui64"), "{nm}");
-        assert!(nm.contains("ip6-privacy=0"), "{nm}");
+        assert!(nm.contains("[ipv6]\nmethod=disabled"), "{nm}");
+        assert!(!nm.contains("addr-gen-mode=eui64"), "{nm}");
         assert!(nm.contains("mac-address=52:54:00:00:00:65"), "{nm}");
         let conf =
             fs::read_to_string(root.join("etc/NetworkManager/conf.d/99-pertisk.conf")).unwrap();
         assert!(conf.contains("no-auto-default=*"), "{conf}");
         assert!(conf.contains("hostname-mode=none"), "{conf}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn injects_nm_profile_dual_stack() {
+        let root = fixture_root();
+        fs::create_dir_all(root.join("etc/NetworkManager")).unwrap();
+        apply_identity(
+            &root,
+            &GuestIdentity {
+                hostname: "alma-1",
+                user: "almalinux",
+                password: None,
+                ssh_authorized_keys: &[],
+                mac: Some("52:54:00:00:00:65"),
+                ipv4: None,
+                gateway: None,
+                prefix: None,
+                dual_stack: true,
+            },
+        )
+        .unwrap();
+        let nm = fs::read_to_string(
+            root.join("etc/NetworkManager/system-connections/pertisk.nmconnection"),
+        )
+        .unwrap();
+        assert!(nm.contains("[ipv6]\nmethod=auto"), "{nm}");
+        assert!(nm.contains("addr-gen-mode=eui64"), "{nm}");
+        let sysctl = fs::read_to_string(root.join("etc/sysctl.d/99-pertisk-ipv6.conf")).unwrap();
+        assert!(sysctl.contains("disable_ipv6 = 0"), "{sysctl}");
+        let ula = fs::read_to_string(root.join("usr/libexec/pertisk-dual-stack")).unwrap();
+        assert!(ula.contains("fd00:%x:%x:%x::%x"), "{ula}");
+        assert!(
+            root.join("etc/systemd/system/pertisk-dual-stack.service")
+                .is_file()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1605,6 +1742,7 @@ mod tests {
                 ipv4: None,
                 gateway: None,
                 prefix: None,
+                dual_stack: false,
             },
         )
         .unwrap();

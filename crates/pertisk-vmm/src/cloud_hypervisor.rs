@@ -467,6 +467,7 @@ mod tests {
             mac: Some("52:54:00:00:00:65".into()),
             ip: None,
             ipv6: None,
+            dual_stack: false,
         }];
         let cfg = ChVmConfig::from_spec(
             &s,

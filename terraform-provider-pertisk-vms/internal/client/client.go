@@ -227,9 +227,9 @@ func (c *Client) AttachISO(vmID, iso string) (*VM, error) {
 	return &out, nil
 }
 
-func (c *Client) AttachNic(vmID, networkID, ip string) (*VM, error) {
+func (c *Client) AttachNic(vmID, networkID, ip string, dualStack bool) (*VM, error) {
 	var out VM
-	body := AttachNicRequest{NetworkID: networkID, IP: ip}
+	body := AttachNicRequest{NetworkID: networkID, IP: ip, DualStack: dualStack}
 	if err := c.do(http.MethodPost, "/v1/vms/"+url.PathEscape(vmID)+"/nics", body, &out, true); err != nil {
 		return nil, err
 	}

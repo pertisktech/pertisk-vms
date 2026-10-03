@@ -452,6 +452,9 @@ pub struct AttachNicRequest {
     pub network_id: NetworkId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
+    /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+    #[serde(default)]
+    pub dual_stack: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -702,7 +705,7 @@ pub struct CloudInitIsoRequest {
     /// Raw `#cloud-config` body. When set, hostname/user/password/keys are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub userdata: Option<String>,
-    /// Guest NIC for cloud-init `network-config` (IPv4 DHCP/static + IPv6 SLAAC).
+    /// Guest NIC for cloud-init `network-config` (IPv4, plus IPv6 SLAAC when dual stack).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<CloudInitNetwork>,
 }
@@ -719,6 +722,9 @@ pub struct CloudInitNetwork {
     pub gateway: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<u8>,
+    /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+    #[serde(default)]
+    pub dual_stack: bool,
 }
 
 /// Default SSH / cloud-init login inferred from a cloud image or template name.
@@ -798,6 +804,9 @@ pub struct CloneVmRequest {
     pub network_id: Option<NetworkId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
+    /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+    #[serde(default)]
+    pub dual_stack: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init: Option<CloudInitConfig>,
     /// Grow the first cloned disk to at least this size (bytes). Ignored if smaller than the template.
@@ -924,6 +933,9 @@ pub struct NetSpec {
     pub ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv6: Option<String>,
+    /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+    #[serde(default)]
+    pub dual_stack: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

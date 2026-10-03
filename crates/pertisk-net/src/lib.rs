@@ -234,6 +234,7 @@ impl NetworkPool {
             mac: Some(unique_guest_mac(vm_id, nic_index, used_macs, node_salt)),
             ip,
             ipv6: None,
+            dual_stack: false,
         };
         self.ensure_host_links(&spec)?;
         Ok(spec)

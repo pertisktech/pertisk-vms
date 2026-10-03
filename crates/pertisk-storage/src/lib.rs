@@ -693,8 +693,7 @@ impl VolumePool {
         let user_data = cloudinit_user_data(&req);
         let meta_data = cloudinit_meta_data(&req);
         let meta_json = cloudinit_meta_json(&req);
-        // ConfigDrive network only (no NoCloud network-config). Shipping both
-        // makes NetworkManager apply SLAAC twice; DAD then drops SSH.
+        // ConfigDrive network only (no NoCloud network-config). IPv4 only.
         let network_data = cloudinit_network_data(&req);
         std::fs::create_dir_all(self.root.join("iso"))?;
         let dest = self.root.join("iso").join(&name);
@@ -1064,19 +1063,21 @@ fn cloudinit_network_data(req: &CloudInitIsoRequest) -> String {
             "network_id": "net0"
         }));
     }
-    networks.push(serde_json::json!({
-        "id": "ipv6-slaac",
-        "type": "ipv6_slaac",
-        "link": "iface0",
-        "network_id": "net0"
-    }));
+    if net.is_some_and(|n| n.dual_stack) {
+        networks.push(serde_json::json!({
+            "id": "ipv6-slaac",
+            "type": "ipv6_slaac",
+            "link": "iface0",
+            "network_id": "net0"
+        }));
+    }
     serde_json::to_string(&serde_json::json!({
         "links": [link],
         "networks": networks,
         "services": [{ "type": "dns", "address": "1.1.1.1" }, { "type": "dns", "address": "8.8.8.8" }]
     }))
     .unwrap_or_else(|_| {
-        r#"{"links":[{"id":"iface0","type":"phy","mtu":1500}],"networks":[{"id":"ipv4-0","type":"ipv4_dhcp","link":"iface0","network_id":"net0"},{"id":"ipv6-slaac","type":"ipv6_slaac","link":"iface0","network_id":"net0"}],"services":[]}"#.into()
+        r#"{"links":[{"id":"iface0","type":"phy","mtu":1500}],"networks":[{"id":"ipv4-0","type":"ipv4_dhcp","link":"iface0","network_id":"net0"}],"services":[]}"#.into()
     })
 }
 
@@ -1423,10 +1424,9 @@ mod tests {
         assert!(text.contains("groups: [adm, wheel, sudo]"));
         assert!(text.contains("PasswordAuthentication yes"));
         assert!(text.contains("plain_text_passwd:"));
-        assert!(text.contains("ipv6_slaac"), "{text}");
+        assert!(!text.contains("ipv6_slaac"), "{text}");
         assert!(!text.contains("ipv6_dhcp"), "{text}");
-        assert!(!text.contains("dhcp6: true"), "{text}");
-        assert!(!text.contains("dhcp6: false"), "{text}");
+        assert!(text.contains("ipv4_dhcp"), "{text}");
         let again = pool
             .create_cloudinit_iso(CloudInitIsoRequest {
                 name: "web-1".into(),

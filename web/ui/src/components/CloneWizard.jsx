@@ -41,6 +41,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
       linked: false,
       networkId: source?.spec?.nets?.[0]?.network_id || networks[0]?.id || '',
       nicIp: '',
+      dualStack: Boolean(source?.spec?.nets?.[0]?.dual_stack),
       cloudInit: true,
       ciUser: detected.user,
       ciPassword: '',
@@ -104,6 +105,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
           autostart: form.autostart,
           network_id: form.networkId || undefined,
           ip: form.nicIp.trim() || undefined,
+          dual_stack: Boolean(form.networkId && form.dualStack),
           cloud_init: form.cloudInit
             ? {
                 hostname: form.name.trim(),
@@ -284,6 +286,20 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
                   }
                 />
               </div>
+            )}
+            {form.networkId && (
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.dualStack}
+                  onChange={(e) => set({ dualStack: e.target.checked })}
+                />
+                <span className="chk-box" />
+                <span className="chk-label">
+                  Dual stack
+                  <small>IPv4 plus IPv6 SLAAC. Leave off for IPv4 only.</small>
+                </span>
+              </label>
             )}
           </>
         )}

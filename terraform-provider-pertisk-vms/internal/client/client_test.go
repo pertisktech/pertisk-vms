@@ -143,7 +143,7 @@ func TestClientCRUD(t *testing.T) {
 	if _, err := c.AttachDisk("100", vol.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.AttachNic("100", net.ID, ""); err != nil {
+	if _, err := c.AttachNic("100", net.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
 	cpus := 4

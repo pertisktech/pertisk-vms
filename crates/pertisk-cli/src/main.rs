@@ -271,6 +271,9 @@ enum VmCommand {
         net: Option<String>,
         #[arg(long)]
         ip: Option<String>,
+        /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+        #[arg(long)]
+        dual_stack: bool,
         #[arg(long)]
         user: Option<String>,
         #[arg(long)]
@@ -342,6 +345,9 @@ enum NicCommand {
         network: NetworkId,
         #[arg(long)]
         ip: Option<String>,
+        /// IPv4 plus IPv6 SLAAC. Default is IPv4 only.
+        #[arg(long)]
+        dual_stack: bool,
     },
     Detach {
         vm: VmId,
@@ -1174,6 +1180,7 @@ async fn run() -> Result<()> {
                         &AttachNicRequest {
                             network_id: net_id,
                             ip: None,
+                            dual_stack: false,
                         },
                     )
                     .await?;
@@ -1293,6 +1300,7 @@ async fn run() -> Result<()> {
                 disk_size,
                 net,
                 ip,
+                dual_stack,
                 user,
                 password,
                 hostname,
@@ -1337,6 +1345,7 @@ async fn run() -> Result<()> {
                         autostart_order: None,
                         network_id,
                         ip,
+                        dual_stack,
                         cloud_init,
                         disk_size_bytes: disk_size.as_deref().map(parse_size).transpose()?,
                         start,
@@ -1382,7 +1391,7 @@ async fn run() -> Result<()> {
                 }
             },
             VmCommand::Nic { command } => match command {
-                NicCommand::Attach { vm, network, ip } => {
+                NicCommand::Attach { vm, network, ip, dual_stack } => {
                     let record: VmRecord = post_json(
                         &client,
                         &cli.url,
@@ -1390,6 +1399,7 @@ async fn run() -> Result<()> {
                         &AttachNicRequest {
                             network_id: network,
                             ip,
+                            dual_stack,
                         },
                     )
                     .await?;

@@ -184,6 +184,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
               ? `network_id = ${quote(n.network_id)}`
               : null,
           n.ip ? `ip         = ${quote(n.ip)}` : null,
+          n.dual_stack ? 'dual_stack = true' : null,
         ]
           .filter(Boolean)
           .join('\n')

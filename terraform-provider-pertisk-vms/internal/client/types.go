@@ -76,6 +76,7 @@ type Nic struct {
 	MAC       string `json:"mac,omitempty"`
 	IP        string `json:"ip,omitempty"`
 	IPv6      string `json:"ipv6,omitempty"`
+	DualStack bool   `json:"dual_stack,omitempty"`
 }
 
 type VMSpec struct {
@@ -159,6 +160,7 @@ type CloneVMRequest struct {
 	AutostartOrder *uint32   `json:"autostart_order,omitempty"`
 	NetworkID     string     `json:"network_id,omitempty"`
 	IP            string     `json:"ip,omitempty"`
+	DualStack     bool       `json:"dual_stack,omitempty"`
 	CloudInit     *CloudInit `json:"cloud_init,omitempty"`
 	DiskSizeBytes *uint64    `json:"disk_size_bytes,omitempty"`
 	Start         bool       `json:"start,omitempty"`
@@ -175,6 +177,7 @@ type AttachISORequest struct {
 type AttachNicRequest struct {
 	NetworkID string `json:"network_id"`
 	IP        string `json:"ip,omitempty"`
+	DualStack bool   `json:"dual_stack,omitempty"`
 }
 
 type CloudInitISORequest struct {

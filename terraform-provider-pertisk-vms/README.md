@@ -42,7 +42,7 @@ resource "pertisk_vms_vm" "web" {
 }
 ```
 
-Cloud templates have no NIC. Omit `nic` to attach the cluster's default NAT network, or set `nic { network_id = ... }` to choose one. DHCP/SLAAC then assigns IPv4/IPv6.
+Cloud templates have no NIC. Omit `nic` to attach the cluster's default NAT network, or set `nic { network_id = ... }` to choose one. Guests are IPv4 only unless `nic.dual_stack = true` (IPv4 plus IPv6 SLAAC).
 
 ## Build
 
@@ -142,6 +142,7 @@ resource "pertisk_vms_vm" "web" {
 
   nic {
     network_id = pertisk_vms_network.lan.id
+    # dual_stack = true  # IPv4 plus IPv6 SLAAC; default is IPv4 only
   }
 
   cloud_init {

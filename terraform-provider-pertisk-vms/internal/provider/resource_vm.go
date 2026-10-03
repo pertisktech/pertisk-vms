@@ -45,6 +45,7 @@ type diskModel struct {
 type nicModel struct {
 	NetworkID types.String `tfsdk:"network_id"`
 	IP        types.String `tfsdk:"ip"`
+	DualStack types.Bool   `tfsdk:"dual_stack"`
 	Tap       types.String `tfsdk:"tap"`
 	MAC       types.String `tfsdk:"mac"`
 }
@@ -99,6 +100,7 @@ var (
 		AttrTypes: map[string]attr.Type{
 			"network_id": types.StringType,
 			"ip":         types.StringType,
+			"dual_stack": types.BoolType,
 			"tap":        types.StringType,
 			"mac":        types.StringType,
 		},
@@ -242,6 +244,12 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 							PlanModifiers: []planmodifier.String{
 								stringplanmodifier.UseStateForUnknown(),
 							},
+						},
+						"dual_stack": schema.BoolAttribute{
+							Optional:            true,
+							Computed:            true,
+							Default:             booldefault.StaticBool(false),
+							MarkdownDescription: "IPv4 plus IPv6 SLAAC. Defaults to false (IPv4 only).",
 						},
 						"tap": schema.StringAttribute{
 							Computed: true,
@@ -407,6 +415,7 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	if len(nics) > 0 {
 		body.NetworkID = nics[0].NetworkID.ValueString()
 		body.IP = nics[0].IP.ValueString()
+		body.DualStack = nics[0].DualStack.ValueBool()
 	} else if id, err := r.defaultCloneNetworkID(); err != nil {
 		return nil, err
 	} else if id != "" {
@@ -439,7 +448,7 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 		if i == 0 {
 			continue
 		}
-		if _, err := r.api.AttachNic(vm.ID.String(), nic.NetworkID.ValueString(), nic.IP.ValueString()); err != nil {
+		if _, err := r.api.AttachNic(vm.ID.String(), nic.NetworkID.ValueString(), nic.IP.ValueString(), nic.DualStack.ValueBool()); err != nil {
 			_ = r.api.DeleteVM(vm.ID.String())
 			return nil, err
 		}
@@ -540,7 +549,7 @@ func (r *vmResource) define(ctx context.Context, plan vmModel) (*client.VM, erro
 		}
 	}
 	for _, nic := range nics {
-		if _, err := r.api.AttachNic(id, nic.NetworkID.ValueString(), nic.IP.ValueString()); err != nil {
+		if _, err := r.api.AttachNic(id, nic.NetworkID.ValueString(), nic.IP.ValueString(), nic.DualStack.ValueBool()); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -914,6 +923,7 @@ func nicsToModel(vm *client.VM, prev []nicModel) []nicModel {
 		} else {
 			out[i].IP = knownOrNull(out[i].IP)
 		}
+		out[i].DualStack = types.BoolValue(n.DualStack)
 		if n.Tap != "" {
 			out[i].Tap = types.StringValue(n.Tap)
 		} else {
