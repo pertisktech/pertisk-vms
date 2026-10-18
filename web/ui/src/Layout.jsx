@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, asList, clearToken, getToken, isTemplate, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired, vmCaption } from './api'
+import { api, clearToken, getToken, inventoryNodes, isTemplate, onAuthRequired, setToken, tokenIsRemembered, clearAuthRequired, vmCaption } from './api'
 import { Icon } from './components/Icons'
 import { useTheme } from './ThemeContext'
 import { useConfirm } from './components/Confirm'
@@ -36,10 +36,7 @@ function ResourceSearch({ cluster, host, vms }) {
   const results = useMemo(() => {
     const query = q.trim().toLowerCase()
     if (!query) return []
-    const members = asList(cluster?.members)
-    const nodes = members.length
-      ? members
-      : [{ id: 'local', name: host?.hostname || 'localhost' }]
+    const nodes = inventoryNodes(cluster, host, vms)
     const out = []
     if ('datacenter'.includes(query) || 'pertisk'.includes(query)) {
       out.push({ to: resourceLink('dc', null, currentRoute), label: 'Datacenter', icon: 'datacenter' })

@@ -248,6 +248,7 @@ impl Service {
     pub fn host_info(&self) -> HostInfo {
         let mut info = probe_host(&self.config, self.data_dir.clone());
         info.node_id = Some(self.cluster.self_id());
+        info.hostname = self.node_display_name();
         info.quorum = self.cluster.has_quorum();
         info.ssh_authorized_keys = pertisk_storage::operator_ssh_keys();
         info.daemon_uptime_secs = self.started_at.elapsed().as_secs();
@@ -604,11 +605,23 @@ impl Service {
         self.cluster.check_secret(secret)
     }
 
+    /// Stored guests only. Address discovery runs on a timer (`refresh_observed_addrs`)
+    /// so the VM list and the inventory websocket stay off the ping / `ip neigh` path.
     pub fn list(&self) -> Result<Vec<VmRecord>, DaemonError> {
-        let mut vms = self.store.list()?;
-        let run_dir = &self.config.vmm.run_dir;
+        self.store.list()
+    }
+
+    /// Learn DHCP addresses for running guests. Blocking (`ping`, neighbour table, guest agent).
+    pub fn refresh_observed_addrs(&self) {
+        let run_dir = self.config.vmm.run_dir.clone();
+        let Ok(mut vms) = self.store.list() else {
+            return;
+        };
         if vms.iter().any(vm_needs_ip_probe) {
             for vm in &vms {
+                if !vm_needs_ip_probe(vm) {
+                    continue;
+                }
                 for nic in &vm.spec.nets {
                     if let Some(ip) = nic.ip.as_deref() {
                         pertisk_net::probe_ipv4(ip);
@@ -617,14 +630,10 @@ impl Service {
             }
         }
         for vm in &mut vms {
-            if enrich_observed_ips(vm, run_dir) {
-                // Patch IPs onto the latest record so a stale list() cannot wipe cidata.
-                if let Ok(latest) = self.persist_observed_nic_addrs(vm.id, &vm.spec.nets) {
-                    *vm = latest;
-                }
+            if enrich_observed_ips(vm, &run_dir) {
+                let _ = self.persist_observed_nic_addrs(vm.id, &vm.spec.nets);
             }
         }
-        Ok(vms)
     }
 
     pub fn get(&self, id: VmId) -> Result<VmRecord, DaemonError> {
@@ -3984,7 +3993,9 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
                     .ok()
                     .is_some_and(|addr| !addr.is_unique_local())
             });
-            if !has_public {
+            // A stored address is enough for the list. Ping only while IPv6 is still unknown
+            // (`ping -6 -W 1` is a full second per guest and was blocking GET /v1/vms).
+            if !has_public && nic.ipv6.as_deref().is_none_or(|ip| ip.is_empty()) {
                 pertisk_net::probe_guest_ipv6_ll(mac);
                 if let Some(ip) = pertisk_net::ipv6_for_mac(mac) {
                     candidates.push(ip);

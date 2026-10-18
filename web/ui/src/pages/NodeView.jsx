@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
-import { api, asList, isTemplate } from '../api'
+import { api, asList, inventoryNodes, isTemplate } from '../api'
 import { Btn } from '../components/Icons'
 import { useConfirm } from '../components/Confirm'
 import ResourceView from '../components/ResourceView'
@@ -8,18 +8,8 @@ import ResourceView from '../components/ResourceView'
 export function useNode() {
   const { nodeId } = useParams()
   const ctx = useOutletContext()
-  const members = asList(ctx.inv.cluster?.members)
-  const node =
-    members.find((m) => m.id === nodeId) ||
-    (members.length === 0
-      ? {
-          id: nodeId,
-          name: ctx.inv.host?.hostname || 'localhost',
-          online: true,
-          ipv4: ctx.inv.host?.ipv4 || [],
-          ipv6: ctx.inv.host?.ipv6 || [],
-        }
-      : null)
+  const members = inventoryNodes(ctx.inv.cluster, ctx.inv.host, ctx.inv.vms)
+  const node = members.find((m) => m.id === nodeId) || null
   const guests = ctx.inv.vms.filter(
     (vm) =>
       !isTemplate(vm) && (vm.node_id === nodeId || (!vm.node_id && members.length === 0)),

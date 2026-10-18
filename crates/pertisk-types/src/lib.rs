@@ -1415,6 +1415,9 @@ pub struct HostInfo {
     pub apply_host_links: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<NodeId>,
+    /// Cluster node name (Settings), so the UI can label this node before `/v1/cluster` returns.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hostname: String,
     #[serde(default)]
     pub quorum: bool,
     #[serde(default)]
@@ -1599,6 +1602,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
             .or_else(|| find_in_path("qemu-img")),
         apply_host_links: config.network.apply_host_links,
         node_id: None,
+        hostname: String::new(),
         quorum: true,
         storage_backend: config.storage.backend,
         replica_count: config.storage.replica_count.max(1),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, asList, isAuthRequired, isUnauthorized } from './api'
 import { requestRefresh, retainLive } from './live'
 
@@ -26,45 +26,54 @@ function fromInventory(msg) {
   }
 }
 
+function piece(key, value) {
+  if (key === 'host') return value || null
+  if (key === 'cluster') return value || EMPTY.cluster
+  return asList(value)
+}
+
 export function useInventory() {
   const [data, setData] = useState(EMPTY)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const refreshSeq = useRef(0)
 
   const refresh = useCallback(async () => {
     if (isAuthRequired()) {
       setLoading(false)
       return
     }
-    try {
-      const [host, cluster, vms, volumes, isos, networks, tasks, audit] = await Promise.all([
-        api('/v1/host'),
-        api('/v1/cluster'),
-        api('/v1/vms'),
-        api('/v1/volumes'),
-        api('/v1/isos'),
-        api('/v1/networks'),
-        api('/v1/tasks'),
-        api('/v1/audit'),
-      ])
-      setData({
-        host: host || null,
-        cluster: cluster || EMPTY.cluster,
-        vms: asList(vms),
-        volumes: asList(volumes),
-        isos: asList(isos),
-        networks: asList(networks),
-        tasks: asList(tasks),
-        audit: asList(audit),
-      })
-      setError('')
-      requestRefresh()
-    } catch (err) {
-      if (isUnauthorized(err)) return
-      setError(err.message || String(err))
-    } finally {
-      setLoading(false)
-    }
+    const mine = ++refreshSeq.current
+    const jobs = [
+      ['host', '/v1/host'],
+      ['cluster', '/v1/cluster'],
+      ['vms', '/v1/vms'],
+      ['volumes', '/v1/volumes'],
+      ['isos', '/v1/isos'],
+      ['networks', '/v1/networks'],
+      ['tasks', '/v1/tasks'],
+      ['audit', '/v1/audit'],
+    ]
+    let failed = ''
+    let ok = false
+    await Promise.all(
+      jobs.map(async ([key, path]) => {
+        try {
+          const value = await api(path)
+          if (mine !== refreshSeq.current) return
+          ok = true
+          setData((prev) => ({ ...prev, [key]: piece(key, value) }))
+        } catch (err) {
+          if (mine !== refreshSeq.current || isUnauthorized(err)) return
+          if (!failed) failed = err?.message || String(err)
+        }
+      }),
+    )
+    if (mine !== refreshSeq.current) return
+    if (ok && !failed) setError('')
+    if (failed) setError(failed)
+    if (ok) requestRefresh()
+    setLoading(false)
   }, [])
 
   useEffect(() => {

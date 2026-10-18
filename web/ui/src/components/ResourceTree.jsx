@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { asList, isTemplate, vmCaption } from '../api'
+import { inventoryNodes, isTemplate, vmCaption } from '../api'
 import { Icon } from './Icons'
 import { parseResourceRoute, resourceLink } from '../resourceRoutes'
 
@@ -15,12 +15,6 @@ function loadOpen() {
   }
 }
 
-/// Nodes come from the cluster roster; a single-node daemon still reports itself.
-function nodeList(cluster, host) {
-  const members = asList(cluster?.members)
-  if (members.length) return members
-  return [{ id: 'local', name: host?.hostname || 'localhost', online: true }]
-}
 
 function guestStatus(vm) {
   if (isTemplate(vm)) return undefined
@@ -93,7 +87,7 @@ export default function ResourceTree({ cluster, host, vms }) {
   }
 
   const isOpen = (key) => open[key] !== false
-  const nodes = useMemo(() => nodeList(cluster, host), [cluster, host])
+  const nodes = useMemo(() => inventoryNodes(cluster, host, vms), [cluster, host, vms])
   const guestsByNode = useMemo(() => {
     const guests = new Map()
     for (const vm of vms) {

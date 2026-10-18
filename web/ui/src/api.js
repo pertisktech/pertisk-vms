@@ -226,6 +226,29 @@ export function formatUptime(secs, { long = false } = {}) {
   return `${s}s`
 }
 
+/** Cluster members, or this node's own id/name. Empty until either has loaded. */
+export function inventoryNodes(cluster, host, vms) {
+  const members = asList(cluster?.members)
+  if (members.length) return members
+  const name = String(host?.hostname || '').trim()
+  const ids = []
+  for (const vm of asList(vms)) {
+    if (vm?.node_id && !ids.includes(vm.node_id)) ids.push(vm.node_id)
+  }
+  if (!ids.length && host?.node_id) ids.push(host.node_id)
+  if (!ids.length) {
+    if (!name) return []
+    return [{ id: 'local', name, online: true, ipv4: host?.ipv4 || [], ipv6: host?.ipv6 || [] }]
+  }
+  return ids.map((id) => ({
+    id,
+    name: name || 'node',
+    online: true,
+    ipv4: id === host?.node_id ? host?.ipv4 || [] : [],
+    ipv6: id === host?.node_id ? host?.ipv6 || [] : [],
+  }))
+}
+
 export function shortId(id) {
   const s = String(id || '')
   return s.length > 12 ? `${s.slice(0, 8)}…` : s

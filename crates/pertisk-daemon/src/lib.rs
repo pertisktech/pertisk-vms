@@ -111,6 +111,14 @@ pub async fn bind_and_serve(
     tokio::spawn(async move {
         recon.reconcile_local_vms().await;
     });
+    let addrs = service.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let job = addrs.clone();
+            let _ = tokio::task::spawn_blocking(move || job.refresh_observed_addrs()).await;
+        }
+    });
     if let Some(peer) = service.join_peer() {
         let joiner = service.clone();
         tokio::spawn(async move {
