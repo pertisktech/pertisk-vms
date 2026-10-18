@@ -70,6 +70,6 @@ endif
 
 clean-tag: retag
 
-# Modern node-installer UI (preview). Live ISO still uses Anaconda.
+# Node installer UI. `make release-alma-iso` builds this and boots it instead of the Anaconda spokes.
 installer-ui:
 	cd web/installer && npm install && npm run dev

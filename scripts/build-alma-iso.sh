@@ -73,6 +73,22 @@ if [[ ! -f "$ALMA_ISO" ]]; then
 fi
 [[ -f "$ALMA_ISO" ]] || die "AlmaLinux ISO not found at $ALMA_ISO"
 
+echo "=== Pertisk installer UI ==="
+if [[ ! -f "$ROOT/web/installer/node_modules/vite/package.json" ]]; then
+  (cd "$ROOT/web/installer" && npm ci)
+fi
+(cd "$ROOT/web/installer" && npm run build)
+[[ -f "$ROOT/web/installer/dist/index.html" ]] || die "installer UI build failed"
+export PERTISK_REQUIRE_INSTALLER=1
+
+echo "=== WebKit for the installer kiosk ==="
+WEBKIT_CACHE="$CACHE/alma10-webkit2gtk4.1"
+mkdir -p "$WEBKIT_CACHE"
+if ! compgen -G "$WEBKIT_CACHE/*.rpm" >/dev/null; then
+  dnf download --resolve --destdir "$WEBKIT_CACHE" webkit2gtk4.1
+fi
+compgen -G "$WEBKIT_CACHE/*.rpm" >/dev/null || die "failed to download webkit2gtk4.1"
+
 echo "=== building RPM ==="
 chmod +x "$ROOT/scripts/build-rpm.sh"
 "$ROOT/scripts/build-rpm.sh" "$VERSION"
@@ -84,8 +100,9 @@ ADD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pertisk-iso-XXXXXX")"
 cleanup() { rm -rf "$ADD_DIR"; }
 trap cleanup EXIT
 
-mkdir -p "$ADD_DIR/pertisk"
+mkdir -p "$ADD_DIR/pertisk" "$ADD_DIR/pertisk-webkit"
 cp -f "$RPM" "$ADD_DIR/pertisk/"
+cp -f "$WEBKIT_CACHE"/*.rpm "$ADD_DIR/pertisk-webkit/"
 # Anaconda installs pertisk-vms from file:///run/pertisk-repo (see kickstart %pre).
 if command -v createrepo_c >/dev/null; then
   createrepo_c "$ADD_DIR/pertisk"
@@ -110,7 +127,8 @@ PAYLOAD_BYTES="$(du -sb "$ADD_DIR" | awk '{print $1}')"
 # +64 MiB slack for EFI/boot rebuild overhead
 need_free_space "$RELEASE_DIR" "$((ISO_BYTES + PAYLOAD_BYTES + 64*1024*1024))"
 
-# Anaconda GRAPHICAL on HDMI (tty0 only).
+# The Pertisk installer replaces the Anaconda spokes on a normal boot.
+# inst.graphical stays so rescue and pertisk.autodisk still get the Anaconda GUI.
 # Do NOT attach console=ttyS0 here — dual consoles scramble the installer UI into
 # scattered "1. 2. 3. 4." lines on serial/framebuffer.
 # Serial headless: at grub edit, add pertisk.autodisk (auto largest disk) and console=ttyS0.
@@ -125,6 +143,7 @@ echo "=== mkksiso (base=$(basename "$ALMA_ISO")) ==="
 mkksiso \
   --ks "$KS" \
   --add "$ADD_DIR/pertisk" \
+  --add "$ADD_DIR/pertisk-webkit" \
   --updates "$PRODUCT_IMG" \
   --cmdline "$CMDLINE" \
   --replace "Install AlmaLinux 10.2" "Install Pertisk Vms" \
@@ -152,5 +171,5 @@ echo "=== iso ==="
 ls -lh "$OUT_ISO"
 echo "Build host only: copy $OUT_ISO to a machine with the USB stick, then flash there."
 echo "  sudo dd if=pertisk-node-${VERSION}-x86_64.iso of=/dev/sdY bs=4M status=progress conv=fsync"
-echo "Boot UEFI with Secure Boot disabled. Anaconda installs AlmaLinux + pertiskd (network required for boot.iso)."
-echo "Installer UI: Pertisk branding (product.img) — logo, sidebar, product name."
+echo "Boot UEFI with Secure Boot disabled. The Pertisk installer (not the Anaconda spokes) collects disk, network, and the admin password, then Anaconda installs AlmaLinux + pertiskd."
+echo "Network is required for the boot.iso package download. Rescue and pertisk.autodisk still open Anaconda directly."

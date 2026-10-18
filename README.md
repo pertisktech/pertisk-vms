@@ -104,7 +104,7 @@ Pick the image for the **machine**, not only the CPU architecture:
 
 | Machine | Image | Notes |
 |---|---|---|
-| x86_64 UEFI PC (recommended) | `pertisk-node-VERSION-x86_64.iso` | AlmaLinux 10 Kickstart. Boot USB → Anaconda installs OS + `pertiskd`. Secure Boot **off**. |
+| x86_64 UEFI PC (recommended) | `pertisk-node-VERSION-x86_64.iso` | AlmaLinux 10. Boot USB → Pertisk installer, then Anaconda writes the disk. Secure Boot **off**. |
 | x86_64 UEFI PC (legacy raw) | `pertisk-node-VERSION-amd64.raw.xz` | Debian live USB → `pertisk-install` to NVMe. Kept until Alma ISO is fully rolled out. |
 | UEFI ARM server | `pertisk-node-VERSION-arm64.raw.xz` | Same as amd64 raw; GRUB EFI |
 | Orange Pi 5 Plus | `pertisk-node-VERSION-orangepi5plus.img.xz` | Vendor U-Boot + kernel |
@@ -130,7 +130,7 @@ sudo dd if=release/pertisk-node-0.1.0-x86_64.iso of=/dev/sdX bs=4M status=progre
 # or: sudo ./scripts/flash.sh --image release/pertisk-node-0.1.0-x86_64.iso --disk /dev/sdX --yes
 ```
 
-Anaconda runs unattended (`packaging/kickstart/pertisk-node.ks`), installs AlmaLinux 10 + the embedded `pertisk-vms` RPM, enables `pertiskd`, and reboots. Open **https://\<ip\>:7443/** or **http://\<ip\>:7480/** (`admin` / password in `/etc/pertisk/admin`). Root console password is `pertisk`.
+The Pertisk installer on the console asks for disk, network, and the admin password, then Anaconda installs AlmaLinux 10 + the embedded `pertisk-vms` RPM and enables `pertiskd`. Reboot from the installer when it finishes. Open **https://\<ip\>:7443/** or **http://\<ip\>:7480/** with user `admin` and that password. Headless installs can add `pertisk.autodisk` (Anaconda, largest disk).
 
 QEMU smoke steps: `./scripts/test-alma-iso.sh`.
 

@@ -201,6 +201,9 @@ input:focus-visible, select:focus-visible { outline: none; }
 }
 .main-body {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: auto;
   padding: 2.4rem 3rem 1.5rem;
 }
@@ -378,17 +381,46 @@ select {
   display: flex;
   gap: 0.7rem;
   align-items: flex-start;
+  width: 100%;
+  text-align: left;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 0.85rem 0.95rem;
   background: var(--card);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 .check { align-items: center; margin: 0.2rem 0 1rem; }
 .confirm.on { border-color: color-mix(in srgb, var(--destructive) 55%, var(--border)); }
 .confirm.bad { border-color: var(--destructive); }
-.confirm strong, .check span { display: block; }
+.confirm strong { display: block; }
 .confirm small { display: block; color: var(--muted-foreground); margin-top: 0.15rem; }
-.confirm input, .check input { width: auto; margin-top: 0.2rem; accent-color: var(--primary); }
+.tick {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: none;
+  margin-top: 0.15rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 35%, var(--border));
+  border-radius: 4px;
+  background: var(--background);
+  display: grid;
+  place-items: center;
+}
+.check .tick { margin-top: 0; }
+.tick.on {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.tick.on::after {
+  content: "";
+  width: 0.28rem;
+  height: 0.5rem;
+  border: solid var(--accent-on);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+.check-copy { min-width: 0; }
 
 .segmented {
   display: grid;
@@ -520,11 +552,20 @@ select {
   background: var(--primary);
   border-radius: inherit;
 }
+.install-step {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
 .install-grid {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 13.5rem 1fr;
+  grid-template-columns: 13.5rem minmax(0, 1fr);
   gap: 1rem;
-  min-height: 16rem;
 }
 .stage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
 .stage-list li {
@@ -549,8 +590,8 @@ select {
 .stage-list .done span { color: var(--success); border-color: transparent; }
 .log {
   margin: 0;
-  min-height: 16rem;
-  max-height: 18rem;
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   border-radius: 12px;
   padding: 0.85rem 1rem;
@@ -633,7 +674,7 @@ select {
 .halt p { margin: 0 0 1.25rem; color: var(--muted-foreground); }
 
 @media (max-width: 900px) {
-  .shell { flex-direction: column; height: auto; min-height: 100dvh; }
+  .shell { flex-direction: column; height: 100dvh; min-height: 0; }
   .rail {
     width: auto;
     border-right: 0;
@@ -654,7 +695,7 @@ select {
   .rail-foot { flex-direction: row; align-items: center; margin-top: 0.4rem; }
   .main-body, .actions { padding-left: 1.15rem; padding-right: 1.15rem; }
   .install-grid, .facts, .split, .legend, .review-block dl, .done-card dl { grid-template-columns: 1fr; }
-  .main { min-height: 70dvh; }
+  .main { min-height: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

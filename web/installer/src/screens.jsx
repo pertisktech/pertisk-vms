@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LuCheck, LuCopy, LuTriangleAlert } from 'react-icons/lu'
-import { Banner, Field, PasswordField, SelectField, StepHeader, cx } from './components'
+import { Banner, Check, Field, PasswordField, SelectField, StepHeader, cx } from './components'
 import {
-  DISKS,
-  HOST,
   KEYBOARDS,
   LANGUAGES,
-  NICS,
   TIMEZONES,
+  diskList,
   findDisk,
   findNic,
   formatBytes,
+  hostInfo,
   installScript,
   keyboardLabel,
   languageLabel,
   managementAddress,
+  nicList,
   partitionPlan,
   passwordLabel,
   passwordScore,
@@ -25,7 +25,8 @@ function patch(setForm, partial) {
   setForm((form) => ({ ...form, ...partial }))
 }
 
-export function Welcome({ form, setForm }) {
+export function Welcome({ form, setForm, live }) {
+  const host = hostInfo()
   return (
     <div className="step">
       <StepHeader
@@ -35,22 +36,24 @@ export function Welcome({ form, setForm }) {
       <dl className="facts">
         <div>
           <dt>Processor</dt>
-          <dd>{HOST.cpu} · {HOST.threads} threads</dd>
+          <dd>{host.cpu} · {host.threads} threads</dd>
         </div>
         <div>
           <dt>Memory</dt>
-          <dd>{HOST.memory}</dd>
+          <dd>{host.memory}</dd>
         </div>
         <div>
           <dt>Firmware</dt>
-          <dd>UEFI · Secure Boot off</dd>
+          <dd>{host.firmware} · Secure Boot {host.secureBoot ? 'on' : 'off'}</dd>
         </div>
         <div>
           <dt>Virtualization</dt>
-          <dd>{HOST.virt}</dd>
+          <dd>{host.virt}</dd>
         </div>
       </dl>
-      <p className="quiet">Sample machine for this preview. A live install reads the hardware you boot.</p>
+      {live ? null : (
+        <p className="quiet">Sample machine for this preview. A live install reads the hardware you boot.</p>
+      )}
       <div className="split">
         <SelectField id="lang" label="Language" value={form.lang} onChange={(lang) => patch(setForm, { lang })}>
           {LANGUAGES.map((lang) => (
@@ -96,7 +99,7 @@ export function Disk({ form, setForm, showErrors, issue }) {
       />
       {showErrors && issue.formError ? <Banner tone="bad">{issue.formError}</Banner> : null}
       <div className="choices" role="radiogroup" aria-label="Target disk">
-        {DISKS.map((item) => {
+        {diskList().map((item) => {
           const selected = item.id === form.diskId
           const blocked = item.kind !== 'disk'
           return (
@@ -148,20 +151,17 @@ export function Disk({ form, setForm, showErrors, issue }) {
           </ul>
         </div>
       )}
-      <label className={cx('confirm', form.eraseConfirmed && 'on', eraseError && 'bad')}>
-        <input
-          type="checkbox"
-          checked={form.eraseConfirmed}
-          onChange={(e) => patch(setForm, { eraseConfirmed: e.target.checked })}
-        />
-        <span>
-          <strong>Erase /dev/{disk?.id}</strong>
-          <small>
-            {disk ? `${disk.model} · ${formatBytes(disk.size)}. This cannot be undone.` : 'Select a disk.'}
-          </small>
-          {eraseError ? <small className="field-error">{eraseError}</small> : null}
-        </span>
-      </label>
+      <Check
+        className={cx('confirm', eraseError && 'bad')}
+        checked={form.eraseConfirmed}
+        onChange={(eraseConfirmed) => patch(setForm, { eraseConfirmed })}
+      >
+        <strong>Erase /dev/{disk?.id}</strong>
+        <small>
+          {disk ? `${disk.model} · ${formatBytes(disk.size)}. This cannot be undone.` : 'Select a disk.'}
+        </small>
+        {eraseError ? <small className="field-error">{eraseError}</small> : null}
+      </Check>
     </div>
   )
 }
@@ -179,7 +179,7 @@ export function Network({ form, setForm, showErrors, issue }) {
       />
       {showErrors && issue.formError ? <Banner tone="bad">{issue.formError}</Banner> : null}
       <div className="choices" role="radiogroup" aria-label="Management interface">
-        {NICS.map((item) => {
+        {nicList().map((item) => {
           const selected = item.id === form.nicId
           return (
             <button
@@ -361,14 +361,13 @@ export function Access({ form, setForm, showErrors, issue }) {
         error={field('adminConfirm')}
         onChange={(adminConfirm) => patch(setForm, { adminConfirm })}
       />
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={form.separateRoot}
-          onChange={(e) => patch(setForm, { separateRoot: e.target.checked })}
-        />
-        <span>Use a different root password for the console</span>
-      </label>
+      <Check
+        className="check"
+        checked={form.separateRoot}
+        onChange={(separateRoot) => patch(setForm, { separateRoot })}
+      >
+        Use a different root password for the console
+      </Check>
       {form.separateRoot && (
         <div className="split">
           <PasswordField
@@ -431,8 +430,8 @@ export function Review({ form, onJump }) {
         <span>Everything on /dev/{disk?.id} will be deleted.</span>
       </Banner>
       <ReviewBlock title="Machine">
-        <Row k="Processor" v={`${HOST.cpu} · ${HOST.threads} threads · ${HOST.memory}`} />
-        <Row k="Firmware" v={`${HOST.firmware} · Secure Boot off`} />
+        <Row k="Processor" v={`${hostInfo().cpu} · ${hostInfo().threads} threads · ${hostInfo().memory}`} />
+        <Row k="Firmware" v={`${hostInfo().firmware} · Secure Boot ${hostInfo().secureBoot ? 'on' : 'off'}`} />
       </ReviewBlock>
       <ReviewBlock title="Disk" onChange={() => onJump(1)}>
         <Row k="Target" v={`/dev/${disk?.id} · ${disk?.model}`} />
@@ -465,16 +464,55 @@ export function Review({ form, onJump }) {
 
 const STAGE_MS = [1500, 2200, 1400, 1600, 1300]
 
-export function Installing({ form, onComplete }) {
+export function Installing({ form, onComplete, live }) {
   const script = useMemo(() => installScript(form), [form])
   const [pct, setPct] = useState(0)
   const [stage, setStage] = useState(0)
   const [lines, setLines] = useState([])
+  const [error, setError] = useState('')
   const logRef = useRef(null)
   const onCompleteRef = useRef(onComplete)
   onCompleteRef.current = onComplete
 
   useEffect(() => {
+    if (!live) return undefined
+    let stop = false
+    let timer = 0
+    let misses = 0
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/progress')
+        const data = await res.json()
+        if (stop) return
+        misses = 0
+        setError('')
+        setPct(data.pct || 0)
+        setStage(data.stage || 0)
+        setLines(data.lines || [])
+        if (data.status === 'done') {
+          onCompleteRef.current()
+          return
+        }
+        if (data.status === 'error') {
+          setError(data.error || 'Installation failed.')
+          return
+        }
+      } catch {
+        if (stop) return
+        misses += 1
+        if (misses >= 5) setError('Reconnecting to the installer…')
+      }
+      timer = window.setTimeout(poll, 1000)
+    }
+    poll()
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [live])
+
+  useEffect(() => {
+    if (live) return undefined
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const scale = reduce ? 0.2 : 1
     const events = []
@@ -516,7 +554,7 @@ export function Installing({ form, onComplete }) {
       cancelAnimationFrame(raf)
       clearTimeout(doneTimer)
     }
-  }, [script])
+  }, [script, live])
 
   useEffect(() => {
     const node = logRef.current
@@ -529,6 +567,7 @@ export function Installing({ form, onComplete }) {
         title="Installing"
         lede="Do not power off. The node reboots only when you ask it to."
       />
+      {error ? <Banner tone="bad">{error}</Banner> : null}
       <div className="progress-head">
         <strong>{Math.round(pct)}%</strong>
         <span>{script[stage]?.label}</span>

@@ -122,8 +122,11 @@ fi
 
 # Alma + Anaconda GUI: web UI bootstrap password defaults to "admin" (change under Users).
 # node_name is synced from /etc/hostname by pertisk-sync-nodename (above / ExecStartPre).
+# Keep the password chosen in the Pertisk installer when /etc/pertisk/admin already exists.
 
-if [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
+if [[ -s "$PASS_FILE" ]]; then
+  PERTISK_ADMIN_PASSWORD="$(head -n1 "$PASS_FILE")"
+elif [[ -z "${PERTISK_ADMIN_PASSWORD:-}" ]]; then
   PERTISK_ADMIN_PASSWORD="admin"
   if is_alma_kickstart; then
     echo "pertisk-firstboot: web UI password default 'admin' (OS root/admin = Anaconda password)"
@@ -136,7 +139,9 @@ touch "$ENV_FILE"
 if ! grep -q '^PERTISK_ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
   printf 'PERTISK_ADMIN_PASSWORD=%s\n' "$PERTISK_ADMIN_PASSWORD" >>"$ENV_FILE"
 fi
-printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
+if [[ ! -s "$PASS_FILE" ]]; then
+  printf '%s\n' "$PERTISK_ADMIN_PASSWORD" >"$PASS_FILE"
+fi
 chmod 600 "$ENV_FILE" "$PASS_FILE"
 
 ensure_ssh_login() {

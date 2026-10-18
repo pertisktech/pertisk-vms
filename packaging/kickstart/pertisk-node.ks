@@ -1,13 +1,12 @@
 # pertisk-node.ks - AlmaLinux 10 node install for Pertisk Vms.
 # Embedded by scripts/build-alma-iso.sh (mkksiso).
 #
-# Anaconda GRAPHICAL configures everything interactive:
-#   - Installation Destination (disk)
-#   - Network & Host Name (IP / DHCP / hostname)
-#   - Root Password
-#   - User Creation (create user "admin" for SSH; recommended)
-# Boot cmdline still has ip=dhcp so packages download before the Network spoke.
-# Serial/headless: add pertisk.autodisk on the kernel cmdline (largest disk, no disk UI).
+# Interactive install: the Pertisk web installer (packaging/installer) collects
+# disk, network, hostname, and passwords, then asks Anaconda to run cmdline
+# with a generated kickstart. This file is the package/%post template for that
+# kickstart, and the fallback Anaconda UI for rescue / pertisk.autodisk.
+# Boot cmdline still has ip=dhcp so packages can download.
+# Serial/headless: add pertisk.autodisk on the kernel cmdline (largest disk, Anaconda GUI).
 # After reboot: pertiskd + web UI (no console pertisk-setup wizard).
 
 graphical

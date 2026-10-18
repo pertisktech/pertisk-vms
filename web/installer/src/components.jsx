@@ -68,6 +68,21 @@ export function SelectField({ id, label, value, onChange, children }) {
   )
 }
 
+export function Check({ className, checked, onChange, children }) {
+  return (
+    <button
+      type="button"
+      className={cx(className, checked && 'on')}
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+    >
+      <span className={cx('tick', checked && 'on')} aria-hidden="true" />
+      <span className="check-copy">{children}</span>
+    </button>
+  )
+}
+
 export function Banner({ tone = 'warn', children }) {
   return (
     <div className={cx('banner', tone)} role={tone === 'bad' ? 'alert' : 'note'}>

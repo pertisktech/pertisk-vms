@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LuCheck, LuMoon, LuPower, LuSun } from 'react-icons/lu'
-import { Mark, cx } from './components'
+import { Banner, Mark, cx } from './components'
 import {
   STEPS,
-  VERSION,
+  applySession,
   findDisk,
   firstInvalidStep,
   hasIssues,
   initialForm,
+  isLive,
   issues,
+  productVersion,
 } from './model'
 import { Access, Disk, Finished, Halt, Installing, Network, Review, Welcome } from './screens'
 
@@ -37,6 +39,10 @@ export default function App() {
   const [attempted, setAttempted] = useState(false)
   const [phase, setPhase] = useState('wizard')
   const [confirmOff, setConfirmOff] = useState(false)
+  const [boot, setBoot] = useState('loading')
+  const [busy, setBusy] = useState(false)
+  const [installError, setInstallError] = useState('')
+  const busyRef = useRef(false)
 
   useEffect(() => {
     document.documentElement.classList.remove('dark', 'light')
@@ -47,6 +53,35 @@ export default function App() {
       /* private mode */
     }
   }, [theme])
+
+  useEffect(() => {
+    let cancel = false
+    async function load() {
+      try {
+        const res = await fetch('/api/session', { headers: { Accept: 'application/json' } })
+        const text = await res.text()
+        if (!res.ok || !text.trim().startsWith('{')) throw new Error('preview')
+        const session = JSON.parse(text)
+        if (cancel) return
+        applySession(session)
+        const disk = (session.disks || []).find((item) => item.kind === 'disk')
+        const nic = (session.nics || []).find((item) => item.link) || (session.nics || [])[0]
+        setForm({
+          ...initialForm(),
+          diskId: disk?.id || '',
+          nicId: nic?.id || '',
+          address: '',
+          gateway: '',
+          dns: '',
+        })
+        setBoot('live')
+      } catch {
+        if (!cancel) setBoot('preview')
+      }
+    }
+    load()
+    return () => { cancel = true }
+  }, [])
 
   useEffect(() => {
     const title = {
@@ -82,7 +117,7 @@ export default function App() {
     setStep((current) => current - 1)
   }
 
-  function next() {
+  async function next() {
     if (STEPS[step].id === 'review') {
       const invalid = firstInvalidStep(form)
       if (invalid >= 0) {
@@ -90,8 +125,34 @@ export default function App() {
         setAttempted(true)
         return
       }
+      if (isLive()) {
+        if (busyRef.current) return
+        busyRef.current = true
+        setBusy(true)
+        setInstallError('')
+        try {
+          const res = await fetch('/api/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(form),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            setInstallError(body.error || 'Could not start the installation.')
+            busyRef.current = false
+            setBusy(false)
+            return
+          }
+        } catch {
+          setInstallError('Could not reach the installer.')
+          busyRef.current = false
+          setBusy(false)
+          return
+        }
+      }
       setPhase('installing')
       setAttempted(false)
+      setBusy(false)
       return
     }
     if (hasIssues(issue)) {
@@ -105,6 +166,19 @@ export default function App() {
   const continueLabel = STEPS[step].id === 'review'
     ? `Install on /dev/${disk?.id || 'disk'}`
     : 'Continue'
+
+  if (boot === 'loading') {
+    return (
+      <div className="shell">
+        <main className="main halt-main">
+          <div className="halt">
+            <h1>Pertisk Vms</h1>
+            <p>Reading disks and network…</p>
+          </div>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="shell">
@@ -152,7 +226,10 @@ export default function App() {
               <LuPower /> Power off
             </button>
           )}
-          <p className="rail-meta">Pertisk Vms {VERSION}<br />Preview · sample hardware</p>
+          <p className="rail-meta">
+            Pertisk Vms {productVersion()}<br />
+            {boot === 'live' ? 'AlmaLinux 10' : 'Preview · sample hardware'}
+          </p>
         </footer>
       </aside>
 
@@ -184,19 +261,33 @@ export default function App() {
         >
           <div className="main-body">
             {phase === 'wizard' && (
-              <Screen
-                form={form}
-                setForm={setForm}
-                showErrors={attempted}
-                issue={issue}
-                onJump={jump}
-              />
+              <>
+                <Screen
+                  form={form}
+                  setForm={setForm}
+                  showErrors={attempted}
+                  issue={issue}
+                  onJump={jump}
+                  live={boot === 'live'}
+                />
+                {installError && STEPS[step].id === 'review' ? (
+                  <Banner tone="bad">{installError}</Banner>
+                ) : null}
+              </>
             )}
             {phase === 'installing' && (
-              <Installing form={form} onComplete={() => setPhase('done')} />
+              <Installing form={form} live={boot === 'live'} onComplete={() => setPhase('done')} />
             )}
             {phase === 'done' && (
-              <Finished form={form} onReboot={() => setPhase('reboot')} />
+              <Finished
+                form={form}
+                onReboot={async () => {
+                  if (isLive()) {
+                    try { await fetch('/api/reboot', { method: 'POST' }) } catch { /* console */ }
+                  }
+                  setPhase('reboot')
+                }}
+              />
             )}
           </div>
           {phase === 'wizard' && (
@@ -204,7 +295,7 @@ export default function App() {
               <button type="button" className="secondary" onClick={back} disabled={step === 0}>
                 Back
               </button>
-              <button type="submit" className="primary">{continueLabel}</button>
+              <button type="submit" className="primary" disabled={busy}>{continueLabel}</button>
             </footer>
           )}
           {phase === 'installing' && (
@@ -226,7 +317,17 @@ export default function App() {
             <p>Installation has not started. The disks stay as they are.</p>
             <div className="modal-actions">
               <button type="button" className="secondary" onClick={() => setConfirmOff(false)}>Cancel</button>
-              <button type="button" className="danger" onClick={() => { setConfirmOff(false); setPhase('off') }}>
+              <button
+                type="button"
+                className="danger"
+                onClick={async () => {
+                  setConfirmOff(false)
+                  if (isLive()) {
+                    try { await fetch('/api/poweroff', { method: 'POST' }) } catch { /* preview */ }
+                  }
+                  setPhase('off')
+                }}
+              >
                 Power off
               </button>
             </div>

@@ -77,7 +77,8 @@ fn ensure_uplink_on_bridge(bridge: &str) -> Result<()> {
     if nic == bridge {
         return Ok(());
     }
-    let master_link = std::path::Path::new(&format!("/sys/class/net/{nic}/master"));
+    let master_path = format!("/sys/class/net/{nic}/master");
+    let master_link = std::path::Path::new(&master_path);
     if let Ok(target) = std::fs::read_link(master_link) {
         if target.file_name().and_then(|n| n.to_str()) == Some(bridge) {
             return Ok(());

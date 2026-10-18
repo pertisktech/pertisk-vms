@@ -48,6 +48,22 @@ default_partitioning =
     /var/lib/pertisk  (min 10 GiB)
 EOF
 
+# Pertisk web installer. Replaces the Anaconda GTK session (tmux main window).
+INSTALLER="$ROOT/packaging/installer"
+UI_DIST="${PERTISK_INSTALLER_DIST:-$ROOT/web/installer/dist}"
+if [[ -f "$UI_DIST/index.html" && -f "$INSTALLER/server.py" ]]; then
+  mkdir -p "$PROD/usr/sbin" "$PROD/usr/share/pertisk-installer/dist" "$PROD/usr/share/anaconda"
+  install -m 755 "$INSTALLER/pertisk-install-ui" "$PROD/usr/sbin/pertisk-install-ui"
+  cp -f "$INSTALLER/server.py" "$INSTALLER/kiosk.py" "$PROD/usr/share/pertisk-installer/"
+  cp -f "$ROOT/packaging/kickstart/pertisk-node.ks" "$PROD/usr/share/pertisk-installer/pertisk-node.ks"
+  cp -a "$UI_DIST/." "$PROD/usr/share/pertisk-installer/dist/"
+  cp -f "$INSTALLER/tmux.conf" "$PROD/usr/share/anaconda/tmux.conf"
+  printf '%s\n' "$VERSION" >"$PROD/usr/share/pertisk-installer/VERSION"
+elif [[ "${PERTISK_REQUIRE_INSTALLER:-}" == 1 ]]; then
+  echo "build-product-img: missing installer UI ($UI_DIST). Run: cd web/installer && npm ci && npm run build" >&2
+  exit 1
+fi
+
 if [[ -z "$OUT" ]]; then
   OUT="$WORKDIR/../product.img"
 fi

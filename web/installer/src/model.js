@@ -122,12 +122,48 @@ export function partitionPlan(bytes) {
   ]
 }
 
+const catalog = {
+  live: false,
+  version: VERSION,
+  host: HOST,
+  disks: DISKS,
+  nics: NICS,
+}
+
+export function isLive() {
+  return catalog.live
+}
+
+export function productVersion() {
+  return catalog.version || VERSION
+}
+
+export function hostInfo() {
+  return catalog.host
+}
+
+export function diskList() {
+  return catalog.disks
+}
+
+export function nicList() {
+  return catalog.nics
+}
+
+export function applySession(session) {
+  catalog.live = true
+  catalog.version = session.version || VERSION
+  catalog.host = session.host || HOST
+  catalog.disks = Array.isArray(session.disks) ? session.disks : []
+  catalog.nics = Array.isArray(session.nics) ? session.nics : []
+}
+
 export function findDisk(id) {
-  return DISKS.find((d) => d.id === id) || null
+  return catalog.disks.find((d) => d.id === id) || null
 }
 
 export function findNic(id) {
-  return NICS.find((n) => n.id === id) || null
+  return catalog.nics.find((n) => n.id === id) || null
 }
 
 export function managementAddress(form) {
@@ -208,6 +244,7 @@ export function issues(stepId, form) {
   if (stepId === 'disk') {
     const disk = findDisk(form.diskId)
     if (!disk || disk.kind !== 'disk') formError = 'Select an internal disk.'
+    else if (disk.size < 24 * GiB) formError = 'Choose a disk of at least 24 GiB.'
     else if (!form.eraseConfirmed) fields.erase = 'Confirm this disk can be erased.'
   }
 
