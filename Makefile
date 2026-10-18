@@ -1,4 +1,4 @@
-.PHONY: release release-amd release-arm release-amd64 release-arm64 release-sbc release-alma-iso release-rpm
+.PHONY: release release-amd release-arm release-amd64 release-arm64 release-sbc release-alma-iso release-rpm installer-ui
 
 # make release-amd VERSION=0.1.0
 # make release-arm VERSION=0.1.0
@@ -69,3 +69,7 @@ endif
 	@echo "✓ Tag $(TAG) created and pushed successfully"
 
 clean-tag: retag
+
+# Modern node-installer UI (preview). Live ISO still uses Anaconda.
+installer-ui:
+	cd web/installer && npm install && npm run dev

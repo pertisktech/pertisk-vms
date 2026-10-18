@@ -16,6 +16,8 @@ iso/overlay/etc/pertisk/version
 *.swp
 web/ui/node_modules
 web/ui/dist
+web/installer/node_modules
+web/installer/dist
 # Vite outDir — hashed assets change on every `npm run build`
 crates/pertisk-daemon/static/
 iso/overlay/usr/bin/

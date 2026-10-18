@@ -1,0 +1,86 @@
+import { useState } from 'react'
+import { LuEye, LuEyeOff } from 'react-icons/lu'
+
+export function cx(...parts) {
+  return parts.filter(Boolean).join(' ')
+}
+
+export function Mark() {
+  return (
+    <svg className="mark-svg" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="8" fill="currentColor" />
+      <rect x="6" y="9" width="20" height="14" rx="3" fill="none" stroke="#9a7bf7" strokeWidth="2" />
+      <circle cx="16" cy="16" r="3" fill="#9a7bf7" />
+    </svg>
+  )
+}
+
+export function Field({ id, label, hint, error, children }) {
+  return (
+    <div className={cx('field', error && 'invalid')}>
+      <label htmlFor={id}>{label}</label>
+      {children}
+      {error ? (
+        <p className="field-error" id={`${id}-error`}>{error}</p>
+      ) : hint ? (
+        <p className="field-hint">{hint}</p>
+      ) : null}
+    </div>
+  )
+}
+
+export function PasswordField({ id, label, value, onChange, error, hint, autoFocus }) {
+  const [show, setShow] = useState(false)
+  return (
+    <Field id={id} label={label} error={error} hint={hint}>
+      <div className="secret">
+        <input
+          id={id}
+          type={show ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="new-password"
+          autoFocus={autoFocus}
+          spellCheck={false}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+        />
+        <button
+          type="button"
+          className="ghost-icon"
+          onClick={() => setShow((open) => !open)}
+          aria-label={show ? 'Hide password' : 'Show password'}
+        >
+          {show ? <LuEyeOff /> : <LuEye />}
+        </button>
+      </div>
+    </Field>
+  )
+}
+
+export function SelectField({ id, label, value, onChange, children }) {
+  return (
+    <Field id={id} label={label}>
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+        {children}
+      </select>
+    </Field>
+  )
+}
+
+export function Banner({ tone = 'warn', children }) {
+  return (
+    <div className={cx('banner', tone)} role={tone === 'bad' ? 'alert' : 'note'}>
+      {children}
+    </div>
+  )
+}
+
+export function StepHeader({ title, lede }) {
+  return (
+    <header className="step-head">
+      <h1>{title}</h1>
+      <p>{lede}</p>
+    </header>
+  )
+}
