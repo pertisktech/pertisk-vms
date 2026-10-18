@@ -2470,6 +2470,14 @@ mod tests {
         }
     }
 
+    fn json_id(value: &serde_json::Value) -> String {
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_u64().map(|n| n.to_string()))
+            .unwrap_or_default()
+    }
+
     async fn wait_running_elsewhere(nodes: &[&LiveNode], id: &str, owner: &str) -> Option<String> {
         for _ in 0..40 {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -2479,7 +2487,7 @@ mod tests {
                 };
                 if let Some(vm) = vms.as_array().and_then(|list| {
                     list.iter()
-                        .find(|vm| vm["id"] == id && vm["state"] == "running")
+                        .find(|vm| json_id(&vm["id"]) == id && vm["state"] == "running")
                 }) && vm["node_id"].as_str() != Some(owner)
                 {
                     return vm["node_id"].as_str().map(str::to_string);
@@ -2487,6 +2495,34 @@ mod tests {
             }
         }
         None
+    }
+
+    async fn wait_local_ha_failed(nodes: &[&LiveNode], id: &str, owner: &str) -> bool {
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            for node in nodes {
+                let Some(vms) = node.json_opt(Method::GET, "/v1/vms", None).await else {
+                    continue;
+                };
+                let Some(vm) = vms
+                    .as_array()
+                    .and_then(|list| list.iter().find(|vm| json_id(&vm["id"]) == id))
+                else {
+                    continue;
+                };
+                if vm["state"] == "running" && vm["node_id"].as_str() != Some(owner) {
+                    return false;
+                }
+                let error = vm["last_error"].as_str().unwrap_or("");
+                if vm["state"] == "failed"
+                    && vm["node_id"].as_str() == Some(owner)
+                    && error.contains("Ceph RBD")
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     async fn spawn_node(name: &str) -> LiveNode {
@@ -2592,11 +2628,12 @@ mod tests {
                 })),
             )
             .await;
-        let id = created["id"].as_str().unwrap();
+        let id = json_id(&created["id"]);
+        assert!(!id.is_empty(), "vm create returned no id: {created}");
         let started = a
             .json(Method::POST, &format!("/v1/vms/{id}/start"), None)
             .await;
-        assert_eq!(started["state"], "running");
+        assert_eq!(started["state"], "running", "{started}");
         let owner = started["node_id"].as_str().unwrap().to_string();
         let cluster = a.json(Method::GET, "/v1/cluster", None).await;
         let owner_name = cluster["members"]
@@ -2618,7 +2655,7 @@ mod tests {
             "b" => vec![&a, &c],
             _ => vec![&a, &b],
         };
-        let found = wait_running_elsewhere(&survivors, id, &owner)
+        let found = wait_running_elsewhere(&survivors, &id, &owner)
             .await
             .is_some();
         a.kill();
@@ -2628,7 +2665,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn replicated_volume_ha_prefers_replica_holder() {
+    async fn local_volume_ha_stays_on_lost_node() {
         let a = spawn_node("a").await;
         let b = spawn_node("b").await;
         let c = spawn_node("c").await;
@@ -2696,7 +2733,8 @@ mod tests {
                 })),
             )
             .await;
-        let id = created["id"].as_str().unwrap();
+        let id = json_id(&created["id"]);
+        assert!(!id.is_empty(), "vm create returned no id: {created}");
         a.json(
             Method::POST,
             &format!("/v1/vms/{id}/disks"),
@@ -2736,14 +2774,13 @@ mod tests {
             "b" => vec![&a, &c],
             _ => vec![&a, &b],
         };
-        let dest = wait_running_elsewhere(&survivors, id, &owner).await;
+        let refused = wait_local_ha_failed(&survivors, &id, &owner).await;
         a.kill();
         b.kill();
         c.kill();
-        let dest = dest.expect("ha did not restart the vm");
         assert!(
-            replicas.iter().any(|r| r.as_str() == Some(dest.as_str())),
-            "ha restarted on {dest} which did not already hold a replica"
+            refused,
+            "local-disk guest was restarted or not marked failed"
         );
     }
 
@@ -2774,7 +2811,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
-        let id = created["id"].as_str().unwrap();
+        let id = json_id(&created["id"]);
+        assert!(!id.is_empty(), "vm create returned no id: {created}");
         let (status, started) = send(
             &app,
             Method::POST,
@@ -2842,7 +2880,8 @@ mod tests {
                 })),
             )
             .await;
-        let id = created["id"].as_str().unwrap();
+        let id = json_id(&created["id"]);
+        assert!(!id.is_empty(), "vm create returned no id: {created}");
         let started = node
             .json(Method::POST, &format!("/v1/vms/{id}/start"), None)
             .await;

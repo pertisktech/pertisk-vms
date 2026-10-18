@@ -272,11 +272,7 @@ export default function GuestOptions() {
                 <span className="chk-box" />
                 <span className="chk-label">
                   Restart on another node if this one is lost
-                  <small>
-                    {inv.host?.ha_durable || inv.host?.storage_backend === 'rbd'
-                      ? 'High availability (Ceph RBD)'
-                      : 'Restart only — replica storage can lose unsynced writes'}
-                  </small>
+                  <small>Restart works for Ceph RBD disks only. Local files stay on the lost node.</small>
                 </span>
               </label>
             )}

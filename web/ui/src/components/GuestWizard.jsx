@@ -400,9 +400,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                 <span className="chk-label">
                   Restart on another node if this one is lost
                   <small>
-                    {haDurable(host)
-                      ? 'High availability (Ceph RBD)'
-                      : 'Restart only — replica storage can lose unsynced writes'}
+                    Restart works for Ceph RBD disks only. Local files stay on the lost node.
                   </small>
                 </span>
               </label>
@@ -699,11 +697,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               <div>
                 <dt>HA</dt>
                 <dd>
-                  {form.ha
-                    ? haDurable(host)
-                      ? 'Restart on node loss (RBD)'
-                      : 'Restart on node loss (replica: not crash-safe)'
-                    : 'Pinned to this node'}
+                  {form.ha ? 'Restart on node loss (Ceph RBD disks)' : 'Pinned to this node'}
                 </dd>
               </div>
               <div>

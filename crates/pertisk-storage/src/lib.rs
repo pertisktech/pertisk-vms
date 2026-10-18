@@ -1217,6 +1217,7 @@ mod tests {
                 size_bytes: parse_size("1M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .unwrap();
         let src = dir.path().join("incoming.bin");
@@ -1256,6 +1257,7 @@ mod tests {
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .unwrap();
         assert_eq!(vol.path.metadata().unwrap().len(), 8 * 1024 * 1024);
@@ -1307,6 +1309,7 @@ mod tests {
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .unwrap();
         let ensured = pool.ensure_local(&vol).unwrap();

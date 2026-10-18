@@ -1688,10 +1688,11 @@ impl Service {
         req: CreateVolumeRequest,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_quorum()?;
-        if self.config.storage.backend == StorageBackend::Rbd {
+        let backend = req.backend.unwrap_or(self.config.storage.backend);
+        if backend == StorageBackend::Rbd {
             if !Rbd::available() {
                 return Err(DaemonError::Peer(
-                    "storage.backend=rbd but the rbd CLI was not found".into(),
+                    "Ceph RBD volume requested but the rbd CLI was not found".into(),
                 ));
             }
             let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
@@ -2024,13 +2025,11 @@ impl Service {
             .collect())
     }
 
-    fn volume_used_by_ha(&self, id: VolumeId) -> bool {
-        self.store
-            .list()
-            .ok()
-            .into_iter()
-            .flatten()
-            .any(|vm| vm.spec.ha && vm.spec.disks.iter().any(|disk| disk.volume_id == Some(id)))
+    /// Diskless guests can move. A guest with disks can move only when every disk is Ceph RBD.
+    fn guest_can_ha_restart(&self, vm: &VmRecord) -> bool {
+        disks_are_ha_durable(&vm.spec.disks, |id| {
+            self.volumes.get_volume(id).ok().map(|vol| vol.backend)
+        })
     }
 
     fn volume_is_backing(&self, id: VolumeId) -> Result<bool, DaemonError> {
@@ -3090,7 +3089,6 @@ impl Service {
         }
         let loads = self.loads()?;
         let vms = self.store.list()?;
-        let replica_ha = self.config.storage.backend != StorageBackend::Rbd;
         for mut vm in vms {
             if vm.template || !vm.spec.ha || vm.state != VmState::Running {
                 continue;
@@ -3100,6 +3098,21 @@ impl Service {
             };
             let owner_online = loads.iter().any(|n| n.id == owner && n.online);
             if owner_online {
+                continue;
+            }
+            if !self.guest_can_ha_restart(&vm) {
+                tracing::warn!(vm = %vm.id, "HA skipped; local disks are not shared");
+                vm.state = VmState::Failed;
+                vm.last_error = Some(
+                    "HA restart needs Ceph RBD disks; local files stay on the lost node".into(),
+                );
+                let _ = self.store.upsert(vm.clone());
+                self.notify_vm(
+                    "vm.failed",
+                    &vm,
+                    "HA restart needs Ceph RBD disks",
+                );
+                self.cluster.bump()?;
                 continue;
             }
             let affinity: Vec<_> = self
@@ -3124,12 +3137,6 @@ impl Service {
                 continue;
             }
             tracing::warn!(vm = %vm.id, from = %owner, to = %dest, "ha restart");
-            if replica_ha {
-                tracing::warn!(
-                    vm = %vm.id,
-                    "HA restart on replica storage; unsynced writes since last stop may be lost"
-                );
-            }
             let mut moving = vm.clone();
             moving.node_id = Some(dest);
             moving.state = VmState::Created;
@@ -3628,9 +3635,8 @@ impl Service {
                 // Leftover recovered/template disks must not be copied onto every node.
                 continue;
             }
-            let ha = self.volume_used_by_ha(vol.id);
             vol.replicas.retain(|id| online.contains(id));
-            let want = usize::from(replica_want_ha(online.len(), vol.replica_count.max(1), ha));
+            let want = usize::from(replica_want(online.len(), vol.replica_count.max(1)));
             if vol.replicas.is_empty() {
                 vol.replicas =
                     cluster::place_replicas(&online, want as u8, Some(self.cluster.self_id()));
@@ -3885,13 +3891,24 @@ fn replica_want(online: usize, configured: u8) -> u8 {
     configured.max(1).min(online.max(1) as u8)
 }
 
-fn replica_want_ha(online: usize, configured: u8, ha: bool) -> u8 {
-    let want = replica_want(online, configured);
-    if ha && online >= 2 {
-        want.max(2).min(online as u8)
-    } else {
-        want
+/// Copy count is the volume's configured count. HA does not add extra file copies.
+fn replica_want_ha(online: usize, configured: u8, _ha: bool) -> u8 {
+    replica_want(online, configured)
+}
+
+/// Empty disk list can fail over. Any disk must be a Ceph RBD volume.
+fn disks_are_ha_durable(
+    disks: &[DiskSpec],
+    lookup: impl Fn(VolumeId) -> Option<StorageBackend>,
+) -> bool {
+    if disks.is_empty() {
+        return true;
     }
+    disks.iter().all(|disk| {
+        disk.volume_id
+            .and_then(&lookup)
+            .is_some_and(|backend| backend.ha_durable())
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4296,9 +4313,34 @@ mod tests {
         assert_eq!(replica_want(2, 1), 1);
         assert_eq!(replica_want(2, 2), 2);
         assert_eq!(replica_want(3, 2), 2);
-        assert_eq!(replica_want_ha(2, 1, true), 2);
+        assert_eq!(replica_want_ha(2, 1, true), 1);
         assert_eq!(replica_want_ha(2, 1, false), 1);
         assert_eq!(replica_want_ha(1, 2, true), 1);
+        assert!(disks_are_ha_durable(&[], |_| None));
+        let local = VolumeId::new();
+        let shared = VolumeId::new();
+        let disk = |id| DiskSpec {
+            path: PathBuf::from("/dev/null"),
+            readonly: false,
+            cdrom: false,
+            volume_id: Some(id),
+            iso_name: None,
+        };
+        assert!(!disks_are_ha_durable(&[disk(local)], |id| {
+            (id == local).then_some(StorageBackend::Replica)
+        }));
+        assert!(disks_are_ha_durable(&[disk(shared)], |id| {
+            (id == shared).then_some(StorageBackend::Rbd)
+        }));
+        assert!(!disks_are_ha_durable(&[disk(local), disk(shared)], |id| {
+            if id == shared {
+                Some(StorageBackend::Rbd)
+            } else if id == local {
+                Some(StorageBackend::Replica)
+            } else {
+                None
+            }
+        }));
     }
 
     fn spec(name: &str) -> VmSpec {
@@ -4677,6 +4719,7 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .await
             .unwrap();
@@ -4717,6 +4760,7 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .await
             .unwrap();
@@ -4736,6 +4780,7 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
                 size_bytes: parse_size("8M").unwrap(),
                 format: VolumeFormat::Raw,
                 replicas: None,
+                backend: None,
             })
             .await
             .unwrap();

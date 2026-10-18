@@ -395,6 +395,9 @@ enum VolCommand {
         format: VolumeFormat,
         #[arg(long)]
         replicas: Option<u8>,
+        /// replica (local file) or rbd (Ceph). Default is the host setting.
+        #[arg(long)]
+        backend: Option<pertisk_types::StorageBackend>,
     },
     List,
     Show {
@@ -1151,6 +1154,7 @@ async fn run() -> Result<()> {
                             size_bytes: parse_size(&size)?,
                             format: VolumeFormat::Raw,
                             replicas: None,
+                            backend: None,
                         },
                     )
                     .await?;
@@ -1449,12 +1453,14 @@ async fn run() -> Result<()> {
                 size,
                 format,
                 replicas,
+                backend,
             } => {
                 let req = CreateVolumeRequest {
                     name,
                     size_bytes: parse_size(&size)?,
                     format,
                     replicas,
+                    backend,
                 };
                 let vol: VolumeRecord = post_json(&client, &cli.url, "/v1/volumes", &req).await?;
                 print_vol(&vol);
@@ -1741,11 +1747,12 @@ fn resolve_ssh_keys(items: Vec<String>) -> Result<Vec<String>> {
 
 fn print_vol(record: &VolumeRecord) {
     println!(
-        "{} {} {} {} replicas={}",
+        "{} {} {} {} backend={} replicas={}",
         record.id,
         record.name,
         record.format,
         format_size(record.size_bytes),
+        record.backend,
         record.replicas.len()
     );
 }

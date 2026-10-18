@@ -612,7 +612,7 @@ impl FromStr for StorageBackend {
 }
 
 fn default_replica_count() -> u8 {
-    2
+    1
 }
 
 fn default_one() -> u8 {
@@ -651,9 +651,12 @@ pub struct CreateVolumeRequest {
     pub size_bytes: u64,
     #[serde(default)]
     pub format: VolumeFormat,
-    /// Desired replica count. None uses host config (default 2, or 1 on a single node).
+    /// Desired replica count for a local volume. None uses host config (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<u8>,
+    /// `replica` is a local file. `rbd` is one Ceph image. None uses the host default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<StorageBackend>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

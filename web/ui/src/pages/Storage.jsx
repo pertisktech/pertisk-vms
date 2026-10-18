@@ -18,7 +18,7 @@ export default function Storage() {
   }
   const [volOpen, setVolOpen] = useState(false)
   const [isoOpen, setIsoOpen] = useState(false)
-  const [vol, setVol] = useState({ name: '', size: '8G', replicas: 2 })
+  const [vol, setVol] = useState({ name: '', size: '8G', backend: 'replica' })
   const [isoPath, setIsoPath] = useState('')
   const [isoFile, setIsoFile] = useState(null)
   const [isoMode, setIsoMode] = useState('file')
@@ -40,11 +40,11 @@ export default function Storage() {
             name: vol.name.trim(),
             size_bytes: parseSize(vol.size),
             format: 'raw',
-            replicas: Number(vol.replicas) || undefined,
+            backend: vol.backend,
           },
         }),
       )
-      setVol({ name: '', size: '8G', replicas: 2 })
+      setVol({ name: '', size: '8G', backend: 'replica' })
       setVolOpen(false)
     } catch {
       /* inventory error */
@@ -149,12 +149,9 @@ export default function Storage() {
           </Btn>
         </div>
       )}
-      {inv.host && inv.host.storage_backend !== 'rbd' && (
-        <div className="banner">
-          Replica volumes are local files. Treat HA as experimental; unsynced writes can be lost if the
-          owner node dies. Use Ceph RBD for production.
-        </div>
-      )}
+      <div className="banner">
+        Local volumes stay on this node. Choose Shared (Ceph) when the disk must restart on another node.
+      </div>
       {error && (
         <div className="banner danger">
           {error}
@@ -181,7 +178,8 @@ export default function Storage() {
                   <th>Name</th>
                   <th>Format</th>
                   <th>Size</th>
-                  <th>Replicas</th>
+                  <th>Storage</th>
+                  <th>Location</th>
                   {canWrite && <th />}
                 </tr>
               </thead>
@@ -199,10 +197,13 @@ export default function Storage() {
                       </td>
                       <td className="mono-inline muted">{v.format}</td>
                       <td className="mono-inline muted">{formatBytes(v.size_bytes)}</td>
+                      <td className="mono-inline muted">{v.backend === 'rbd' ? 'rbd' : 'local'}</td>
                       <td className="mono-inline muted">
-                        {reps.length === 0
-                          ? v.replica_count || 1
-                          : reps.map((id) => nodeName(id)).join(', ')}
+                        {v.backend === 'rbd'
+                          ? 'shared'
+                          : reps.length === 0
+                            ? 'this node'
+                            : reps.map((id) => nodeName(id)).join(', ')}
                       </td>
                       {canWrite && (
                         <td className="col-actions">
@@ -460,26 +461,27 @@ export default function Storage() {
                 onChange={(e) => setVol({ ...vol, name: e.target.value })}
               />
             </div>
-            <div className="form-grid">
-              <div className="field">
-                <label htmlFor="vol-size">Size</label>
-                <input
-                  id="vol-size"
-                  value={vol.size}
-                  onChange={(e) => setVol({ ...vol, size: e.target.value })}
-                  placeholder="8G"
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="vol-rep">Replicas</label>
-                <input
-                  id="vol-rep"
-                  type="number"
-                  min="1"
-                  value={vol.replicas}
-                  onChange={(e) => setVol({ ...vol, replicas: e.target.value })}
-                />
-              </div>
+            <div className="field">
+              <label htmlFor="vol-size">Size</label>
+              <input
+                id="vol-size"
+                value={vol.size}
+                onChange={(e) => setVol({ ...vol, size: e.target.value })}
+                placeholder="8G"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="vol-backend">Storage</label>
+              <select
+                id="vol-backend"
+                value={vol.backend}
+                onChange={(e) => setVol({ ...vol, backend: e.target.value })}
+              >
+                <option value="replica">Local (this node)</option>
+                <option value="rbd" disabled={!inv.host?.rbd}>
+                  Shared (Ceph RBD){inv.host?.rbd ? '' : ' — rbd CLI not found'}
+                </option>
+              </select>
             </div>
           </form>
         </Modal>

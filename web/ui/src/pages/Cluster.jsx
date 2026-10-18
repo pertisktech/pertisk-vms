@@ -90,8 +90,7 @@ export default function Cluster() {
       )}
       {!durable && (
         <div className="banner">
-          Local replica storage is for lab use. HA restart does not protect unsynced writes. Production HA
-          needs <code>storage.backend = &quot;rbd&quot;</code>.
+          Local disks stay on the lost node. A guest restarts elsewhere only when every disk is Ceph RBD.
         </div>
       )}
       {!haArmed && (
