@@ -24,7 +24,11 @@ pub fn ensure_lan_bridge(bridge: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         if is_bridge(bridge) {
+            // Bridge already exists (common after host reboot). Still ensure the
+            // uplink is enslaved — NM / early boot can leave br0 up with no ports,
+            // which breaks guest SLAAC (no RA → synthetic fd00 ULA only).
             run_ip(&["link", "set", "dev", bridge, "up"], true)?;
+            ensure_uplink_on_bridge(bridge)?;
             return Ok(());
         }
         if interface_exists(bridge) {
@@ -38,6 +42,7 @@ pub fn ensure_lan_bridge(bridge: &str) -> Result<()> {
                 .status();
             if status.map(|s| s.success()).unwrap_or(false) && is_bridge(bridge) {
                 run_ip(&["link", "set", "dev", bridge, "up"], true)?;
+                ensure_uplink_on_bridge(bridge)?;
                 return Ok(());
             }
         }
@@ -61,6 +66,27 @@ pub fn ensure_lan_bridge(bridge: &str) -> Result<()> {
         run_ip(&["link", "set", "dev", &nic, "up"], true)?;
         Ok(())
     }
+}
+
+/// Enslave the cabled uplink to `bridge` when it is missing (idempotent).
+#[cfg(target_os = "linux")]
+fn ensure_uplink_on_bridge(bridge: &str) -> Result<()> {
+    let Ok(nic) = default_uplink().or_else(|_| first_cabled_nic()) else {
+        return Ok(());
+    };
+    if nic == bridge {
+        return Ok(());
+    }
+    let master_link = std::path::Path::new(&format!("/sys/class/net/{nic}/master"));
+    if let Ok(target) = std::fs::read_link(master_link) {
+        if target.file_name().and_then(|n| n.to_str()) == Some(bridge) {
+            return Ok(());
+        }
+    }
+    let _ = move_ipv4_to_bridge(&nic, bridge);
+    run_ip(&["link", "set", "dev", &nic, "master", bridge], true)?;
+    run_ip(&["link", "set", "dev", &nic, "up"], true)?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -599,11 +625,15 @@ pub fn provision_nic(
 ) -> Result<()> {
     check_name(bridge)?;
     check_name(tap)?;
-    // A failed prior setup can leave this deterministic TAP behind without a VM record.
-    delete_tap(tap)?;
-    run_ip(&["tuntap", "add", "dev", tap, "mode", "tap"], true)?;
-    run_ip(&["link", "set", "dev", tap, "master", bridge], false)?;
-    run_ip(&["link", "set", "dev", tap, "up"], false)?;
+    // Reuse an existing TAP when possible (QEMU may already hold it after a soft
+    // restart). Only recreate when the device is missing — deleting a live TAP
+    // drops guest L2 and leaves eth0 without RA/SLAAC.
+    if !interface_exists(tap) {
+        run_ip(&["tuntap", "add", "dev", tap, "mode", "tap"], true)?;
+    }
+    // Always (re)enslave: host reboot / NM can leave the TAP up with no master.
+    run_ip(&["link", "set", "dev", tap, "master", bridge], true)?;
+    run_ip(&["link", "set", "dev", tap, "up"], true)?;
     disable_tap_offload(tap);
     if isolate {
         let _ = Command::new("bridge")
