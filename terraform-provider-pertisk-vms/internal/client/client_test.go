@@ -75,7 +75,13 @@ func TestClientCRUD(t *testing.T) {
 			delete(nets, "net-1")
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes":
-			vol := Volume{ID: "vol-1", Name: "web-disk", Format: "qcow2", SizeBytes: 32 * 1024 * 1024 * 1024}
+			var req CreateVolumeRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			backend := req.Backend
+			if backend == "" {
+				backend = "replica"
+			}
+			vol := Volume{ID: "vol-1", Name: req.Name, Format: req.Format, SizeBytes: req.SizeBytes, Backend: backend}
 			vols[vol.ID] = vol
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(vol)
@@ -132,8 +138,8 @@ func TestClientCRUD(t *testing.T) {
 	if err != nil || net.ID != "net-1" {
 		t.Fatalf("network: %v %+v", err, net)
 	}
-	vol, err := c.CreateVolume(CreateVolumeRequest{Name: "web-disk", SizeBytes: 32 * 1024 * 1024 * 1024, Format: "qcow2"})
-	if err != nil || vol.ID != "vol-1" {
+	vol, err := c.CreateVolume(CreateVolumeRequest{Name: "web-disk", SizeBytes: 32 * 1024 * 1024 * 1024, Format: "qcow2", Backend: "rbd"})
+	if err != nil || vol.ID != "vol-1" || vol.Backend != "rbd" {
 		t.Fatalf("volume: %v %+v", err, vol)
 	}
 	vm, err := c.CreateVM(CreateVMRequest{ID: uint64(100), Name: "web", VCPUs: 2, MemoryMiB: 2048, HA: true})

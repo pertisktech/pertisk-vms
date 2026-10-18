@@ -74,7 +74,7 @@ provider_installation {
 |---|---|
 | `pertisk_vms_template` | `POST /v1/templates/import`, `POST /v1/templates`, or `POST /v1/vms/{id}/template` |
 | `pertisk_vms_network` | `POST /v1/networks` |
-| `pertisk_vms_volume` | `POST /v1/volumes` (resize via `/resize`) |
+| `pertisk_vms_volume` | `POST /v1/volumes` (resize via `/resize`). `backend` is `replica` or `rbd`. |
 | `pertisk_vms_vm` | define + attach, or `POST /v1/vms/{id}/clone` |
 
 ### `pertisk_vms_template`
@@ -107,6 +107,19 @@ resource "pertisk_vms_template" "golden" {
 
 Set exactly one of `image`, `volume_id`, or `source_vm_id`. Changing the image file (SHA-256) replaces the template.
 
+### `pertisk_vms_volume`
+
+```hcl
+resource "pertisk_vms_volume" "data" {
+  name    = "data"
+  size    = "32G"
+  format  = "qcow2"
+  backend = "rbd" # local file: "replica". HA restart needs rbd.
+}
+```
+
+`backend` omitted uses the host default. Changing `backend`, `format`, or `replicas` replaces the volume. `replicas` is the local copy count (host default 1) and is ignored for Ceph.
+
 ### `pertisk_vms_vm`
 
 Create a blank guest with a disk and installer ISO:
@@ -120,7 +133,10 @@ resource "pertisk_vms_vm" "install" {
   iso        = "alpine-virt.iso"
   started    = true
 
-  disk { size = "16G" }
+  disk {
+    size    = "16G"
+    backend = "replica" # or "rbd" when the disk must move with HA
+  }
 }
 ```
 

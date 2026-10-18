@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -35,6 +37,7 @@ type volumeModel struct {
 	Format       types.String `tfsdk:"format"`
 	Replicas     types.Int64  `tfsdk:"replicas"`
 	ReplicaCount types.Int64  `tfsdk:"replica_count"`
+	Backend      types.String `tfsdk:"backend"`
 }
 
 func (r *volumeResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -43,7 +46,7 @@ func (r *volumeResource) Metadata(_ context.Context, req resource.MetadataReques
 
 func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "A disk volume (raw or qcow2). Growing `size` resizes in place; shrinking is rejected by the API.",
+		MarkdownDescription: "A disk volume (raw or qcow2). `backend` is `replica` (local file) or `rbd` (Ceph). Growing `size` resizes in place; shrinking is rejected by the API.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -75,13 +78,22 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"replicas": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "Desired replica count. Unset uses the cluster default.",
+				MarkdownDescription: "Copy count for a local volume. Unset uses the host default (1). Ignored for `rbd`.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
 			},
 			"replica_count": schema.Int64Attribute{
 				Computed: true,
+			},
+			"backend": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "`replica` keeps the disk on this node. `rbd` is one Ceph image and is required for HA restart. Unset uses the host default. Changing it replaces the volume.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -102,10 +114,16 @@ func (r *volumeResource) Create(ctx context.Context, req resource.CreateRequest,
 		resp.Diagnostics.AddAttributeError(path.Root("size"), "Invalid size", err.Error())
 		return
 	}
+	backend, err := volumeBackend(plan.Backend)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("backend"), "Invalid backend", err.Error())
+		return
+	}
 	body := client.CreateVolumeRequest{
 		Name:      plan.Name.ValueString(),
 		SizeBytes: bytes,
 		Format:    plan.Format.ValueString(),
+		Backend:   backend,
 	}
 	if !plan.Replicas.IsNull() && !plan.Replicas.IsUnknown() {
 		n := int(plan.Replicas.ValueInt64())
@@ -181,6 +199,7 @@ func volumeToModel(vol *client.Volume, prev volumeModel) volumeModel {
 		Size:         types.StringValue(client.FormatSize(vol.SizeBytes)),
 		ReplicaCount: types.Int64Value(int64(vol.ReplicaCount)),
 		Replicas:     prev.Replicas,
+		Backend:      types.StringValue(volumeBackendOrDefault(vol.Backend)),
 	}
 	if !prev.Size.IsNull() && !prev.Size.IsUnknown() {
 		if want, err := client.ParseSize(prev.Size.ValueString()); err == nil && want == vol.SizeBytes {
@@ -188,4 +207,26 @@ func volumeToModel(vol *client.Volume, prev volumeModel) volumeModel {
 		}
 	}
 	return m
+}
+
+// volumeBackend returns the API value, or empty when Terraform should omit it.
+func volumeBackend(v types.String) (string, error) {
+	if v.IsNull() || v.IsUnknown() {
+		return "", nil
+	}
+	switch strings.ToLower(strings.TrimSpace(v.ValueString())) {
+	case "":
+		return "", nil
+	case "replica", "rbd":
+		return strings.ToLower(strings.TrimSpace(v.ValueString())), nil
+	default:
+		return "", fmt.Errorf("backend must be \"replica\" (local file) or \"rbd\" (Ceph)")
+	}
+}
+
+func volumeBackendOrDefault(backend string) string {
+	if strings.TrimSpace(backend) == "" {
+		return "replica"
+	}
+	return backend
 }

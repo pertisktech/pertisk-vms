@@ -12,6 +12,23 @@ import (
 	"github.com/pertisktech/pertisk-vms/terraform-provider-pertisk-vms/internal/client"
 )
 
+func TestVolumeBackend(t *testing.T) {
+	got, err := volumeBackend(types.StringNull())
+	if err != nil || got != "" {
+		t.Fatalf("unset: %q %v", got, err)
+	}
+	got, err = volumeBackend(types.StringValue("rbd"))
+	if err != nil || got != "rbd" {
+		t.Fatalf("rbd: %q %v", got, err)
+	}
+	if _, err := volumeBackend(types.StringValue("ceph")); err == nil {
+		t.Fatal("aliases are not accepted; use replica or rbd")
+	}
+	if volumeBackendOrDefault("") != "replica" {
+		t.Fatal("empty API backend should read as replica")
+	}
+}
+
 func TestDisksToModelFromClone(t *testing.T) {
 	vm := &client.VM{
 		Spec: client.VMSpec{
@@ -101,8 +118,8 @@ func TestKeepPlannedBlocksDropsCloneDisks(t *testing.T) {
 	vm := &client.VM{
 		ID: "110",
 		Spec: client.VMSpec{
-			Name:      "ubuntu-1",
-			Disks:     []client.Disk{{VolumeID: "vol-1"}},
+			Name:        "ubuntu-1",
+			Disks:       []client.Disk{{VolumeID: "vol-1"}},
 			ConsoleType: "serial",
 		},
 		State: "running",

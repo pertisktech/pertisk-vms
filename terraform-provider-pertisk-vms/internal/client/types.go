@@ -149,21 +149,21 @@ type CreateTemplateRequest struct {
 }
 
 type CloneVMRequest struct {
-	ID            any        `json:"id,omitempty"`
-	Name          string     `json:"name"`
-	Linked        bool       `json:"linked,omitempty"`
-	VCPUs         *int       `json:"vcpus,omitempty"`
-	MemoryMiB     *int       `json:"memory_mib,omitempty"`
-	HA            *bool      `json:"ha,omitempty"`
-	Autostart     *bool      `json:"autostart,omitempty"`
-	AutostartDelay *uint64   `json:"autostart_delay,omitempty"`
-	AutostartOrder *uint32   `json:"autostart_order,omitempty"`
-	NetworkID     string     `json:"network_id,omitempty"`
-	IP            string     `json:"ip,omitempty"`
-	DualStack     bool       `json:"dual_stack,omitempty"`
-	CloudInit     *CloudInit `json:"cloud_init,omitempty"`
-	DiskSizeBytes *uint64    `json:"disk_size_bytes,omitempty"`
-	Start         bool       `json:"start,omitempty"`
+	ID             any        `json:"id,omitempty"`
+	Name           string     `json:"name"`
+	Linked         bool       `json:"linked,omitempty"`
+	VCPUs          *int       `json:"vcpus,omitempty"`
+	MemoryMiB      *int       `json:"memory_mib,omitempty"`
+	HA             *bool      `json:"ha,omitempty"`
+	Autostart      *bool      `json:"autostart,omitempty"`
+	AutostartDelay *uint64    `json:"autostart_delay,omitempty"`
+	AutostartOrder *uint32    `json:"autostart_order,omitempty"`
+	NetworkID      string     `json:"network_id,omitempty"`
+	IP             string     `json:"ip,omitempty"`
+	DualStack      bool       `json:"dual_stack,omitempty"`
+	CloudInit      *CloudInit `json:"cloud_init,omitempty"`
+	DiskSizeBytes  *uint64    `json:"disk_size_bytes,omitempty"`
+	Start          bool       `json:"start,omitempty"`
 }
 
 type AttachDiskRequest struct {
@@ -232,6 +232,8 @@ type CreateVolumeRequest struct {
 	SizeBytes uint64 `json:"size_bytes"`
 	Format    string `json:"format,omitempty"`
 	Replicas  *int   `json:"replicas,omitempty"`
+	// replica (local file) or rbd (Ceph). Empty uses the host default.
+	Backend string `json:"backend,omitempty"`
 }
 
 type ResizeVolumeRequest struct {

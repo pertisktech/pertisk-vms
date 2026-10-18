@@ -137,9 +137,10 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
       const ident = tfIdent(vol.name || vol.id, volNames)
       volById.set(String(vol.id), ident)
       const inner = [
-        `name   = ${quote(vol.name)}`,
-        `size   = ${quote(tfSize(vol.size_bytes))}`,
-        vol.format ? `format = ${quote(vol.format)}` : null,
+        `name    = ${quote(vol.name)}`,
+        `size    = ${quote(tfSize(vol.size_bytes))}`,
+        vol.format ? `format  = ${quote(vol.format)}` : null,
+        `backend = ${quote(vol.backend === 'rbd' ? 'rbd' : 'replica')}`,
       ]
         .filter(Boolean)
         .join('\n')

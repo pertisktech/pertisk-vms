@@ -40,6 +40,7 @@ type diskModel struct {
 	Name     types.String `tfsdk:"name"`
 	Format   types.String `tfsdk:"format"`
 	VolumeID types.String `tfsdk:"volume_id"`
+	Backend  types.String `tfsdk:"backend"`
 }
 
 type nicModel struct {
@@ -94,6 +95,7 @@ var (
 			"name":      types.StringType,
 			"format":    types.StringType,
 			"volume_id": types.StringType,
+			"backend":   types.StringType,
 		},
 	}
 	nicObjectType = types.ObjectType{
@@ -145,9 +147,10 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Default:  int64default.StaticInt64(512),
 			},
 			"ha": schema.BoolAttribute{
-				Optional: true,
-				Computed: true,
-				Default:  booldefault.StaticBool(true),
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "Restart this guest on another node when its owner is lost. Every disk must be Ceph RBD (`backend = \"rbd\"`). Local disks stay on the lost node.",
 			},
 			"autostart": schema.BoolAttribute{
 				Optional:            true,
@@ -225,6 +228,10 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 							PlanModifiers: []planmodifier.String{
 								stringplanmodifier.UseStateForUnknown(),
 							},
+						},
+						"backend": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "Storage for a disk created from `size`: `replica` (local) or `rbd` (Ceph). Unset uses the host default. Ignored when `volume_id` is set.",
 						},
 					},
 				},
@@ -503,7 +510,14 @@ func (r *vmResource) define(ctx context.Context, plan vmModel) (*client.VM, erro
 			if format == "" {
 				format = "qcow2"
 			}
-			vol, err := r.api.CreateVolume(client.CreateVolumeRequest{Name: name, SizeBytes: bytes, Format: format})
+			backend, err := volumeBackend(disk.Backend)
+			if err != nil {
+				rollback()
+				return nil, fmt.Errorf("disk[%d]: %w", i, err)
+			}
+			vol, err := r.api.CreateVolume(client.CreateVolumeRequest{
+				Name: name, SizeBytes: bytes, Format: format, Backend: backend,
+			})
 			if err != nil {
 				rollback()
 				return nil, err
@@ -867,6 +881,7 @@ func disksToModel(vm *client.VM, prev []diskModel) []diskModel {
 		}
 		out[i].Name = knownOrNull(out[i].Name)
 		out[i].Size = knownOrNull(out[i].Size)
+		out[i].Backend = knownOrNull(out[i].Backend)
 		if out[i].Format.IsUnknown() || out[i].Format.IsNull() || out[i].Format.ValueString() == "" {
 			out[i].Format = types.StringValue("qcow2")
 		}
