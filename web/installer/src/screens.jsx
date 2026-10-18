@@ -594,20 +594,74 @@ export function Installing({ form, onComplete, live }) {
   )
 }
 
+function copyViaKiosk(text) {
+  const handler = window.webkit?.messageHandlers?.pertiskCopy
+  if (!handler || typeof handler.postMessage !== 'function') return false
+  handler.postMessage(text)
+  return true
+}
+
+function copyViaSelection(text) {
+  const area = document.createElement('textarea')
+  area.value = text
+  area.setAttribute('readonly', '')
+  area.setAttribute('aria-hidden', 'true')
+  area.style.position = 'fixed'
+  area.style.top = '0'
+  area.style.left = '-9999px'
+  document.body.appendChild(area)
+  area.focus()
+  area.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  area.remove()
+  return ok
+}
+
+async function writeClipboard(text) {
+  // The kiosk bridge and execCommand have to run inside the click.
+  // navigator.clipboard.writeText often never settles in WebKit.
+  if (copyViaKiosk(text) || copyViaSelection(text)) return true
+  if (!navigator.clipboard?.writeText || !window.isSecureContext) return false
+  try {
+    return await Promise.race([
+      navigator.clipboard.writeText(text).then(() => true, () => false),
+      new Promise((resolve) => window.setTimeout(() => resolve(false), 200)),
+    ])
+  } catch {
+    return false
+  }
+}
+
 export function Finished({ form, onReboot }) {
   const urls = uiUrls(form)
-  const [copied, setCopied] = useState(false)
+  const urlRef = useRef(null)
+  const copyTimer = useRef(0)
+  const [copyState, setCopyState] = useState('idle')
+
+  useEffect(() => () => window.clearTimeout(copyTimer.current), [])
 
   async function copy() {
-    if (!urls.https) return
-    try {
-      await navigator.clipboard.writeText(urls.https)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1600)
-    } catch {
-      setCopied(false)
+    const text = urls.https
+    if (!text) return
+    const ok = await writeClipboard(text)
+    if (!ok && urlRef.current) {
+      const range = document.createRange()
+      range.selectNodeContents(urlRef.current)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
     }
+    setCopyState(ok ? 'copied' : 'failed')
+    window.clearTimeout(copyTimer.current)
+    copyTimer.current = window.setTimeout(() => setCopyState('idle'), 2000)
   }
+
+  const copyLabel = copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy URL'
 
   return (
     <div className="step">
@@ -617,7 +671,7 @@ export function Finished({ form, onReboot }) {
       />
       <div className="done-card">
         <span className="done-kicker">Open</span>
-        {urls.https ? <strong className="url">{urls.https}</strong> : <strong className="url">https://&lt;node&gt;:7443/</strong>}
+        {urls.https ? <strong ref={urlRef} className="url">{urls.https}</strong> : <strong className="url">https://&lt;node&gt;:7443/</strong>}
         <span className="url-alt">{urls.http || 'http://<node>:7480/'}</span>
         <dl>
           <div>
@@ -630,9 +684,14 @@ export function Finished({ form, onReboot }) {
           </div>
         </dl>
         {urls.https ? (
-          <button type="button" className="secondary copy" onClick={copy}>
-            <LuCopy /> {copied ? 'Copied' : 'Copy URL'}
-          </button>
+          <>
+            <button type="button" className="secondary copy" onClick={copy}>
+              <LuCopy /> {copyLabel}
+            </button>
+            {copyState === 'failed' ? (
+              <p className="quiet">The address is selected. Press Ctrl+C.</p>
+            ) : null}
+          </>
         ) : (
           <p className="quiet">No address yet. Check the cable, then look at the console for the IP.</p>
         )}

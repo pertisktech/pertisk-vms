@@ -3938,6 +3938,7 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
     };
     let serial_path = vm.serial_log.as_deref();
     let blocked = host_blocked_ipv4s();
+    let single_nic = vm.spec.nets.iter().filter(|nic| nic.mac.is_some()).count() <= 1;
     let mut changed = false;
     for nic in &mut vm.spec.nets {
         let Some(mac) = nic.mac.as_deref() else {
@@ -3998,6 +3999,22 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
             if !has_public && nic.ipv6.as_deref().is_none_or(|ip| ip.is_empty()) {
                 pertisk_net::probe_guest_ipv6_ll(mac);
                 if let Some(ip) = pertisk_net::ipv6_for_mac(mac) {
+                    candidates.push(ip);
+                }
+            }
+            let has_public = candidates.iter().any(|ip| {
+                ip.parse::<std::net::Ipv6Addr>()
+                    .ok()
+                    .is_some_and(|addr| {
+                        !addr.is_unicast_link_local() && !addr.is_unique_local()
+                    })
+            });
+            // Ubuntu often answers neither guest-agent nor ping, but cloud-init
+            // still prints the SLAAC address on the serial console.
+            if !has_public {
+                if let Some(ip) = serial_path.and_then(|path| {
+                    ipv6_from_serial_log(path, Some(mac), single_nic)
+                }) {
                     candidates.push(ip);
                 }
             }
@@ -4062,6 +4079,17 @@ fn ipv4_from_serial_log(path: &Path, mac: Option<&str>) -> Option<String> {
     if from_device.is_some() {
         return from_device;
     }
+    let mut labeled = None;
+    for line in text.lines() {
+        if let Some(ip) = labeled_addr(line, "ipv4 address for", mac, false) {
+            if is_guest_ipv4(&ip) {
+                labeled = Some(ip);
+            }
+        }
+    }
+    if labeled.is_some() {
+        return labeled;
+    }
     // Cockpit URLs have no MAC. Skip them when we know which NIC we want so a
     // previous guest's serial log cannot pin the wrong address.
     if mac.is_some() {
@@ -4084,6 +4112,117 @@ fn ipv4_from_serial_log(path: &Path, mac: Option<&str>) -> Option<String> {
         }
     }
     last
+}
+
+fn ipv6_from_serial_log(path: &Path, mac: Option<&str>, allow_without_mac: bool) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    let start = data.len().saturating_sub(64 * 1024);
+    let text = String::from_utf8_lossy(&data[start..]);
+    let mut found = None;
+    for line in text.lines() {
+        if let Some(ip) = ipv6_on_serial_line(line, mac, allow_without_mac) {
+            found = Some(ip);
+        }
+    }
+    found
+}
+
+fn ipv6_on_serial_line(line: &str, mac: Option<&str>, allow_without_mac: bool) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let tagged = lower.contains("ipv6 address for");
+    let ci = lower.contains("ci-info") && lower.contains("global");
+    if !tagged && !ci {
+        return None;
+    }
+    if !serial_line_mac_ok(line, mac, allow_without_mac) {
+        return None;
+    }
+    if tagged {
+        return labeled_addr(line, "ipv6 address for", mac, allow_without_mac)
+            .and_then(|ip| pertisk_types::prefer_ipv6(std::iter::once(ip)));
+    }
+    pertisk_types::prefer_ipv6(ipv6_tokens(line))
+}
+
+/// `IPv4 address for enp0s5: 10.1.1.16` / `IPv6 address for enp0s5: 2405:...`.
+/// The first colon separates the interface name from the address.
+fn labeled_addr(
+    line: &str,
+    label: &str,
+    mac: Option<&str>,
+    allow_without_mac: bool,
+) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let idx = lower.find(label)?;
+    if !serial_line_mac_ok(line, mac, allow_without_mac) {
+        return None;
+    }
+    let after = line[idx + label.len()..].trim_start();
+    let (_, addr_part) = after.split_once(':')?;
+    let token = addr_part.split_whitespace().next()?.trim_matches(|c: char| {
+        c == ',' || c == ';' || c == '|'
+    });
+    let addr = token.split('/').next().unwrap_or(token).trim();
+    if addr.is_empty() { None } else { Some(addr.to_string()) }
+}
+
+fn serial_line_mac_ok(line: &str, mac: Option<&str>, allow_without_mac: bool) -> bool {
+    if line_has_any_mac(line) {
+        return mac.is_some_and(|mac| serial_line_has_mac(line, mac));
+    }
+    allow_without_mac
+}
+
+fn line_has_any_mac(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    if bytes.len() < 17 {
+        return false;
+    }
+    let mut i = 0;
+    while i + 17 <= bytes.len() {
+        if is_mac_at(bytes, i) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_mac_at(bytes: &[u8], start: usize) -> bool {
+    for part in 0..6 {
+        let offset = start + part * 3;
+        if !bytes[offset].is_ascii_hexdigit() || !bytes[offset + 1].is_ascii_hexdigit() {
+            return false;
+        }
+        if part < 5 && bytes[offset + 2] != b':' && bytes[offset + 2] != b'-' {
+            return false;
+        }
+    }
+    true
+}
+
+fn ipv6_tokens(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() || bytes[i] == b':' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || bytes[i] == b':') {
+                i += 1;
+            }
+            let token = line[start..i].trim_matches(':');
+            if token.contains(':') {
+                if let Some(ip) = pertisk_types::prefer_ipv6(std::iter::once(token)) {
+                    out.push(ip);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 fn serial_line_has_mac(line: &str, mac: &str) -> bool {
@@ -4570,6 +4709,51 @@ ci-info: |  ens3  | True |  10.1.1.162  | 255.255.255.0 | global | 52:54:00:2e:3
         assert_eq!(
             ipv4_from_serial_log(&path, Some("52:54:00:2e:3b:6a")).as_deref(),
             Some("10.1.1.162")
+        );
+    }
+
+    #[test]
+    fn serial_log_reads_ipv6_when_the_line_has_no_mac() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(
+            &path,
+            "\
+IPv4 address for enp0s5: 10.1.1.16
+IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ipv6_from_serial_log(&path, Some("52:54:00:79:37:ca"), true).as_deref(),
+            Some("2405:9800:b901:194c:5054:ff:fe79:37ca")
+        );
+        assert_eq!(
+            ipv6_from_serial_log(&path, Some("52:54:00:79:37:ca"), false),
+            None
+        );
+    }
+
+    #[test]
+    fn serial_log_reads_ipv6_ci_info_for_matching_mac() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(
+            &path,
+            "\
+ci-info: | enp0s5 | True | 2405:9800:b901:194c:5054:ff:fe79:37c4 | 64 | global | 52:54:00:79:37:c4 |
+ci-info: | enp0s5 | True | fe80::5054:ff:fe79:37ca | 64 | link | 52:54:00:79:37:ca |
+IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
+",
+        )
+        .unwrap();
+        assert_eq!(
+            ipv6_from_serial_log(&path, Some("52:54:00:79:37:ca"), false).as_deref(),
+            Some("2405:9800:b901:194c:5054:ff:fe79:37ca")
+        );
+        assert_eq!(
+            ipv6_from_serial_log(&path, Some("52:54:00:79:37:c4"), false).as_deref(),
+            Some("2405:9800:b901:194c:5054:ff:fe79:37c4")
         );
     }
 

@@ -20,24 +20,53 @@ fi
 python3 "$SHARE/server.py" &
 echo $! >/run/pertisk/server.pid
 
-say() {
-  # One line. tty0, /dev/console, and tty1 are the same screen on this installer.
-  local tty=/dev/console
-  [[ -c "$tty" ]] || tty=/dev/tty0
-  if [[ -c "$tty" ]]; then
-    printf '%s\n' "$1" >"$tty" || true
-  fi
+same_dev() {
+  [[ -e "$1" && -e "$2" ]] || return 1
+  [[ "$(stat -c '%d:%i' "$1" 2>/dev/null || echo a)" == "$(stat -c '%d:%i' "$2" 2>/dev/null || echo b)" ]]
 }
 
-ip=""
-if command -v ip >/dev/null 2>&1; then
-  ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-fi
-if [[ -n "$ip" ]]; then
-  say "Pertisk Vms installer is running. On this screen, or open http://${ip}:${PORT}/"
-else
-  say "Pertisk Vms installer is running on http://127.0.0.1:${PORT}/"
-fi
+say() {
+  # tty0, /dev/console, and tty1 are one screen on the appliance. The serial
+  # port is a different device when this ISO runs as a guest, and that is the
+  # console the management UI shows. Write the URL there too.
+  local tty msg="$1"
+  local -a targets=(/dev/console)
+  local extra
+  [[ -c /dev/console ]] || targets=(/dev/tty0)
+  for extra in /dev/ttyS0 /dev/ttyAMA0 /dev/ttyS1; do
+    [[ -c "$extra" ]] || continue
+    same_dev "$extra" "${targets[0]}" && continue
+    targets+=("$extra")
+  done
+  for tty in "${targets[@]}"; do
+    [[ -c "$tty" ]] || continue
+    printf '%s\n' "$msg" >"$tty" || true
+  done
+}
+
+installer_ip() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1 || true
+}
+
+announce() {
+  local ip url
+  ip="$(installer_ip)"
+  if [[ -n "$ip" ]]; then
+    url="http://${ip}:${PORT}/"
+  else
+    url="http://127.0.0.1:${PORT}/"
+  fi
+  printf '%s\n' "$url" >/run/pertisk/url
+  say "Pertisk Vms installer: open ${url}"
+}
+
+show_text_console() {
+  if command -v chvt >/dev/null 2>&1; then
+    chvt 1 || true
+  fi
+  announce
+  say "Graphical installer stopped. Use the URL above."
+}
 
 install_webkit() {
   python3 - <<'PY' && return 0
@@ -56,6 +85,12 @@ PY
   fi
   dnf install -y webkit2gtk4.1
 }
+
+for _ in $(seq 1 20); do
+  [[ -n "$(installer_ip)" ]] && break
+  sleep 1
+done
+announce
 
 if install_webkit; then
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
@@ -81,15 +116,21 @@ if install_webkit; then
       export WAYLAND_DISPLAY="$(basename "$sock")"
       export GDK_BACKEND=wayland
       export PERTISK_INSTALLER_URL="http://127.0.0.1:${PORT}/"
-      python3 "$SHARE/kiosk.py" || echo "pertisk-install-ui: kiosk exited"
+      python3 "$SHARE/kiosk.py" || {
+        echo "pertisk-install-ui: kiosk exited"
+        show_text_console
+      }
     else
-      echo "pertisk-install-ui: Wayland display did not start; use the URL above"
+      echo "pertisk-install-ui: Wayland display did not start"
+      show_text_console
     fi
   else
-    echo "pertisk-install-ui: no kiosk compositor; use the URL above"
+    echo "pertisk-install-ui: no kiosk compositor"
+    show_text_console
   fi
 else
-  echo "pertisk-install-ui: WebKit is unavailable; use the URL above from another machine"
+  echo "pertisk-install-ui: WebKit is unavailable"
+  show_text_console
 fi
 
 wait "$(cat /run/pertisk/server.pid)" || true

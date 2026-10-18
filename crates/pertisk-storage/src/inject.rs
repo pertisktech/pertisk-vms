@@ -570,9 +570,16 @@ sleep 8
     [ "$name" = lo ] && continue
     mac=$(cat "$nic/address" 2>/dev/null) || continue
     cidr=$(ip -4 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4}' | head -1)
-    [ -n "$cidr" ] || continue
-    addr=${cidr%/*}
-    echo "ci-info: | $name | True |         $addr         | 255.255.255.0 | global | $mac |"
+    cidr6=$(ip -6 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4}' | head -1)
+    [ -n "$cidr" ] || [ -n "$cidr6" ] || continue
+    if [ -n "$cidr" ]; then
+      addr=${cidr%/*}
+      echo "ci-info: | $name | True |         $addr         | 255.255.255.0 | global | $mac |"
+    fi
+    if [ -n "$cidr6" ]; then
+      addr6=${cidr6%/*}
+      echo "IPv6 address for $name: $addr6 $mac"
+    fi
   done
 } >/dev/ttyS0 2>/dev/null || true
 exit 0

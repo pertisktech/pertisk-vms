@@ -133,10 +133,16 @@ grep -q 'pertisk-webkit' "$ROOT/scripts/build-alma-iso.sh" \
   || { echo "FAIL Alma ISO build must ship WebKit for the installer kiosk"; fail=1; }
 grep -q -- '--cmdline' "$ROOT/packaging/installer/server.py" \
   || { echo "FAIL installer must launch Anaconda --cmdline after the web UI"; fail=1; }
+grep -q 'pertiskCopy' "$ROOT/packaging/installer/kiosk.py" \
+  || { echo "FAIL installer kiosk must copy URLs through GTK (WebKit clipboard is blocked)"; fail=1; }
+grep -q 'copyViaKiosk' "$ROOT/web/installer/src/screens.jsx" \
+  || { echo "FAIL installer Copy URL must use the kiosk clipboard bridge"; fail=1; }
 grep -q 'password chosen in the Pertisk installer' "$OVERLAY/usr/sbin/pertisk-firstboot" \
   || { echo "FAIL firstboot must keep the installer admin password"; fail=1; }
 bash -n "$ROOT/packaging/installer/pertisk-install-ui" \
   || { echo "FAIL bash -n pertisk-install-ui"; fail=1; }
+grep -q '/dev/ttyS0' "$ROOT/packaging/installer/pertisk-install-ui" \
+  || { echo "FAIL installer must print its URL on the serial console"; fail=1; }
 python3 "$ROOT/packaging/installer/test_kickstart.py" \
   || { echo "FAIL installer kickstart generator"; fail=1; }
 grep -q 'images/product.img' "$ROOT/scripts/build-alma-iso.sh" \
