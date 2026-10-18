@@ -183,6 +183,11 @@ elif ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
   echo "host is not Debian/Ubuntu; using mkosi tools tree"
   mkosi_cmd+=(--tools-tree default)
 fi
+if printf '%s\n' "${mkosi_cmd[@]}" | grep -qx -- '--tools-tree'; then
+  # shellcheck source=ensure-mkosi-keys.sh
+  source "$ROOT/scripts/ensure-mkosi-keys.sh"
+  ensure_mkosi_fedora_keys
+fi
 mkdir -p "$OUT"
 mkosi_cmd+=(--output-directory "$OUT")
 if [[ -n "$MKOSI_STATE" ]]; then

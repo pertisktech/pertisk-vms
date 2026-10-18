@@ -12,7 +12,7 @@ use pertisk_types::{
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DrainResponse,
     DriverKind,
     HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec, NetworkId,
-    NetworkMode, NetworkRecord, NodeId, NodeMetrics, NodeRecord, NotifyConfig, ResizeVolumeRequest,
+    NetworkMode, NetworkRecord, NodeId, NodeMetrics, NotifyConfig, ResizeVolumeRequest,
     SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
     UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState,
     VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host,
@@ -4238,8 +4238,8 @@ mod tests {
     use super::*;
     use crate::control::ControlStore;
     use pertisk_types::{
-        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, UpdateVmRequest, VmId,
-        VolumeFormat, parse_size,
+        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, NodeRecord, UpdateVmRequest,
+        VmId, VolumeFormat, parse_size,
     };
     use pertisk_vmm::VmmBackend;
 

@@ -171,6 +171,7 @@ pub fn place_replicas(online: &[NodeId], count: u8, include: Option<NodeId>) -> 
     out
 }
 
+#[cfg(test)]
 pub fn advertise_url(listen: &str, explicit: Option<&str>) -> String {
     advertise_peer_url(listen, None, explicit)
 }

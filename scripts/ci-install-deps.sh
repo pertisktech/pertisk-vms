@@ -55,7 +55,8 @@ install_host_packages() {
       xz \
       gcc gcc-c++ \
       e2fsprogs dosfstools mtools \
-      ca-certificates curl
+      ca-certificates curl \
+      distribution-gpg-keys
     $SUDO dnf install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
       gcc-x86_64-linux-gnu binutils-x86_64-linux-gnu \
       qemu-system-x86 qemu-system-aarch64 dpkg debian-keyring \
@@ -105,6 +106,14 @@ if ! mkosi_ok; then
   echo "::error::mkosi ${MIN_MKOSI}+ is required (iso/mkosi.conf MinimumVersion=${MIN_MKOSI})." >&2
   echo "Install: ./scripts/ci-install-deps.sh  (or pip install git+https://github.com/systemd/mkosi.git@${MKOSI_TAG})" >&2
   exit 1
+fi
+
+# Host packages are skipped once mkosi is already installed. The Fedora tools
+# tree still needs these keys on every non-Debian runner.
+if ! grep -qiE 'debian|ubuntu' /etc/os-release 2>/dev/null; then
+  # shellcheck source=ensure-mkosi-keys.sh
+  source "$(dirname "$0")/ensure-mkosi-keys.sh"
+  ensure_mkosi_fedora_keys
 fi
 
 echo "mkosi=$(command -v mkosi) $(mkosi --version | head -n1)"

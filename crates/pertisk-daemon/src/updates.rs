@@ -43,8 +43,8 @@ pub fn list_updates() -> Result<UpdatesStatus, String> {
 
 fn list_updates_for(mgr: &PkgMgr) -> Result<Vec<UpdatePackage>, String> {
     match mgr {
-        PkgMgr::Apt(_) => {
-            let output = run_apt(&[
+        PkgMgr::Apt(bin) => {
+            let output = run_apt(bin, &[
                 "-s",
                 "-o",
                 "Debug::NoLocking=true",
@@ -54,8 +54,8 @@ fn list_updates_for(mgr: &PkgMgr) -> Result<Vec<UpdatePackage>, String> {
             ])?;
             Ok(parse_inst_lines(&output))
         }
-        PkgMgr::Dnf(_) => {
-            let (status, log) = run_dnf_status(&["--quiet", "check-update"])?;
+        PkgMgr::Dnf(bin) => {
+            let (status, log) = run_dnf_status(bin, &["--quiet", "check-update"])?;
             // dnf: 0 = none, 100 = updates available, other = error
             if status == 0 {
                 return Ok(Vec::new());
@@ -74,10 +74,10 @@ fn list_updates_for(mgr: &PkgMgr) -> Result<Vec<UpdatePackage>, String> {
 
 pub fn refresh() -> Result<AptActionResult, String> {
     let mgr = find_pkg_mgr().ok_or_else(|| "no apt-get or dnf on this node".to_string())?;
-    let log = match mgr {
-        PkgMgr::Apt(_) => run_apt(&["update"])?,
-        PkgMgr::Dnf(_) => {
-            let (status, mut log) = run_dnf_status(&["-y", "makecache"])?;
+    let log = match &mgr {
+        PkgMgr::Apt(bin) => run_apt(bin, &["update"])?,
+        PkgMgr::Dnf(bin) => {
+            let (status, mut log) = run_dnf_status(bin, &["-y", "makecache"])?;
             if status != 0 {
                 return Err(if log.trim().is_empty() {
                     format!("dnf makecache failed (exit {status})")
@@ -109,8 +109,8 @@ pub fn refresh() -> Result<AptActionResult, String> {
 
 pub fn upgrade() -> Result<AptActionResult, String> {
     let mgr = find_pkg_mgr().ok_or_else(|| "no apt-get or dnf on this node".to_string())?;
-    let log = match mgr {
-        PkgMgr::Apt(_) => run_apt(&[
+    let log = match &mgr {
+        PkgMgr::Apt(bin) => run_apt(bin, &[
             "-y",
             "-o",
             "Dpkg::Options::=--force-confold",
@@ -118,8 +118,8 @@ pub fn upgrade() -> Result<AptActionResult, String> {
             "Dpkg::Options::=--force-confdef",
             "dist-upgrade",
         ])?,
-        PkgMgr::Dnf(_) => {
-            let (status, log) = run_dnf_status(&["-y", "upgrade"])?;
+        PkgMgr::Dnf(bin) => {
+            let (status, log) = run_dnf_status(bin, &["-y", "upgrade"])?;
             if status != 0 {
                 return Err(if log.trim().is_empty() {
                     format!("dnf upgrade failed (exit {status})")
@@ -325,9 +325,8 @@ fn reboot_required() -> bool {
     false
 }
 
-fn run_apt(args: &[&str]) -> Result<String, String> {
+fn run_apt(bin: &Path, args: &[&str]) -> Result<String, String> {
     ensure_pkg_dns("deb.debian.org");
-    let bin = find_apt().ok_or_else(|| "apt-get not found on this node".to_string())?;
     let mut cmd = if Path::new("/usr/bin/timeout").is_file() {
         let mut wrapped = Command::new("/usr/bin/timeout");
         wrapped.args(["-k", "10", "120"]);
@@ -391,9 +390,8 @@ fn run_apt(args: &[&str]) -> Result<String, String> {
     Ok(log)
 }
 
-fn run_dnf_status(args: &[&str]) -> Result<(i32, String), String> {
+fn run_dnf_status(bin: &Path, args: &[&str]) -> Result<(i32, String), String> {
     ensure_pkg_dns("repo.almalinux.org");
-    let bin = find_dnf().ok_or_else(|| "dnf not found on this node".to_string())?;
     let mut cmd = if Path::new("/usr/bin/timeout").is_file() {
         let mut wrapped = Command::new("/usr/bin/timeout");
         wrapped.args(["-k", "10", "180"]);
