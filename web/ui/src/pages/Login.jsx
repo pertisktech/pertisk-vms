@@ -62,26 +62,24 @@ export default function Login() {
 
   return (
     <div className="login-wrap">
-      <button
-        type="button"
-        className="pve-icon-btn login-theme"
-        onClick={toggleAppearance}
-        title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
-        aria-label="Toggle color theme"
-      >
-        <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
-      </button>
       <div className="login-card">
         <div className="login-brand">
-          <span className="login-brand-mark" aria-hidden>
-            <Icon name="worker" size={18} />
-          </span>
-          <div>
+          <img src="/logo.png" alt="" className="pve-logo login-logo" />
+          <div className="login-brand-copy">
             <h1>
               Pertisk <span className="accent">Vms</span>
             </h1>
             {version ? <p className="login-version">v{version}</p> : null}
           </div>
+          <button
+            type="button"
+            className="pve-icon-btn login-theme"
+            onClick={toggleAppearance}
+            title={appearance === 'dark' ? 'Switch to light' : 'Switch to dark'}
+            aria-label="Toggle color theme"
+          >
+            <Icon name={appearance === 'dark' ? 'sun' : 'moon'} size={16} />
+          </button>
         </div>
         <p>Sign in to the virtualization control plane.</p>
         {error && <div className="error">{error}</div>}
