@@ -104,8 +104,8 @@
   --warning: var(--color-yellow-y1);
   --info: var(--color-blue-b1);
   --radius: var(--radius-lg);
-  --sidebar-w: 18rem;
-  --sidebar-w-collapsed: 0px;
+  --sidebar-w: 22rem;
+  --sidebar-w-collapsed: 4.25rem;
   --topbar-h: 3.25rem;
   --font: var(--font-sans);
   --mono: var(--font-mono);
@@ -1459,7 +1459,7 @@ a.guest-card:hover { color: inherit; }
 
 .pve-shell {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   position: relative;
   height: 100dvh;
   width: 100%;
@@ -1469,6 +1469,7 @@ a.guest-card:hover { color: inherit; }
 
 .pve-body {
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -1818,17 +1819,22 @@ a.guest-card:hover { color: inherit; }
   overflow: hidden;
 }
 
-.pve-header.sidebar-collapsed .pve-header-brand { display: none; }
-.pve-tree-brand {
-  display: none;
+.pve-tree-head {
+  position: relative;
+  display: flex;
   align-items: center;
+  flex: none;
+  gap: 0.45rem;
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  padding: 0 0.85rem;
+  padding: 0 0.65rem 0 0.85rem;
   border-bottom: 1px solid var(--border);
-  flex: none;
   box-sizing: border-box;
+  min-width: 0;
+  background: color-mix(in srgb, var(--bg-sidebar) 88%, transparent);
 }
+.pve-tree-head .pve-brand { flex: 1; min-width: 0; }
+.pve-tree-collapse { margin-left: auto; flex: none; }
 .pve-logo {
   width: 2rem;
   height: 2rem;
@@ -1872,10 +1878,19 @@ a.guest-card:hover { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
+  width: 1.25rem;
+  height: 1.25rem;
   flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
   color: var(--text-muted);
 }
+.tree-twisty:has(svg) { cursor: pointer; }
+.tree-twisty:hover { background: var(--bg-hover); color: var(--text); }
+.tree-twisty svg { transition: transform 180ms ease; }
+.tree-twisty.open svg { transform: rotate(90deg); }
 .tree-row.active .tree-twisty { color: var(--accent); }
 .tree-icon { flex: none; color: var(--text-muted); }
 .tree-row.active .tree-icon { color: var(--accent); }
@@ -2506,20 +2521,59 @@ a.guest-card:hover { color: inherit; }
 }
 
 @media (min-width: 1024px) {
-  .pve-header-start { transition: width 220ms ease; }
-  .pve-header-start.resizing { transition: none; }
-  .pve-tree { transition: width 220ms ease; }
+  .pve-nav-toggle { display: none; }
+  .pve-tree {
+    transition: width 200ms ease;
+  }
   .pve-tree.resizing { transition: none; }
   .pve-tree.collapsed {
-    width: 0 !important;
-    border-right: none;
-    overflow: hidden;
+    width: var(--sidebar-w-collapsed) !important;
+  }
+  .pve-tree-collapse {
+    display: inline-flex;
+  }
+  .pve-tree-collapse:active { transform: scale(0.95); }
+  .pve-tree.collapsed .pve-brand-text { display: none; }
+  .pve-tree.collapsed .pve-tree-head {
+    justify-content: center;
+    padding: 0 0.2rem;
+    gap: 0.1rem;
+  }
+  .pve-tree.collapsed .pve-tree-head .pve-brand { flex: none; }
+  .pve-tree.collapsed .pve-logo { width: 1.65rem; height: 1.65rem; }
+  .pve-tree.collapsed .pve-tree-collapse {
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-left: 0;
+  }
+  .pve-tree.collapsed .tree-scroll {
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+  }
+  .pve-tree.collapsed .tree-label,
+  .pve-tree.collapsed .tree-twisty,
+  .pve-tree.collapsed .tree-badge {
+    display: none;
+  }
+  .pve-tree.collapsed .tree-row {
+    position: relative;
+    justify-content: center;
+    gap: 0;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+  .pve-tree.collapsed .tree-dot {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.28rem;
+    margin-left: 0;
+    width: 0.4rem;
+    height: 0.4rem;
   }
 }
 
 @media (max-width: 1023px) {
-  .pve-header-brand { display: none; }
-  .pve-tree-brand { display: flex; }
+  .pve-tree-collapse { display: none; }
   .pve-header-start { width: auto !important; }
   .pve-tree {
     position: absolute;
@@ -2527,14 +2581,14 @@ a.guest-card:hover { color: inherit; }
     bottom: 0;
     left: 0;
     z-index: 50;
-    width: min(18rem, 86vw) !important;
+    width: min(var(--sidebar-w), 86vw) !important;
     transform: translateX(-100%);
     transition: transform var(--transition-normal);
     box-shadow: var(--shadow-md);
     overflow: visible;
   }
   .pve-tree.open { transform: translateX(0); }
-  .pve-tree.collapsed { width: min(18rem, 86vw); }
+  .pve-tree.collapsed { width: min(var(--sidebar-w), 86vw); }
   .pve-tree.open .pve-tree-close {
     display: inline-flex;
     align-items: center;

@@ -17,7 +17,8 @@ const TREE_KEY = 'pertisk_vm_tree_collapsed'
 const TREE_WIDTH_KEY = 'pertisk_vm_tree_width'
 const TREE_WIDTH_MIN = 180
 const TREE_WIDTH_MAX = 560
-const TREE_WIDTH_DEFAULT = 288
+const TREE_WIDTH_DEFAULT = 352
+const TREE_WIDTH_PREVIOUS_DEFAULT = 288
 
 function clampTreeWidth(value) {
   const n = Number(value)
@@ -132,7 +133,11 @@ export default function Layout() {
     typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches,
   )
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(TREE_KEY) === 'true')
-  const [treeWidth, setTreeWidth] = useState(() => clampTreeWidth(localStorage.getItem(TREE_WIDTH_KEY)))
+  const [treeWidth, setTreeWidth] = useState(() => {
+    const stored = localStorage.getItem(TREE_WIDTH_KEY)
+    if (stored == null || Number(stored) === TREE_WIDTH_PREVIOUS_DEFAULT) return TREE_WIDTH_DEFAULT
+    return clampTreeWidth(stored)
+  })
   const [resizing, setResizing] = useState(false)
   const [wizard, setWizard] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
@@ -278,26 +283,62 @@ export default function Layout() {
         onClick={() => setMobileOpen(false)}
       />
 
-      <header className={`pve-header${collapsed ? ' sidebar-collapsed' : ''}`}>
-        <div
-          className={`pve-header-start${resizing ? ' resizing' : ''}`}
-          style={!collapsed && !narrow ? { width: `${treeWidth}px` } : undefined}
-        >
-          <button
-            type="button"
-            className="pve-icon-btn ghost pve-nav-toggle"
-            onClick={toggleSidebar}
-            aria-label={(narrow ? !mobileOpen : collapsed) ? 'Open navigation' : 'Hide navigation'}
-          >
-            <Icon name="panel-left" size={18} />
-          </button>
-          <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand pve-header-brand">
+      <aside
+        ref={treeRef}
+        className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}${
+          resizing ? ' resizing' : ''
+        }`}
+        style={collapsed || narrow ? undefined : { width: `${treeWidth}px` }}
+      >
+        <div className="pve-tree-head">
+          <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
             <img src="/logo.png" alt="" className="pve-logo" />
             <span className="pve-brand-text">
               Pertisk <span className="accent">Vms</span>
             </span>
           </Link>
+          <button
+            type="button"
+            className="pve-tree-close"
+            onClick={() => setMobileOpen(false)}
+            aria-label="Close navigation"
+          >
+            <Icon name="x" size={16} />
+          </button>
+          <button
+            type="button"
+            className="pve-icon-btn ghost pve-tree-collapse"
+            onClick={() => setCollapsed((v) => !v)}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={16} />
+          </button>
         </div>
+        <ResourceTree cluster={inv.cluster} host={inv.host} vms={inv.vms} />
+        {!collapsed && (
+          <div
+            className="pve-tree-resize"
+            onPointerDown={onResizePointerDown}
+            onDoubleClick={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            title="Drag to resize"
+          />
+        )}
+      </aside>
+
+      <div className="pve-body">
+      <header className={`pve-header${collapsed ? ' sidebar-collapsed' : ''}`}>
+        <button
+          type="button"
+          className="pve-icon-btn ghost pve-nav-toggle"
+          onClick={toggleSidebar}
+          aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
+        >
+          <Icon name="panel-left" size={18} />
+        </button>
         <div className="pve-header-main">
           <ResourceSearch cluster={inv.cluster} host={inv.host} vms={inv.vms} />
           <div className="pve-header-spacer" />
@@ -364,44 +405,6 @@ export default function Layout() {
           </div>
         </div>
       </header>
-
-      <div className="pve-body">
-        <aside
-          ref={treeRef}
-          className={`pve-tree${mobileOpen ? ' open' : ''}${collapsed ? ' collapsed' : ''}${
-            resizing ? ' resizing' : ''
-          }`}
-          style={collapsed || narrow ? undefined : { width: `${treeWidth}px` }}
-        >
-          <div className="pve-tree-brand">
-            <Link to={resourceLink('dc', null, currentRoute)} className="pve-brand">
-              <img src="/logo.png" alt="" className="pve-logo" />
-              <span className="pve-brand-text">
-                Pertisk <span className="accent">Vms</span>
-              </span>
-            </Link>
-            <button
-              type="button"
-              className="pve-tree-close"
-              onClick={() => setMobileOpen(false)}
-              aria-label="Close navigation"
-            >
-              <Icon name="x" size={16} />
-            </button>
-          </div>
-          <ResourceTree cluster={inv.cluster} host={inv.host} vms={inv.vms} />
-          {!collapsed && (
-            <div
-              className="pve-tree-resize"
-              onPointerDown={onResizePointerDown}
-              onDoubleClick={() => setTreeWidth(TREE_WIDTH_DEFAULT)}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize sidebar"
-              title="Drag to resize"
-            />
-          )}
-        </aside>
         <div className={`pve-content${mobileOpen ? ' sidebar-open' : ''}`}>
           <main className="pve-main">
             <Outlet context={{ user, canWrite, inv }} />
