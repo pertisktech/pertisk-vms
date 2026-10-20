@@ -1,41 +1,42 @@
 :root {
+  /* Same palette as web/ui (primary 293 / neutrals 285). */
   color-scheme: light;
-  --background: oklch(0.985 0.006 200);
-  --foreground: oklch(0.22 0.03 200);
+  --background: oklch(0.985 0.003 285);
+  --foreground: oklch(0.21 0.02 285);
   --card: oklch(1 0 0);
-  --primary: oklch(0.46 0.11 178);
-  --primary-foreground: oklch(0.99 0.01 200);
-  --muted-foreground: oklch(0.52 0.03 200);
-  --destructive: oklch(0.58 0.23 27);
-  --success: oklch(0.62 0.16 150);
-  --warning: oklch(0.72 0.16 65);
-  --border: oklch(0.9 0.015 200);
-  --sidebar: oklch(0.975 0.01 200);
-  --hover: oklch(0.93 0.03 178);
-  --primary-hover: oklch(0.4 0.11 178);
-  --console: #f4f7f6;
-  --console-fg: #1c2826;
-  --shadow: 0 16px 40px oklch(0.22 0.03 200 / 0.1);
+  --primary: oklch(0.55 0.22 293);
+  --primary-foreground: oklch(0.99 0.005 293);
+  --muted-foreground: oklch(0.52 0.02 285);
+  --destructive: oklch(0.58 0.22 25);
+  --success: oklch(0.6 0.15 158);
+  --warning: oklch(0.7 0.15 70);
+  --border: oklch(0.9 0.008 285);
+  --sidebar: oklch(0.975 0.005 285);
+  --hover: oklch(0.95 0.02 293);
+  --primary-hover: oklch(0.48 0.22 293);
+  --console: #f7f7f9;
+  --console-fg: #1c1b22;
+  --shadow: 0 16px 40px oklch(0.21 0.02 285 / 0.1);
   --accent-on: var(--primary-foreground);
 }
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.16 0.02 200);
-  --foreground: oklch(0.95 0.012 200);
-  --card: oklch(0.2 0.022 200);
-  --primary: oklch(0.78 0.11 178);
-  --primary-foreground: oklch(0.16 0.03 178);
-  --muted-foreground: oklch(0.68 0.03 200);
-  --destructive: oklch(0.66 0.2 25);
-  --success: oklch(0.7 0.16 152);
-  --warning: oklch(0.78 0.16 70);
-  --border: oklch(0.3 0.02 200);
-  --sidebar: oklch(0.185 0.02 200);
-  --hover: oklch(0.26 0.025 178);
-  --primary-hover: oklch(0.84 0.09 178);
-  --console: #101816;
-  --console-fg: #e6f0ee;
+  --background: oklch(0.17 0.012 285);
+  --foreground: oklch(0.96 0.004 285);
+  --card: oklch(0.215 0.014 285);
+  --primary: oklch(0.7 0.17 293);
+  --primary-foreground: oklch(0.18 0.03 293);
+  --muted-foreground: oklch(0.68 0.016 285);
+  --destructive: oklch(0.62 0.2 24);
+  --success: oklch(0.72 0.16 158);
+  --warning: oklch(0.8 0.14 80);
+  --border: oklch(1 0 0 / 10%);
+  --sidebar: oklch(0.195 0.013 285);
+  --hover: oklch(0.3 0.03 293);
+  --primary-hover: oklch(0.76 0.15 293);
+  --console: #1c1b22;
+  --console-fg: #e8e6f0;
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
   --accent-on: var(--primary-foreground);
 }
@@ -55,11 +56,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 .dark body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background: radial-gradient(900px 420px at 100% -10%, color-mix(in srgb, var(--primary) 12%, transparent), transparent 68%);
-  pointer-events: none;
+  content: none;
 }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -78,13 +75,13 @@ input:focus-visible, select:focus-visible { outline: none; }
   flex-direction: column;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
-  padding: 1.35rem 1rem 1rem;
+  padding: 1.25rem 1rem 1rem;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.2rem 0.55rem 1.2rem;
+  padding: 0.15rem 0.5rem 1.15rem;
 }
 .mark {
   width: 2.25rem;
@@ -92,7 +89,7 @@ input:focus-visible, select:focus-visible { outline: none; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #10211f;
+  color: #160f24;
   flex: none;
 }
 .mark-svg { width: 100%; height: 100%; display: block; }
@@ -117,7 +114,8 @@ input:focus-visible, select:focus-visible { outline: none; }
 .step-list::before {
   content: "";
   position: absolute;
-  left: 1.35rem;
+  /* Center on the step index circles (padding 0.5rem + half of 1.55rem). */
+  left: 1.275rem;
   top: 1.15rem;
   bottom: 1.15rem;
   width: 1px;
@@ -174,7 +172,7 @@ input:focus-visible, select:focus-visible { outline: none; }
   flex-direction: column;
   align-items: flex-start;
   gap: 0.15rem;
-  padding: 0.8rem 0.4rem 0;
+  padding: 0.8rem 0.5rem 0;
 }
 .textish, .linkish {
   border: 0;
@@ -188,7 +186,7 @@ input:focus-visible, select:focus-visible { outline: none; }
 }
 .textish:hover, .linkish:hover { color: var(--foreground); background: var(--hover); }
 .rail-meta {
-  margin: 0.55rem 0.35rem 0;
+  margin: 0.55rem 0 0;
   color: var(--muted-foreground);
   font-size: 0.72rem;
   font-family: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -444,7 +442,7 @@ select {
 .segmented button.on {
   background: var(--card);
   color: var(--foreground);
-  box-shadow: 0 1px 2px oklch(0.2 0.02 200 / 0.15);
+  box-shadow: 0 1px 2px oklch(0.21 0.02 285 / 0.15);
 }
 
 .preview, .done-card, .identity {
@@ -649,7 +647,7 @@ select {
 .modal-back {
   position: fixed;
   inset: 0;
-  background: oklch(0.16 0.02 200 / 0.55);
+  background: oklch(0.17 0.012 285 / 0.55);
   display: grid;
   place-items: center;
   z-index: 5;

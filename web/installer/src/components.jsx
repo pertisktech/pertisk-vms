@@ -9,9 +9,9 @@ export function Mark() {
   return (
     <svg className="mark-svg" viewBox="0 0 32 32" aria-hidden="true">
       <rect width="32" height="32" rx="8" fill="currentColor" />
-      <rect x="7" y="8" width="18" height="3.5" rx="1" fill="#8ed4cc" />
-      <rect x="7" y="14.25" width="18" height="3.5" rx="1" fill="#2eaaa0" />
-      <rect x="7" y="20.5" width="12" height="3.5" rx="1" fill="#14756e" />
+      <rect x="7" y="8" width="18" height="3.5" rx="1" fill="#d6bef5" />
+      <rect x="7" y="14.25" width="18" height="3.5" rx="1" fill="#8a4ed6" />
+      <rect x="7" y="20.5" width="12" height="3.5" rx="1" fill="#5a2da0" />
     </svg>
   )
 }
