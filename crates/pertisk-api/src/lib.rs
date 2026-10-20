@@ -298,6 +298,14 @@ pub fn openapi_json() -> serde_json::Value {
             },
             "/v1/vms/{id}/backups/{backup_id}": { "delete": { "summary": "Delete a guest backup" } },
             "/v1/vms/{id}/backups/{backup_id}/restore": { "post": { "summary": "Restore a stopped guest's local disks from a backup" } },
+            "/v1/vms/{id}/backup-schedule": {
+                "put": { "summary": "Set automatic local-disk backup while the guest is stopped" },
+                "delete": { "summary": "Clear the guest backup schedule" }
+            },
+            "/v1/vms/{id}/snapshot-schedule": {
+                "put": { "summary": "Set automatic disk snapshots, including while the guest is running" },
+                "delete": { "summary": "Clear the guest snapshot schedule" }
+            },
             "/v1/templates": {
                 "get": { "summary": "List cloud templates" },
                 "post": { "summary": "Create a cloud template from an imported volume" }

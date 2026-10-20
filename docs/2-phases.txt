@@ -44,10 +44,12 @@ Skip:  Ceph / vSAN / custom distributed FS
   [x] Local directory volume store (raw + qcow2)
   [x] Create / resize / delete; attach virtio-block
   [x] ISO library + CD-ROM attach
-  [x] Guest disk backup and restore while the guest is stopped (local replica files)
+  [x] Guest disk backup and restore while the guest is stopped (local replica files).
+      A per-guest schedule can export automatically while the guest stays stopped.
   [x] qcow2 snapshot + restore. A running QEMU guest can snapshot qcow2 in place
       (guest agent is frozen when it answers). RBD and ZFS snapshot while open.
       Rollback still needs the guest stopped. Raw files cannot snapshot while open.
+      A per-guest schedule snapshots automatically and keeps the newest sched- snapshots.
   [x] Linked clone from template
   [x] Optional ZFS zvol backend (`zfs` CLI; local to the node, not HA)
 

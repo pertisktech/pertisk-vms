@@ -440,6 +440,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         }
     }
 

@@ -1264,6 +1264,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         }
     }
 
@@ -1492,6 +1494,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         assert!(node_fits(&n, &spec));
         assert!(guest_start_fits(1088, 0, 1024));
@@ -1528,6 +1532,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         assert_eq!(schedule(&[n.clone()], &spec, None), None);
         assert_eq!(schedule_define(&[n], None, &[]), Some(id));

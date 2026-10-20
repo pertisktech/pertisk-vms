@@ -78,6 +78,10 @@ impl Rbd {
         ])
     }
 
+    pub fn snapshot_remove(&self, name: &str, snap: &str) -> Result<()> {
+        self.run(&["snap", "rm", &format!("{}/{}@{}", self.pool, name, snap)])
+    }
+
     pub fn snapshot_rollback(&self, name: &str, snap: &str) -> Result<()> {
         self.run(&[
             "snap",

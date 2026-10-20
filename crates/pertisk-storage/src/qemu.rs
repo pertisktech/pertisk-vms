@@ -105,6 +105,10 @@ impl QemuImg {
         self.run(&["snapshot", "-a", name, &image.display().to_string()])
     }
 
+    pub fn snapshot_delete(&self, image: &Path, name: &str) -> Result<()> {
+        self.run(&["snapshot", "-d", name, &image.display().to_string()])
+    }
+
     /// Virtual size from `qemu-img info` (qcow2 sparse file length is smaller).
     pub fn virtual_size(&self, path: &Path) -> Option<u64> {
         self.inspect(path)?

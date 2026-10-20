@@ -13,9 +13,10 @@ use pertisk_types::{
     ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVmBackupRequest,
     CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult,
     ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
-    ResizeVolumeRequest, SerialChunk, SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest,
-    UpdateVmRequest, UpdatesStatus, VmBackupRecord, VmId, VmRecord, VmSpec, VolumeFormat, VolumeId,
-    VolumeRecord, default_home, format_size, parse_size,
+    ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest, SetHaArmedRequest,
+    SetRepositoryRequest, SetSnapshotScheduleRequest, SnapshotRequest, UpdateVmRequest,
+    UpdatesStatus, VmBackupRecord, VmId,
+    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -311,6 +312,12 @@ enum VmCommand {
         #[command(subcommand)]
         command: NicCommand,
     },
+    /// Snapshot this guest's disks on a schedule, including while it is running.
+    Snapshot {
+        id: VmId,
+        #[command(subcommand)]
+        command: SnapshotScheduleCommand,
+    },
     /// Export or restore a stopped guest's local disks.
     Backup {
         id: VmId,
@@ -328,6 +335,25 @@ enum VmCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SnapshotScheduleCommand {
+    /// Configure automatic snapshots. A running guest is snapshotted in place when the disk allows it.
+    Schedule {
+        /// Hours between snapshots.
+        #[arg(long, default_value_t = 24)]
+        every: u32,
+        /// Keep this many newest scheduled snapshots. Zero keeps all. Named snapshots stay.
+        #[arg(long, default_value_t = 3)]
+        keep: u32,
+        /// Disable the job but keep the interval and retention settings.
+        #[arg(long)]
+        off: bool,
+        /// Remove the schedule entirely.
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum BackupCommand {
     /// List backups for this guest.
     List,
@@ -341,6 +367,21 @@ enum BackupCommand {
     /// Delete a backup.
     #[command(name = "rm")]
     Remove { backup: String },
+    /// Configure automatic backups while the guest is stopped.
+    Schedule {
+        /// Hours between backups.
+        #[arg(long, default_value_t = 24)]
+        every: u32,
+        /// Keep this many newest backups after a scheduled run. Zero keeps all.
+        #[arg(long, default_value_t = 3)]
+        keep: u32,
+        /// Disable the job but keep the interval and retention settings.
+        #[arg(long)]
+        off: bool,
+        /// Remove the schedule entirely.
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1190,6 +1231,8 @@ async fn run() -> Result<()> {
                     autostart_order,
                     ssh_user: None,
                     group: group.filter(|name| !name.trim().is_empty()),
+                    backup: None,
+                    snapshot: None,
                 };
                 let mut record: VmRecord = post_json(
                     &client,
@@ -1452,6 +1495,44 @@ async fn run() -> Result<()> {
                     print_vm(&record);
                 }
             },
+            VmCommand::Snapshot { id, command } => match command {
+                SnapshotScheduleCommand::Schedule {
+                    every,
+                    keep,
+                    off,
+                    clear,
+                } => {
+                    if clear {
+                        let record: VmRecord = delete_json(
+                            &client,
+                            &cli.url,
+                            &format!("/v1/vms/{id}/snapshot-schedule"),
+                        )
+                        .await?;
+                        println!("cleared snapshot schedule on {}", record.id);
+                    } else {
+                        let record: VmRecord = put_json(
+                            &client,
+                            &cli.url,
+                            &format!("/v1/vms/{id}/snapshot-schedule"),
+                            &SetSnapshotScheduleRequest {
+                                enabled: !off,
+                                interval_hours: every,
+                                keep,
+                            },
+                        )
+                        .await?;
+                        if let Some(sched) = &record.spec.snapshot {
+                            println!(
+                                "snapshot schedule {} every {}h keep {}",
+                                if sched.enabled { "on" } else { "off" },
+                                sched.interval_hours,
+                                sched.keep
+                            );
+                        }
+                    }
+                }
+            },
             VmCommand::Backup { id, command } => match command {
                 BackupCommand::List => {
                     let list: Vec<VmBackupRecord> =
@@ -1491,6 +1572,42 @@ async fn run() -> Result<()> {
                 BackupCommand::Remove { backup } => {
                     delete(&client, &cli.url, &format!("/v1/vms/{id}/backups/{backup}")).await?;
                     println!("deleted {backup}");
+                }
+                BackupCommand::Schedule {
+                    every,
+                    keep,
+                    off,
+                    clear,
+                } => {
+                    if clear {
+                        let record: VmRecord = delete_json(
+                            &client,
+                            &cli.url,
+                            &format!("/v1/vms/{id}/backup-schedule"),
+                        )
+                        .await?;
+                        println!("cleared backup schedule on {}", record.id);
+                    } else {
+                        let record: VmRecord = put_json(
+                            &client,
+                            &cli.url,
+                            &format!("/v1/vms/{id}/backup-schedule"),
+                            &SetBackupScheduleRequest {
+                                enabled: !off,
+                                interval_hours: every,
+                                keep,
+                            },
+                        )
+                        .await?;
+                        if let Some(sched) = &record.spec.backup {
+                            println!(
+                                "schedule {} every {}h keep {}",
+                                if sched.enabled { "on" } else { "off" },
+                                sched.interval_hours,
+                                sched.keep
+                            );
+                        }
+                    }
                 }
             },
             VmCommand::Nic { command } => match command {
@@ -2065,6 +2182,20 @@ async fn patch_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
     body: &B,
 ) -> Result<T> {
     let response = with_auth(client.patch(format!("{base}{path}")))
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("connecting to {base}"))?;
+    read_json(response).await
+}
+
+async fn put_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    body: &B,
+) -> Result<T> {
+    let response = with_auth(client.put(format!("{base}{path}")))
         .json(body)
         .send()
         .await

@@ -98,6 +98,10 @@ impl Zfs {
         self.run(&["snapshot", &format!("{dataset}@{}", sanitize(snap))])
     }
 
+    pub fn destroy_snapshot(&self, dataset: &str, snap: &str) -> Result<()> {
+        self.run(&["destroy", &format!("{dataset}@{}", sanitize(snap))])
+    }
+
     pub fn rollback_dataset(&self, dataset: &str, snap: &str) -> Result<()> {
         self.run(&["rollback", "-r", &format!("{dataset}@{}", sanitize(snap))])
     }

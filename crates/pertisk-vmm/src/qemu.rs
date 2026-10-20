@@ -93,6 +93,23 @@ impl QemuDriver {
         result
     }
 
+    /// Delete one internal qcow2 snapshot while the guest keeps running.
+    pub async fn snapshot_delete_internal(
+        &self,
+        record: &VmRecord,
+        device: &str,
+        name: &str,
+    ) -> Result<()> {
+        let qmp = qmp_socket(record)?;
+        qmp_ok(
+            qmp,
+            "blockdev-snapshot-delete-internal-sync",
+            Some(serde_json::json!({ "device": device, "name": name })),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub async fn migrate_to(&self, record: &VmRecord, uri: &str) -> Result<()> {
         let qmp = record
             .api_socket
@@ -1236,6 +1253,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         assert_eq!(disk_device_id(&spec, volume).as_deref(), Some("disk1"));
         assert_eq!(disk_device_id(&spec, pertisk_types::VolumeId::new()), None);
@@ -1334,6 +1353,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         assert_eq!(
             qemu_guest_name(pertisk_types::VmId::Numeric(101), &spec),

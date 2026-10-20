@@ -1,8 +1,8 @@
-//! Local node console: show IP, admin password, and control guests.
+//! Local node console: live host, cluster, and guest detail plus power control.
 
 use std::collections::HashMap;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::ExecutableCommand;
@@ -10,7 +10,10 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use pertisk_types::{DEFAULT_LISTEN, VERSION, VmId, VmRecord, VmState};
+use pertisk_types::{
+    ClusterStatus, DEFAULT_LISTEN, HostInfo, NodeId, NodeMetrics, VERSION, VmId, VmMetrics,
+    VmRecord, VmState,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -20,6 +23,8 @@ use reqwest::Client;
 use serde::Deserialize;
 
 const PASS_FILE: &str = "/etc/pertisk/admin";
+const REFRESH_EVERY: Duration = Duration::from_secs(1);
+const BRAND: Color = Color::Rgb(46, 170, 160);
 
 #[derive(Clone)]
 struct NodeInfo {
@@ -38,11 +43,14 @@ struct App {
     selected: usize,
     status: String,
     error: String,
-    last_refresh: std::time::Instant,
+    last_refresh: Instant,
     /// First `d` arms destroy; second `d` within a few seconds confirms.
-    pending_delete: Option<(VmId, std::time::Instant)>,
-    live: Option<LiveStats>,
+    pending_delete: Option<(VmId, Instant)>,
+    host: Option<HostInfo>,
+    cluster: Option<ClusterStatus>,
+    node: Option<NodeMetrics>,
     vm_live: HashMap<VmId, LiveStats>,
+    refresh_job: Option<tokio::task::JoinHandle<RefreshOutcome>>,
 }
 
 #[derive(Clone, Default)]
@@ -52,30 +60,19 @@ struct LiveStats {
     mem_total: u64,
     disk_used: u64,
     disk_total: u64,
+    net_rx_bps: u64,
+    net_tx_bps: u64,
 }
 
-#[derive(Debug, Deserialize)]
-struct NodeMetricsResponse {
-    live: ResourceSampleDto,
+struct RefreshOutcome {
+    token: Option<String>,
+    login_error: Option<String>,
+    vms: Result<Vec<VmRecord>, String>,
+    host: Option<HostInfo>,
+    cluster: Option<ClusterStatus>,
+    node: Option<NodeMetrics>,
+    vm_live: HashMap<VmId, LiveStats>,
 }
-
-#[derive(Debug, Deserialize)]
-struct VmMetricsResponse {
-    #[serde(default)]
-    live: Option<ResourceSampleDto>,
-    memory_mib: u32,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResourceSampleDto {
-    cpu_pct: f32,
-    mem_used_bytes: u64,
-    mem_total_bytes: u64,
-    disk_used_bytes: u64,
-    disk_total_bytes: u64,
-}
-
-const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -108,42 +105,28 @@ async fn run() -> Result<()> {
     let api_base = format!("http://127.0.0.1:{api_port}");
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(8))
         .build()
         .context("http client")?;
-
-    let token = login(&client, &api_base, &info.password).await.ok();
-    let vms = if let Some(ref token) = token {
-        fetch_vms(&client, &api_base, token)
-            .await
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let live = if let Some(ref token) = token {
-        fetch_node_metrics(&client, &api_base, token).await.ok()
-    } else {
-        None
-    };
-    let vm_live = if let Some(ref token) = token {
-        fetch_all_vm_metrics(&client, &api_base, token, &vms).await
-    } else {
-        HashMap::new()
-    };
 
     let mut app = App {
         info,
         client,
         api_base,
-        token,
-        vms,
+        token: None,
+        vms: Vec::new(),
         selected: 0,
-        status: String::new(),
+        status: "connecting".into(),
         error: String::new(),
-        last_refresh: std::time::Instant::now(),
+        last_refresh: Instant::now()
+            .checked_sub(REFRESH_EVERY)
+            .unwrap_or_else(Instant::now),
         pending_delete: None,
-        live,
-        vm_live,
+        host: None,
+        cluster: None,
+        node: None,
+        vm_live: HashMap::new(),
+        refresh_job: None,
     };
 
     // Linux VGA/serial consoles (TERM=linux) often go blank with the alternate
@@ -159,6 +142,9 @@ async fn run() -> Result<()> {
     }
     enable_raw_mode()?;
     let result = loop_ui(&mut app).await;
+    if let Some(job) = app.refresh_job.take() {
+        job.abort();
+    }
     disable_raw_mode()?;
     if use_alt_screen {
         io::stdout().execute(LeaveAlternateScreen)?;
@@ -293,7 +279,29 @@ async fn fetch_vms(client: &Client, base: &str, token: &str) -> Result<Vec<VmRec
     Ok(response.json().await?)
 }
 
-async fn fetch_node_metrics(client: &Client, base: &str, token: &str) -> Result<LiveStats> {
+async fn fetch_host(client: &Client, base: &str, token: &str) -> Result<HostInfo> {
+    let response = client
+        .get(format!("{base}/v1/host"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("host request")?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await.context("host json")?)
+}
+
+async fn fetch_cluster(client: &Client, base: &str, token: &str) -> Result<ClusterStatus> {
+    let response = client
+        .get(format!("{base}/v1/cluster"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("cluster request")?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await.context("cluster json")?)
+}
+
+async fn fetch_node_metrics(client: &Client, base: &str, token: &str) -> Result<NodeMetrics> {
     let response = client
         .get(format!("{base}/v1/metrics/node"))
         .header("Authorization", format!("Bearer {token}"))
@@ -301,14 +309,7 @@ async fn fetch_node_metrics(client: &Client, base: &str, token: &str) -> Result<
         .await
         .context("metrics request")?;
     let response = response.error_for_status()?;
-    let body: NodeMetricsResponse = response.json().await.context("metrics json")?;
-    Ok(LiveStats {
-        cpu_pct: body.live.cpu_pct,
-        mem_used: body.live.mem_used_bytes,
-        mem_total: body.live.mem_total_bytes,
-        disk_used: body.live.disk_used_bytes,
-        disk_total: body.live.disk_total_bytes,
-    })
+    Ok(response.json().await.context("metrics json")?)
 }
 
 async fn fetch_vm_metrics(client: &Client, base: &str, token: &str, id: VmId) -> Result<LiveStats> {
@@ -319,52 +320,75 @@ async fn fetch_vm_metrics(client: &Client, base: &str, token: &str, id: VmId) ->
         .await
         .context("vm metrics request")?;
     let response = response.error_for_status()?;
-    let body: VmMetricsResponse = response.json().await.context("vm metrics json")?;
+    let body: VmMetrics = response.json().await.context("vm metrics json")?;
+    Ok(live_from_metrics(body))
+}
+
+fn live_from_metrics(body: VmMetrics) -> LiveStats {
     if let Some(live) = body.live {
-        Ok(LiveStats {
+        LiveStats {
             cpu_pct: live.cpu_pct,
             mem_used: live.mem_used_bytes,
             mem_total: live.mem_total_bytes,
             disk_used: live.disk_used_bytes,
             disk_total: live.disk_total_bytes,
-        })
+            net_rx_bps: live.net_rx_bps,
+            net_tx_bps: live.net_tx_bps,
+        }
     } else {
-        Ok(LiveStats {
-            cpu_pct: 0.0,
-            mem_used: 0,
+        LiveStats {
             mem_total: u64::from(body.memory_mib).saturating_mul(1024 * 1024),
-            disk_used: 0,
-            disk_total: 0,
-        })
+            ..LiveStats::default()
+        }
     }
 }
 
-async fn fetch_all_vm_metrics(
+async fn fetch_running_metrics(
     client: &Client,
     base: &str,
     token: &str,
     vms: &[VmRecord],
 ) -> HashMap<VmId, LiveStats> {
+    let mut jobs = tokio::task::JoinSet::new();
+    for vm in vms.iter().filter(|vm| vm.state == VmState::Running) {
+        let client = client.clone();
+        let base = base.to_string();
+        let token = token.to_string();
+        let id = vm.id;
+        jobs.spawn(async move {
+            let stats = fetch_vm_metrics(&client, &base, &token, id).await.ok();
+            (id, stats)
+        });
+    }
     let mut out = HashMap::new();
-    for vm in vms {
-        if vm.state != VmState::Running {
-            out.insert(
-                vm.id,
-                LiveStats {
-                    cpu_pct: 0.0,
-                    mem_used: 0,
-                    mem_total: u64::from(vm.spec.memory_mib).saturating_mul(1024 * 1024),
-                    disk_used: 0,
-                    disk_total: 0,
-                },
-            );
-            continue;
-        }
-        if let Ok(stats) = fetch_vm_metrics(client, base, token, vm.id).await {
-            out.insert(vm.id, stats);
+    while let Some(joined) = jobs.join_next().await {
+        if let Ok((id, Some(stats))) = joined {
+            out.insert(id, stats);
         }
     }
     out
+}
+
+async fn load_snapshot(client: &Client, base: &str, token: &str) -> RefreshOutcome {
+    let (vms, host, cluster, node) = tokio::join!(
+        fetch_vms(client, base, token),
+        fetch_host(client, base, token),
+        fetch_cluster(client, base, token),
+        fetch_node_metrics(client, base, token),
+    );
+    let vm_live = match &vms {
+        Ok(list) => fetch_running_metrics(client, base, token, list).await,
+        Err(_) => HashMap::new(),
+    };
+    RefreshOutcome {
+        token: None,
+        login_error: None,
+        vms: vms.map_err(|err| err.to_string()),
+        host: host.ok(),
+        cluster: cluster.ok(),
+        node: node.ok(),
+        vm_live,
+    }
 }
 
 fn format_bytes(n: u64) -> String {
@@ -397,6 +421,73 @@ fn format_used_total(used: u64, total: u64) -> String {
     format!("{}/{}", format_bytes(used), format_bytes(total))
 }
 
+fn format_rate(bps: u64) -> String {
+    if bps == 0 {
+        return "0".into();
+    }
+    format!("{}/s", format_bytes(bps))
+}
+
+fn format_duration(secs: u64) -> String {
+    if secs == 0 {
+        return "0s".into();
+    }
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else if mins > 0 {
+        format!("{mins}m")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn meter(pct: f32, width: usize) -> String {
+    let width = width.max(1);
+    let clamped = pct.clamp(0.0, 100.0);
+    let filled = ((clamped / 100.0) * width as f32).round() as usize;
+    let filled = filled.min(width);
+    format!("[{}{}]", "#".repeat(filled), "-".repeat(width - filled))
+}
+
+fn meter_color(pct: f32) -> Color {
+    if pct >= 90.0 {
+        Color::Red
+    } else if pct >= 70.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+fn state_color(state: VmState) -> Color {
+    match state {
+        VmState::Running => Color::Green,
+        VmState::Failed => Color::Red,
+        VmState::Created => Color::Yellow,
+        VmState::Stopped => Color::DarkGray,
+    }
+}
+
+fn node_name(cluster: Option<&ClusterStatus>, id: Option<NodeId>) -> String {
+    let Some(id) = id else {
+        return "—".into();
+    };
+    cluster
+        .and_then(|cluster| {
+            cluster
+                .members
+                .iter()
+                .find(|member| member.id == id)
+                .map(|member| member.name.clone())
+        })
+        .unwrap_or_else(|| id.to_string())
+}
+
 async fn power(
     client: &Client,
     base: &str,
@@ -426,13 +517,16 @@ async fn loop_ui(app: &mut App) -> Result<()> {
             .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(5))
         {
             app.pending_delete = None;
-            app.status.clear();
+            if app.error.is_empty() {
+                app.status.clear();
+            }
         }
-        if app.pending_delete.is_none() && app.last_refresh.elapsed() >= REFRESH_EVERY {
-            refresh(app).await;
+        poll_refresh(app).await;
+        if app.refresh_job.is_none() && app.last_refresh.elapsed() >= REFRESH_EVERY {
+            kick_refresh(app);
         }
         terminal.draw(|f| draw(f, app))?;
-        if event::poll(Duration::from_millis(200))? {
+        if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     break;
@@ -445,7 +539,10 @@ async fn loop_ui(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Char('r') => {
                         app.pending_delete = None;
-                        refresh(app).await;
+                        app.last_refresh = Instant::now()
+                            .checked_sub(REFRESH_EVERY)
+                            .unwrap_or_else(Instant::now);
+                        kick_refresh(app);
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         app.pending_delete = None;
@@ -482,51 +579,92 @@ async fn loop_ui(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-async fn refresh(app: &mut App) {
-    app.last_refresh = std::time::Instant::now();
+fn kick_refresh(app: &mut App) {
+    if app.refresh_job.is_some() {
+        return;
+    }
     app.info.ips = local_ips();
     app.info.password = admin_password();
     let ui_host = url_host(&app.info.ips);
     let http_port = app.info.listen.split(':').nth(1).unwrap_or("7480");
     app.info.ui_url = format!("http://{ui_host}:{http_port}/");
-    app.error.clear();
-    if app.token.is_none() {
-        match login(&app.client, &app.api_base, &app.info.password).await {
-            Ok(token) => app.token = Some(token),
-            Err(err) => {
-                app.error = format!("login: {err}");
-                return;
-            }
-        }
-    }
-    let Some(token) = app.token.clone() else {
+
+    let client = app.client.clone();
+    let base = app.api_base.clone();
+    let token = app.token.clone();
+    let password = app.info.password.clone();
+    app.last_refresh = Instant::now();
+    app.refresh_job = Some(tokio::spawn(async move {
+        let token = match token {
+            Some(token) => token,
+            None => match login(&client, &base, &password).await {
+                Ok(token) => token,
+                Err(err) => {
+                    return RefreshOutcome {
+                        token: None,
+                        login_error: Some(err.to_string()),
+                        vms: Err("not logged in".into()),
+                        host: None,
+                        cluster: None,
+                        node: None,
+                        vm_live: HashMap::new(),
+                    };
+                }
+            },
+        };
+        let mut outcome = load_snapshot(&client, &base, &token).await;
+        outcome.token = Some(token);
+        outcome
+    }));
+}
+
+async fn poll_refresh(app: &mut App) {
+    let Some(job) = app.refresh_job.as_ref() else {
         return;
     };
-    match fetch_vms(&app.client, &app.api_base, &token).await {
+    if !job.is_finished() {
+        return;
+    }
+    let Some(job) = app.refresh_job.take() else {
+        return;
+    };
+    let Ok(outcome) = job.await else {
+        return;
+    };
+    if let Some(err) = outcome.login_error {
+        app.token = None;
+        app.error = format!("login: {err}");
+        return;
+    }
+    if let Some(token) = outcome.token {
+        app.token = Some(token);
+    }
+    match outcome.vms {
         Ok(vms) => {
             app.vms = vms;
             if app.selected >= app.vms.len() {
                 app.selected = app.vms.len().saturating_sub(1);
             }
-            app.status = "auto".into();
+            app.vm_live = outcome.vm_live;
+            app.error.clear();
+            if app.pending_delete.is_none() && app.status == "connecting" {
+                app.status.clear();
+            }
         }
         Err(err) => {
             app.token = None;
             app.error = format!("list: {err}");
-            return;
         }
     }
-    match fetch_node_metrics(&app.client, &app.api_base, &token).await {
-        Ok(live) => app.live = Some(live),
-        Err(err) => {
-            // Keep guests list even if metrics endpoint is old/unavailable.
-            app.live = None;
-            if app.error.is_empty() {
-                app.error = format!("metrics: {err}");
-            }
-        }
+    if outcome.host.is_some() {
+        app.host = outcome.host;
     }
-    app.vm_live = fetch_all_vm_metrics(&app.client, &app.api_base, &token, &app.vms).await;
+    if outcome.cluster.is_some() {
+        app.cluster = outcome.cluster;
+    }
+    if outcome.node.is_some() {
+        app.node = outcome.node;
+    }
 }
 
 async fn destroy_selected(app: &mut App) {
@@ -549,18 +687,18 @@ async fn destroy_selected(app: &mut App) {
         match delete_vm(&app.client, &app.api_base, &token, id).await {
             Ok(()) => {
                 app.vms.retain(|v| v.id != id);
+                app.vm_live.remove(&id);
                 if app.selected >= app.vms.len() {
                     app.selected = app.vms.len().saturating_sub(1);
                 }
                 app.status = format!("deleted {id} ({name})");
-                app.last_refresh = std::time::Instant::now();
             }
             Err(err) => app.error = format!("delete: {err}"),
         }
         return;
     }
 
-    app.pending_delete = Some((id, std::time::Instant::now()));
+    app.pending_delete = Some((id, Instant::now()));
     app.status = format!("DELETE {id} ({name})? press d again, Esc cancel");
 }
 
@@ -580,7 +718,6 @@ async fn delete_vm(client: &Client, base: &str, token: &str, id: VmId) -> Result
 
 async fn vm_action(app: &mut App, action: &str) {
     app.error.clear();
-    app.status.clear();
     let Some(vm) = app.vms.get(app.selected) else {
         app.error = "no guest selected".into();
         return;
@@ -596,201 +733,458 @@ async fn vm_action(app: &mut App, action: &str) {
                 *row = updated;
             }
             app.status = format!("{action} {id} ok");
+            app.last_refresh = Instant::now()
+                .checked_sub(REFRESH_EVERY)
+                .unwrap_or_else(Instant::now);
         }
         Err(err) => app.error = err.to_string(),
     }
 }
 
-fn draw(f: &mut Frame, app: &App) {
+fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12),
-            Constraint::Min(6),
+            Constraint::Length(8),
+            Constraint::Min(5),
+            Constraint::Length(6),
             Constraint::Length(3),
         ])
-        .split(f.area());
+        .split(frame.area());
 
-    draw_info(f, chunks[0], app);
-    draw_vms(f, chunks[1], app);
-    draw_help(f, chunks[2], app);
+    draw_header(frame, chunks[0], app);
+    draw_vms(frame, chunks[1], app);
+    draw_detail(frame, chunks[2], app);
+    draw_help(frame, chunks[3], app);
 }
 
-fn draw_info(f: &mut Frame, area: Rect, app: &App) {
-    let primary_ip = app
-        .info
-        .ips
+fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+    let live = app.node.as_ref().map(|node| &node.live);
+    let cpu_pct = live.map(|sample| sample.cpu_pct).unwrap_or(0.0);
+    let cpu = match live {
+        Some(sample) => format!("{:.1}%", sample.cpu_pct),
+        None => "—".into(),
+    };
+    let mem = live
+        .map(|sample| format_used_total(sample.mem_used_bytes, sample.mem_total_bytes))
+        .unwrap_or_else(|| "—".into());
+    let disk = live
+        .map(|sample| format_used_total(sample.disk_used_bytes, sample.disk_total_bytes))
+        .unwrap_or_else(|| "—".into());
+    let net = live
+        .map(|sample| {
+            format!(
+                "rx {}  tx {}",
+                format_rate(sample.net_rx_bps),
+                format_rate(sample.net_tx_bps)
+            )
+        })
+        .unwrap_or_else(|| "rx —  tx —".into());
+    let running = app
+        .vms
         .iter()
-        .find(|ip| ip.contains('.'))
-        .cloned()
-        .unwrap_or_else(|| app.info.ips.first().cloned().unwrap_or_else(|| "—".into()));
-    let all_ips = if app.info.ips.is_empty() {
-        "—".into()
+        .filter(|vm| vm.state == VmState::Running && !vm.template)
+        .count();
+    let guests = app.vms.iter().filter(|vm| !vm.template).count();
+    let alloc = app
+        .node
+        .as_ref()
+        .map(|node| {
+            format!(
+                "{} vCPU  {} MiB",
+                node.allocated_vcpus, node.allocated_memory_mib
+            )
+        })
+        .unwrap_or_else(|| "—".into());
+    let hostname = app
+        .host
+        .as_ref()
+        .map(|host| host.hostname.clone())
+        .filter(|name| !name.is_empty())
+        .or_else(|| app.node.as_ref().map(|node| node.name.clone()))
+        .unwrap_or_else(|| "this node".into());
+    let driver = app
+        .host
+        .as_ref()
+        .map(|host| host.driver.to_string())
+        .unwrap_or_else(|| "—".into());
+    let storage = app
+        .host
+        .as_ref()
+        .map(|host| host.storage_backend.to_string())
+        .unwrap_or_else(|| "—".into());
+    let kvm = match app.host.as_ref() {
+        Some(host) if host.kvm => "kvm",
+        Some(_) => "no kvm",
+        None => "—",
+    };
+    let host_up = app
+        .host
+        .as_ref()
+        .map(|host| format_duration(host.uptime_secs))
+        .unwrap_or_else(|| "—".into());
+    let daemon_up = app
+        .host
+        .as_ref()
+        .map(|host| format_duration(host.daemon_uptime_secs))
+        .unwrap_or_else(|| "—".into());
+    let age = app.last_refresh.elapsed();
+    let age_label = if app.refresh_job.is_some() {
+        "syncing".to_string()
+    } else if age.as_secs() == 0 {
+        "live".to_string()
     } else {
-        app.info.ips.join(", ")
+        format!("{}s ago", age.as_secs())
+    };
+    let age_color = if age.as_secs() >= 5 && app.refresh_job.is_none() {
+        Color::Yellow
+    } else {
+        Color::Green
     };
     let auth = if app.token.is_some() {
-        Span::styled("connected", Style::default().fg(Color::Green))
+        Span::styled("api up", Style::default().fg(Color::Green))
     } else {
-        Span::styled("offline", Style::default().fg(Color::Yellow))
+        Span::styled("api down", Style::default().fg(Color::Yellow))
     };
-    let (cpu, mem, disk) = match &app.live {
-        Some(s) => (
-            format!("{:.1}%", s.cpu_pct),
-            format_used_total(s.mem_used, s.mem_total),
-            format_used_total(s.disk_used, s.disk_total),
-        ),
-        None => ("—".into(), "—".into(), "—".into()),
-    };
+
     let lines = vec![
         Line::from(vec![
-            Span::styled("IP     ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(
-                primary_ip,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("CPU ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(meter(cpu_pct, 10), Style::default().fg(meter_color(cpu_pct))),
+            Span::raw(format!(" {cpu}   ")),
+            Span::raw(net),
         ]),
         Line::from(vec![
-            Span::styled("All    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(all_ips),
-        ]),
-        Line::from(vec![
-            Span::styled("Web UI ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&app.info.ui_url),
-        ]),
-        Line::from(vec![
-            Span::styled("CPU    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(cpu),
-            Span::raw("   "),
             Span::styled("Mem ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(mem),
             Span::raw("   "),
             Span::styled("Disk ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(disk),
+            Span::raw("   "),
+            Span::styled("Alloc ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(alloc),
         ]),
         Line::from(vec![
-            Span::styled("User   ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("admin"),
+            Span::styled("Guests ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{running} running / {guests}")),
             Span::raw("   "),
-            Span::styled("Password ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Node ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{driver}  {storage}  {kvm}")),
+            Span::raw("   "),
+            Span::styled("Up ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{host_up}  daemon {daemon_up}")),
+        ]),
+        Line::from(vec![
+            Span::styled("UI ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&app.info.ui_url),
+            Span::raw("  "),
+            Span::styled("admin ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(&app.info.password, Style::default().fg(Color::Cyan)),
-            Span::raw("   "),
+            Span::raw("  "),
             auth,
+            Span::raw("  "),
+            Span::styled(age_label, Style::default().fg(age_color)),
         ]),
-        Line::from(vec![
-            Span::styled("Ver    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("v{VERSION}")),
-        ]),
+        Line::from(cluster_spans(app)),
     ];
     let block = Block::default()
-        .title(format!(" Pertisk Vms v{VERSION} "))
-        .borders(Borders::ALL);
-    f.render_widget(Paragraph::new(lines).block(block), area);
+        .title(Line::from(vec![
+            Span::styled(" [=] ", Style::default().fg(BRAND).add_modifier(Modifier::BOLD)),
+            Span::raw(format!("Pertisk  {hostname}  v{VERSION} ")),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BRAND));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_vms(f: &mut Frame, area: Rect, app: &App) {
-    let header = Row::new(vec!["ID", "NAME", "STATE", "CPU", "MEM", "DISK"])
-        .style(Style::default().add_modifier(Modifier::BOLD));
+fn cluster_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(cluster) = app.cluster.clone() else {
+        return vec![Span::styled(
+            "Cluster  waiting",
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+    };
+    let online = cluster.members.iter().filter(|member| member.online).count();
+    let total = cluster.members.len();
+    let quorum = if cluster.quorum { "quorum" } else { "no quorum" };
+    let quorum_color = if cluster.quorum {
+        Color::Green
+    } else {
+        Color::Red
+    };
+    let ha = if cluster.ha_armed { "HA armed" } else { "HA disarmed" };
+    let fence = if cluster.fenced { "  fenced" } else { "" };
+    let witness = if cluster.witness { "  witness" } else { "" };
+    let mut spans = vec![
+        Span::styled("Cluster ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(cluster.name),
+        Span::raw("  "),
+        Span::styled(quorum, Style::default().fg(quorum_color)),
+        Span::raw(format!("  {ha}{fence}{witness}  {online}/{total} online")),
+    ];
+    let names: Vec<String> = cluster
+        .members
+        .iter()
+        .map(|member| {
+            let mark = if member.online { "+" } else { "-" };
+            format!("{mark}{}", member.name)
+        })
+        .collect();
+    if !names.is_empty() {
+        spans.push(Span::raw(format!("  {}", names.join(" "))));
+    }
+    spans
+}
+
+fn draw_vms(frame: &mut Frame, area: Rect, app: &App) {
+    let header = Row::new(vec!["ID", "NAME", "STATE", "CPU", "MEM", "vCPU", "HA", "GROUP"])
+        .style(Style::default().fg(BRAND).add_modifier(Modifier::BOLD));
+    let visible = area.height.saturating_sub(3) as usize;
+    let start = table_window(app.vms.len(), app.selected, visible.max(1));
     let rows: Vec<Row> = app
         .vms
         .iter()
         .enumerate()
+        .skip(start)
+        .take(visible.max(1))
         .map(|(i, vm)| {
             let style = if i == app.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+                Style::default()
+                    .bg(Color::Rgb(16, 42, 40))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            let (cpu, mem, disk) = match app.vm_live.get(&vm.id) {
-                Some(s) if vm.state == VmState::Running && s.mem_total > 0 => (
-                    format!("{:.0}%", s.cpu_pct),
-                    format_used_total(s.mem_used, s.mem_total),
-                    if s.disk_total > 0 {
-                        format_used_total(s.disk_used, s.disk_total)
-                    } else {
-                        "—".into()
-                    },
-                ),
-                Some(s) if s.mem_total > 0 => (
-                    "—".into(),
-                    format!("—/{}", format_bytes(s.mem_total)),
-                    "—".into(),
-                ),
-                _ => (
-                    "—".into(),
-                    format!("{} MiB", vm.spec.memory_mib),
-                    "—".into(),
-                ),
+            let live = app.vm_live.get(&vm.id);
+            let cpu = match live {
+                Some(stats) if vm.state == VmState::Running => format!("{:.0}%", stats.cpu_pct),
+                _ => "—".into(),
             };
+            let mem = match live {
+                Some(stats) if vm.state == VmState::Running && stats.mem_total > 0 => {
+                    format_used_total(stats.mem_used, stats.mem_total)
+                }
+                _ => format!("{}M", vm.spec.memory_mib),
+            };
+            let state = if vm.template {
+                "template".to_string()
+            } else {
+                vm.state.to_string()
+            };
+            let ha = if vm.spec.ha { "yes" } else { "—" };
+            let group = vm
+                .spec
+                .group
+                .as_deref()
+                .filter(|group| !group.is_empty())
+                .unwrap_or("—");
             Row::new(vec![
                 Cell::from(vm.id.to_string()),
                 Cell::from(vm.spec.name.clone()),
-                Cell::from(format!("{}", vm.state)),
+                Cell::from(Span::styled(state, Style::default().fg(state_color(vm.state)))),
                 Cell::from(cpu),
                 Cell::from(mem),
-                Cell::from(disk),
+                Cell::from(vm.spec.vcpus.to_string()),
+                Cell::from(ha),
+                Cell::from(group.to_string()),
             ])
             .style(style)
         })
         .collect();
+    let title = if app.vms.is_empty() {
+        " Guests ".to_string()
+    } else {
+        format!(" Guests  {} ", app.vms.len())
+    };
     let table = Table::new(
         rows,
         [
             Constraint::Length(6),
-            Constraint::Min(10),
+            Constraint::Min(12),
             Constraint::Length(9),
             Constraint::Length(5),
-            Constraint::Length(15),
-            Constraint::Length(15),
+            Constraint::Length(16),
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(10),
         ],
     )
     .header(header)
-    .block(Block::default().title(" Guests ").borders(Borders::ALL));
-    f.render_widget(table, area);
+    .block(Block::default().title(title).borders(Borders::ALL));
+    frame.render_widget(table, area);
 }
 
-fn draw_help(f: &mut Frame, area: Rect, app: &App) {
+fn table_window(len: usize, selected: usize, visible: usize) -> usize {
+    if len <= visible || visible == 0 {
+        return 0;
+    }
+    let selected = selected.min(len - 1);
+    if selected + 1 <= visible {
+        0
+    } else {
+        (selected + 1 - visible).min(len - visible)
+    }
+}
+
+fn draw_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let lines = match app.vms.get(app.selected) {
+        Some(vm) => guest_lines(app, vm),
+        None => vec![Line::from("No guests on this node.")],
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().title(" Selected ").borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn guest_lines(app: &App, vm: &VmRecord) -> Vec<Line<'static>> {
+    let node = node_name(app.cluster.as_ref(), vm.node_id);
+    let group = vm
+        .spec
+        .group
+        .as_deref()
+        .filter(|group| !group.is_empty())
+        .unwrap_or("none");
+    let ha = if vm.spec.ha { "on" } else { "off" };
+    let autostart = if vm.spec.autostart { "on" } else { "off" };
+    let console = if vm.graphics_socket.is_some() {
+        "display"
+    } else if vm.console_socket.is_some() || vm.serial_log.is_some() {
+        "serial"
+    } else {
+        "none"
+    };
+    let live = app.vm_live.get(&vm.id);
+    let cpu = live
+        .filter(|_| vm.state == VmState::Running)
+        .map(|stats| format!("{:.1}%", stats.cpu_pct))
+        .unwrap_or_else(|| "—".into());
+    let net = live
+        .filter(|_| vm.state == VmState::Running)
+        .map(|stats| {
+            format!(
+                "rx {}  tx {}",
+                format_rate(stats.net_rx_bps),
+                format_rate(stats.net_tx_bps)
+            )
+        })
+        .unwrap_or_else(|| "rx —  tx —".into());
+    let disk = live
+        .filter(|stats| vm.state == VmState::Running && stats.disk_total > 0)
+        .map(|stats| format_used_total(stats.disk_used, stats.disk_total))
+        .unwrap_or_else(|| "—".into());
+    let disks = vm.spec.disks.len();
+    let cdroms = vm.spec.disks.iter().filter(|disk| disk.cdrom).count();
+    let ips: Vec<String> = vm
+        .spec
+        .nets
+        .iter()
+        .filter_map(|nic| nic.ip.clone().or_else(|| nic.ipv6.clone()))
+        .collect();
+    let ip_text = if ips.is_empty() {
+        "no address".to_string()
+    } else {
+        ips.join(", ")
+    };
+    let backup = match &vm.spec.backup {
+        Some(schedule) if schedule.enabled => format!(
+            "every {}h  keep {}",
+            schedule.interval_hours, schedule.keep
+        ),
+        Some(_) => "off".into(),
+        None => "not set".into(),
+    };
+    let snaps = match &vm.spec.snapshot {
+        Some(schedule) if schedule.enabled => format!(
+            "every {}h keep {}",
+            schedule.interval_hours, schedule.keep
+        ),
+        Some(_) => "off".into(),
+        None => "not set".into(),
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{}  {}  ", vm.id, vm.spec.name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                vm.state.to_string(),
+                Style::default().fg(state_color(vm.state)),
+            ),
+            Span::raw(format!(
+                "  {} vCPU  {} MiB  cpu {cpu}  {net}",
+                vm.spec.vcpus, vm.spec.memory_mib
+            )),
+        ]),
+        Line::from(format!(
+            "node {node}   HA {ha}   group {group}   autostart {autostart}   console {console}"
+        )),
+        Line::from(format!(
+            "disks {disks} ({cdroms} cd)  {disk}   nics {}  {ip_text}   backup {backup}   snapshots {snaps}",
+            vm.spec.nets.len()
+        )),
+    ];
+    if let Some(err) = vm.last_error.as_ref().filter(|err| !err.is_empty()) {
+        let text = if err.chars().count() > 90 {
+            let end = err
+                .char_indices()
+                .nth(90)
+                .map(|(idx, _)| idx)
+                .unwrap_or(err.len());
+            format!("error  {}…", &err[..end])
+        } else {
+            format!("error  {err}")
+        };
+        lines.push(Line::from(Span::styled(
+            text,
+            Style::default().fg(Color::Red),
+        )));
+    }
+    lines
+}
+
+fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans = if app.pending_delete.is_some() {
         vec![Span::styled(
-            "CONFIRM DELETE: press d again  |  Esc cancel",
+            "CONFIRM DELETE  d again    Esc cancel",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )]
     } else {
         vec![
-            Span::raw("j/k select  "),
+            Span::raw("j/k move   "),
             Span::styled("s", Style::default().fg(Color::Green)),
-            Span::raw(" start  "),
+            Span::raw(" start   "),
             Span::styled("h", Style::default().fg(Color::Yellow)),
-            Span::raw(" shutdown  "),
+            Span::raw(" shutdown   "),
             Span::styled("b", Style::default().fg(Color::Cyan)),
-            Span::raw(" restart  "),
+            Span::raw(" restart   "),
             Span::styled("x", Style::default().fg(Color::Red)),
-            Span::raw(" stop  "),
+            Span::raw(" stop   "),
             Span::styled(
                 "d",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" delete  "),
-            Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" refresh  q quit"),
+            Span::raw(" delete   r refresh   q quit"),
         ]
     };
     if !app.status.is_empty() {
-        spans.push(Span::raw("  |  "));
+        spans.push(Span::raw("   "));
         let color = if app.pending_delete.is_some() {
             Color::Yellow
         } else {
             Color::Green
         };
-        spans.push(Span::styled(&app.status, Style::default().fg(color)));
+        spans.push(Span::styled(app.status.clone(), Style::default().fg(color)));
     }
     if !app.error.is_empty() {
-        spans.push(Span::raw("  |  "));
-        spans.push(Span::styled(&app.error, Style::default().fg(Color::Red)));
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(
+            app.error.clone(),
+            Style::default().fg(Color::Red),
+        ));
     }
-    f.render_widget(
+    frame.render_widget(
         Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL)),
         area,
     );
@@ -824,5 +1218,26 @@ mod tests {
                 format_bytes(32_212_254_720)
             )
         );
+    }
+
+    #[test]
+    fn meter_and_rates() {
+        assert_eq!(meter(0.0, 4), "[----]");
+        assert_eq!(meter(100.0, 4), "[####]");
+        assert_eq!(meter(50.0, 4), "[##--]");
+        assert_eq!(format_rate(0), "0");
+        assert_eq!(format_rate(2048), format!("{}/s", format_bytes(2048)));
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(90), "1m");
+        assert_eq!(format_duration(3_700), "1h 1m");
+        assert_eq!(format_duration(90_000), "1d 1h");
+    }
+
+    #[test]
+    fn table_window_keeps_selection_visible() {
+        assert_eq!(table_window(3, 2, 10), 0);
+        assert_eq!(table_window(20, 0, 5), 0);
+        assert_eq!(table_window(20, 7, 5), 3);
+        assert_eq!(table_window(20, 19, 5), 15);
     }
 }

@@ -12,10 +12,11 @@ use pertisk_types::{
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DrainResponse,
     DriverKind, HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec,
     NetworkId, NetworkMode, NetworkRecord, NodeId, NodeMetrics, NotifyConfig, RebalanceResponse,
-    ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest,
-    StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics,
-    VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user,
-    is_guest_ipv4, probe_host, probe_host_addrs,
+    ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest, SetRepositoryRequest,
+    SetSnapshotScheduleRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
+    UpdatesStatus, VmBackupDisk, VmBackupRecord, VmBackupSchedule, VmId, VmMetrics, VmRecord,
+    VmSnapshotSchedule, VmSpec, VmState, VolumeFormat, VolumeId,
+    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -91,6 +92,10 @@ pub struct Service {
     console: ConsoleHub,
     http: reqwest::Client,
     rebuild: Arc<tokio::sync::Mutex<()>>,
+    /// One scheduled backup job at a time so the heartbeat tick stays free.
+    backup_sched: Arc<tokio::sync::Mutex<()>>,
+    /// One scheduled snapshot job at a time so the heartbeat tick stays free.
+    snap_sched: Arc<tokio::sync::Mutex<()>>,
     /// Cap concurrent guest starts. Terraform `-parallelism` can fire many
     /// clone+start calls at once; each qemu boot storms disk/RAM and has
     /// crashed the appliance when 8–10 guests started together.
@@ -192,6 +197,8 @@ impl Service {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             rebuild: Arc::new(tokio::sync::Mutex::new(())),
+            backup_sched: Arc::new(tokio::sync::Mutex::new(())),
+            snap_sched: Arc::new(tokio::sync::Mutex::new(())),
             start_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             config,
             notify: Arc::new(Mutex::new(notify)),
@@ -880,6 +887,8 @@ impl Service {
         vm.template = true;
         vm.spec.autostart = false;
         vm.spec.ha = false;
+        vm.spec.backup = None;
+        vm.spec.snapshot = None;
         self.store.upsert(vm.clone())?;
         self.cluster.bump()?;
         self.replicate().await;
@@ -1125,6 +1134,318 @@ impl Service {
         Ok(backup)
     }
 
+    pub async fn set_backup_schedule(
+        &self,
+        id: VmId,
+        req: SetBackupScheduleRequest,
+    ) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        self.require_not_template(&vm, "set backup schedule")?;
+        if req.interval_hours == 0 {
+            return Err(pertisk_types::TypesError::InvalidSpec(
+                "backup interval_hours must be >= 1".into(),
+            )
+            .into());
+        }
+        let last_run_unix = vm
+            .spec
+            .backup
+            .as_ref()
+            .map(|sched| sched.last_run_unix)
+            .unwrap_or(0);
+        vm.spec.backup = Some(VmBackupSchedule {
+            enabled: req.enabled,
+            interval_hours: req.interval_hours,
+            keep: req.keep,
+            last_run_unix,
+        });
+        vm.spec.validate()?;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
+    }
+
+    pub async fn clear_backup_schedule(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        self.require_not_template(&vm, "clear backup schedule")?;
+        vm.spec.backup = None;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
+    }
+
+    fn prune_vm_backups(&self, id: VmId, keep: u32) -> Result<(), DaemonError> {
+        if keep == 0 {
+            return Ok(());
+        }
+        let list = self.list_vm_backups(id)?;
+        for backup in list.into_iter().skip(keep as usize) {
+            self.delete_vm_backup(id, &backup.id)?;
+        }
+        Ok(())
+    }
+
+    /// Run at most one due scheduled backup. Skips running guests so last_run stays due.
+    pub async fn run_due_backup_schedules(&self) {
+        if !self.cluster.has_quorum() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let self_id = self.cluster.self_id();
+        let Ok(vms) = self.list() else {
+            return;
+        };
+        let mut due: Vec<(VmId, u64)> = Vec::new();
+        for vm in vms {
+            if vm.template || vm.state == VmState::Running {
+                continue;
+            }
+            if vm.node_id != Some(self_id) {
+                continue;
+            }
+            let Some(sched) = vm.spec.backup.as_ref() else {
+                continue;
+            };
+            if !sched.enabled || sched.interval_hours == 0 {
+                continue;
+            }
+            let interval = u64::from(sched.interval_hours).saturating_mul(3600);
+            let elapsed = now.saturating_sub(sched.last_run_unix);
+            if sched.last_run_unix > 0 && elapsed < interval {
+                continue;
+            }
+            due.push((vm.id, elapsed));
+        }
+        due.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let Some((id, _)) = due.into_iter().next() else {
+            return;
+        };
+        let keep = self
+            .get(id)
+            .ok()
+            .and_then(|vm| vm.spec.backup.map(|s| s.keep))
+            .unwrap_or(0);
+        match self
+            .create_vm_backup(
+                id,
+                CreateVmBackupRequest {
+                    notes: Some("scheduled".into()),
+                },
+            )
+            .await
+        {
+            Ok(_) => {
+                if let Ok(mut vm) = self.get(id) {
+                    if let Some(sched) = vm.spec.backup.as_mut() {
+                        sched.last_run_unix = now;
+                    }
+                    let _ = self.store.upsert(vm);
+                    let _ = self.cluster.bump();
+                }
+                if let Err(err) = self.prune_vm_backups(id, keep) {
+                    tracing::warn!(%id, error = %err, "scheduled backup prune failed");
+                }
+                self.replicate().await;
+            }
+            Err(err) => {
+                tracing::debug!(%id, error = %err, "scheduled backup skipped");
+            }
+        }
+    }
+
+    pub async fn set_snapshot_schedule(
+        &self,
+        id: VmId,
+        req: SetSnapshotScheduleRequest,
+    ) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        self.require_not_template(&vm, "set snapshot schedule")?;
+        if req.interval_hours == 0 {
+            return Err(pertisk_types::TypesError::InvalidSpec(
+                "snapshot interval_hours must be >= 1".into(),
+            )
+            .into());
+        }
+        let last_run_unix = vm
+            .spec
+            .snapshot
+            .as_ref()
+            .map(|sched| sched.last_run_unix)
+            .unwrap_or(0);
+        vm.spec.snapshot = Some(VmSnapshotSchedule {
+            enabled: req.enabled,
+            interval_hours: req.interval_hours,
+            keep: req.keep,
+            last_run_unix,
+        });
+        vm.spec.validate()?;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
+    }
+
+    pub async fn clear_snapshot_schedule(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let mut vm = self.store.get(id)?;
+        self.require_not_template(&vm, "clear snapshot schedule")?;
+        vm.spec.snapshot = None;
+        self.store.upsert(vm.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(vm)
+    }
+
+    /// Run due snapshot schedules until one guest succeeds. A guest that cannot
+    /// snapshot right now stays due and does not block the next guest.
+    pub async fn run_due_snapshot_schedules(&self) {
+        if !self.cluster.has_quorum() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let self_id = self.cluster.self_id();
+        let Ok(vms) = self.list() else {
+            return;
+        };
+        let mut due: Vec<(VmId, u64)> = Vec::new();
+        for vm in vms {
+            if vm.template || vm.node_id != Some(self_id) {
+                continue;
+            }
+            let Some(sched) = vm.spec.snapshot.as_ref() else {
+                continue;
+            };
+            if !sched.enabled || sched.interval_hours == 0 {
+                continue;
+            }
+            let interval = u64::from(sched.interval_hours).saturating_mul(3600);
+            let elapsed = now.saturating_sub(sched.last_run_unix);
+            if sched.last_run_unix > 0 && elapsed < interval {
+                continue;
+            }
+            due.push((vm.id, elapsed));
+        }
+        due.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (id, _) in due.into_iter().take(8) {
+            match self.snapshot_guest_scheduled(id, now).await {
+                Ok(()) => return,
+                Err(err) => {
+                    tracing::debug!(%id, error = %err, "scheduled snapshot skipped");
+                }
+            }
+        }
+    }
+
+    async fn snapshot_guest_scheduled(&self, id: VmId, now: u64) -> Result<(), DaemonError> {
+        let vm = self.get(id)?;
+        let keep = vm.spec.snapshot.as_ref().map(|sched| sched.keep).unwrap_or(0);
+        let volumes: Vec<VolumeId> = vm
+            .spec
+            .disks
+            .iter()
+            .filter(|disk| !disk.cdrom)
+            .filter_map(|disk| disk.volume_id)
+            .collect();
+        if volumes.is_empty() {
+            return Err(StorageError::Message("guest has no disks to snapshot".into()).into());
+        }
+        let name = format!("sched-{now}");
+        for volume_id in volumes {
+            let record = self.volumes.get_volume(volume_id)?;
+            if record.snapshots.iter().any(|snap| snap.name == name) {
+                continue;
+            }
+            self.snapshot_volume(volume_id, SnapshotRequest { name: name.clone() })
+                .await?;
+        }
+        if let Ok(mut vm) = self.get(id) {
+            if let Some(sched) = vm.spec.snapshot.as_mut() {
+                sched.last_run_unix = now;
+            }
+            let _ = self.store.upsert(vm);
+            let _ = self.cluster.bump();
+        }
+        if let Err(err) = self.prune_scheduled_snapshots(id, keep).await {
+            tracing::warn!(%id, error = %err, "scheduled snapshot prune failed");
+        }
+        self.replicate().await;
+        Ok(())
+    }
+
+    async fn prune_scheduled_snapshots(&self, id: VmId, keep: u32) -> Result<(), DaemonError> {
+        if keep == 0 {
+            return Ok(());
+        }
+        let vm = self.get(id)?;
+        let mut names: Vec<(String, u64)> = Vec::new();
+        for disk in vm.spec.disks.iter().filter(|disk| !disk.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let record = self.volumes.get_volume(volume_id)?;
+            for snap in record.snapshots {
+                if !snap.name.starts_with("sched-") {
+                    continue;
+                }
+                if let Some(existing) = names.iter_mut().find(|(name, _)| name == &snap.name) {
+                    existing.1 = existing.1.max(snap.created_unix);
+                } else {
+                    names.push((snap.name, snap.created_unix));
+                }
+            }
+        }
+        names.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+        for (name, _) in names.into_iter().skip(keep as usize) {
+            self.delete_named_snapshot(&vm, &name).await?;
+        }
+        Ok(())
+    }
+
+    async fn delete_named_snapshot(&self, vm: &VmRecord, name: &str) -> Result<(), DaemonError> {
+        for disk in vm.spec.disks.iter().filter(|disk| !disk.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let record = self.volumes.get_volume(volume_id)?;
+            if !record.snapshots.iter().any(|snap| snap.name == name) {
+                continue;
+            }
+            let live_qcow = vm.state == VmState::Running
+                && record.backend == StorageBackend::Replica
+                && record.format == VolumeFormat::Qcow2
+                && record
+                    .snapshots
+                    .iter()
+                    .any(|snap| snap.name == name && snap.path.is_none());
+            if live_qcow {
+                if let Some(device) = pertisk_vmm::disk_device_id(&vm.spec, volume_id) {
+                    if self
+                        .vmm
+                        .snapshot_delete_internal(vm, &device, name)
+                        .await
+                        .is_ok()
+                    {
+                        self.volumes.forget_snapshot(volume_id, name)?;
+                        continue;
+                    }
+                }
+            }
+            self.volumes.delete_snapshot(volume_id, name)?;
+        }
+        Ok(())
+    }
+
     fn backups_path(&self) -> PathBuf {
         self.data_dir.join("state/backups.json")
     }
@@ -1180,6 +1501,8 @@ impl Service {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         spec.validate()?;
         let record = self.create_guest(req.id, spec).await?;
@@ -1218,6 +1541,12 @@ impl Service {
         spec.autostart_order = req.autostart_order.unwrap_or(0);
         if let Some(group) = req.group.as_deref() {
             spec.group = placement_group(Some(group));
+        }
+        if let Some(sched) = spec.backup.as_mut() {
+            sched.last_run_unix = 0;
+        }
+        if let Some(sched) = spec.snapshot.as_mut() {
+            sched.last_run_unix = 0;
         }
         if let Some(vcpus) = req.vcpus {
             spec.vcpus = vcpus;
@@ -3692,6 +4021,22 @@ impl Service {
                 });
             }
         }
+        if self.cluster.has_quorum() {
+            if let Ok(guard) = self.backup_sched.clone().try_lock_owned() {
+                let svc = self.clone();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    svc.run_due_backup_schedules().await;
+                });
+            }
+            if let Ok(guard) = self.snap_sched.clone().try_lock_owned() {
+                let svc = self.clone();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    svc.run_due_snapshot_schedules().await;
+                });
+            }
+        }
         Ok(())
     }
 
@@ -5665,6 +6010,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         }
     }
 
@@ -6168,6 +6515,128 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         assert!(svc.delete_volume(vol.id).await.is_err());
         svc.detach_disk(vm.id, vol.id).unwrap();
         svc.delete_volume(vol.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scheduled_backup_runs_while_stopped_and_prunes() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(107), spec("sched")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        std::fs::write(&vol.path, b"disk-v1").unwrap();
+        svc.set_backup_schedule(
+            vm.id,
+            SetBackupScheduleRequest {
+                enabled: true,
+                interval_hours: 1,
+                keep: 2,
+            },
+        )
+        .await
+        .unwrap();
+        svc.run_due_backup_schedules().await;
+        let first = svc.list_vm_backups(vm.id).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].notes.as_deref() == Some("scheduled"));
+        let last = svc.get(vm.id).unwrap().spec.backup.unwrap().last_run_unix;
+        assert!(last > 0);
+        svc.run_due_backup_schedules().await;
+        assert_eq!(svc.list_vm_backups(vm.id).unwrap().len(), 1);
+        std::fs::write(&vol.path, b"disk-v2").unwrap();
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.spec.backup.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        svc.run_due_backup_schedules().await;
+        assert_eq!(svc.list_vm_backups(vm.id).unwrap().len(), 2);
+        std::fs::write(&vol.path, b"disk-v3").unwrap();
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.spec.backup.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        svc.run_due_backup_schedules().await;
+        assert_eq!(svc.list_vm_backups(vm.id).unwrap().len(), 2);
+        svc.start(vm.id).await.unwrap();
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.spec.backup.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        svc.run_due_backup_schedules().await;
+        assert_eq!(svc.list_vm_backups(vm.id).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn scheduled_snapshot_runs_and_prunes_automatic_names() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(108), spec("snaps")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        std::fs::write(&vol.path, b"disk-v1").unwrap();
+        svc.set_snapshot_schedule(
+            vm.id,
+            SetSnapshotScheduleRequest {
+                enabled: true,
+                interval_hours: 1,
+                keep: 2,
+            },
+        )
+        .await
+        .unwrap();
+        svc.run_due_snapshot_schedules().await;
+        let first = svc.volumes.get_volume(vol.id).unwrap();
+        assert_eq!(first.snapshots.len(), 1);
+        assert!(first.snapshots[0].name.starts_with("sched-"));
+        let last = svc.get(vm.id).unwrap().spec.snapshot.unwrap().last_run_unix;
+        assert!(last > 0);
+        svc.run_due_snapshot_schedules().await;
+        assert_eq!(svc.volumes.get_volume(vol.id).unwrap().snapshots.len(), 1);
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.spec.snapshot.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        svc.run_due_snapshot_schedules().await;
+        assert_eq!(svc.volumes.get_volume(vol.id).unwrap().snapshots.len(), 2);
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.spec.snapshot.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        svc.run_due_snapshot_schedules().await;
+        let snaps = svc.volumes.get_volume(vol.id).unwrap().snapshots;
+        assert_eq!(snaps.len(), 2);
+        assert!(snaps.iter().all(|snap| snap.name.starts_with("sched-")));
+        let mut rec = svc.get(vm.id).unwrap();
+        rec.state = VmState::Running;
+        rec.spec.snapshot.as_mut().unwrap().last_run_unix = 1;
+        svc.store.upsert(rec).unwrap();
+        assert_eq!(
+            svc.running_volume_users(vol.id).unwrap().len(),
+            1,
+            "state {:?}",
+            svc.get(vm.id).unwrap().state
+        );
+        svc.run_due_snapshot_schedules().await;
+        assert_eq!(svc.volumes.get_volume(vol.id).unwrap().snapshots.len(), 2);
+        assert_eq!(
+            svc.get(vm.id).unwrap().spec.snapshot.unwrap().last_run_unix,
+            1
+        );
     }
 
     #[tokio::test]

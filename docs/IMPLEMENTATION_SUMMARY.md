@@ -299,6 +299,8 @@ pertisk audit
 - **Serial and Display** are separate console tabs
 - **Snapshot rollback** needs the guest stopped. A running guest can still be snapshotted (QEMU qcow2, RBD, or ZFS)
 - **Guest backup restore** needs the guest stopped. It copies a local export back onto the attached replica disks. RBD and ZFS are not part of that export
+- **Scheduled backups** only run while the guest is stopped. A running guest is skipped until the next due tick
+- **Scheduled snapshots** run while the guest is running when the disk is qcow2, RBD, or ZFS. A raw disk is skipped until the guest is stopped. Retention removes only `sched-` names
 - **Cluster coordination** is best-effort (network partitions possible)
 
 ## Deployment Recommendations

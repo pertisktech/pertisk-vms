@@ -454,6 +454,8 @@ mod tests {
                 autostart_order: 0,
                 ssh_user: None,
                 group: None,
+                backup: None,
+                snapshot: None,
             },
             state: VmState::Running,
             pid: None,

@@ -655,6 +655,46 @@ impl VolumePool {
         Ok(record)
     }
 
+    /// Remove one snapshot from the backend and from inventory.
+    pub fn delete_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
+        let name = name.trim();
+        let mut record = self.get_volume(id)?;
+        let idx = record
+            .snapshots
+            .iter()
+            .position(|snap| snap.name == name)
+            .ok_or_else(|| StorageError::SnapshotNotFound(name.to_string()))?;
+        let snap = record.snapshots[idx].clone();
+        if record.backend == StorageBackend::Rbd {
+            rbd_client(&record).snapshot_remove(&record.name, name)?;
+        } else if record.backend == StorageBackend::Zfs {
+            let dataset = Zfs::dataset_from_path(&record.path)?;
+            Zfs::new(None).destroy_snapshot(&dataset, name)?;
+        } else if snap.path.is_none() && record.format == VolumeFormat::Qcow2 {
+            self.qemu.snapshot_delete(&record.path, name)?;
+        } else if let Some(path) = snap.path.as_ref() {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        record.snapshots.remove(idx);
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    /// Drop a snapshot record after QEMU already deleted it from an open qcow2.
+    pub fn forget_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
+        let name = name.trim();
+        let mut record = self.get_volume(id)?;
+        let before = record.snapshots.len();
+        record.snapshots.retain(|snap| snap.name != name);
+        if record.snapshots.len() == before {
+            return Err(StorageError::SnapshotNotFound(name.to_string()));
+        }
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
     pub fn restore_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
         let record = self.get_volume(id)?;
         let snap = record

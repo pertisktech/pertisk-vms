@@ -601,6 +601,88 @@ pub struct CreateVmBackupRequest {
     pub notes: Option<String>,
 }
 
+/// Automatic local-disk backup while the guest is stopped.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmBackupSchedule {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hours between scheduled backups. Minimum 1.
+    #[serde(default = "default_backup_interval_hours")]
+    pub interval_hours: u32,
+    /// Keep this many newest backups after a scheduled run. Zero keeps all.
+    #[serde(default = "default_backup_keep")]
+    pub keep: u32,
+    /// Last successful scheduled backup (unix seconds). Operators do not set this.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub last_run_unix: u64,
+}
+
+fn default_backup_interval_hours() -> u32 {
+    24
+}
+
+fn default_backup_keep() -> u32 {
+    3
+}
+
+impl Default for VmBackupSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: default_backup_interval_hours(),
+            keep: default_backup_keep(),
+            last_run_unix: 0,
+        }
+    }
+}
+
+/// Configure or replace a guest's backup schedule. `last_run_unix` is preserved server-side.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetBackupScheduleRequest {
+    pub enabled: bool,
+    #[serde(default = "default_backup_interval_hours")]
+    pub interval_hours: u32,
+    #[serde(default = "default_backup_keep")]
+    pub keep: u32,
+}
+
+/// Automatic disk snapshot. A running guest is snapshotted in place when the disk allows it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmSnapshotSchedule {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hours between scheduled snapshots. Minimum 1.
+    #[serde(default = "default_backup_interval_hours")]
+    pub interval_hours: u32,
+    /// Keep this many newest scheduled snapshots. Zero keeps all. Operator snapshots stay.
+    #[serde(default = "default_backup_keep")]
+    pub keep: u32,
+    /// Last successful scheduled snapshot (unix seconds). Operators do not set this.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub last_run_unix: u64,
+}
+
+impl Default for VmSnapshotSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: default_backup_interval_hours(),
+            keep: default_backup_keep(),
+            last_run_unix: 0,
+        }
+    }
+}
+
+/// Configure or replace a guest's snapshot schedule. `last_run_unix` is preserved server-side.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSnapshotScheduleRequest {
+    pub enabled: bool,
+    #[serde(default = "default_backup_interval_hours")]
+    pub interval_hours: u32,
+    #[serde(default = "default_backup_keep")]
+    pub keep: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
@@ -1041,6 +1123,12 @@ pub struct VmSpec {
     /// Placement group. A new guest avoids nodes that already hold this group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Automatic local disk backup while the guest is stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<VmBackupSchedule>,
+    /// Automatic disk snapshot, including while the guest is running when the disk allows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<VmSnapshotSchedule>,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -1069,6 +1157,20 @@ impl VmSpec {
         }
         if self.memory_mib < 64 {
             return Err(TypesError::InvalidSpec("memory_mib must be >= 64".into()));
+        }
+        if let Some(sched) = &self.backup {
+            if sched.interval_hours == 0 {
+                return Err(TypesError::InvalidSpec(
+                    "backup interval_hours must be >= 1".into(),
+                ));
+            }
+        }
+        if let Some(sched) = &self.snapshot {
+            if sched.interval_hours == 0 {
+                return Err(TypesError::InvalidSpec(
+                    "snapshot interval_hours must be >= 1".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -1775,6 +1877,8 @@ mod tests {
             autostart_order: 0,
             ssh_user: None,
             group: None,
+            backup: None,
+            snapshot: None,
         };
         assert!(spec.validate().is_err());
     }

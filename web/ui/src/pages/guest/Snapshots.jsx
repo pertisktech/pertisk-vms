@@ -14,16 +14,19 @@ function osDisks(vm, volumes) {
 }
 
 export default function GuestSnapshots() {
-  const { vm, canWrite, inv } = useGuest()
+  const { vm, vmId, canWrite, inv } = useGuest()
   const confirm = useConfirm()
   const disks = useMemo(() => osDisks(vm, inv.volumes), [vm, inv.volumes])
   const [dialog, setDialog] = useState(false)
+  const [schedDialog, setSchedDialog] = useState(false)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState(null)
+  const [form, setForm] = useState({ enabled: true, interval_hours: 24, keep: 3 })
   const running = vm?.state === 'running'
+  const schedule = vm?.spec?.snapshot || null
 
   const entries = useMemo(() => {
     const byName = new Map()
@@ -76,6 +79,58 @@ export default function GuestSnapshots() {
     }
   }
 
+  function openSchedule() {
+    setError('')
+    setForm({
+      enabled: schedule ? Boolean(schedule.enabled) : true,
+      interval_hours: Number(schedule?.interval_hours) || 24,
+      keep: schedule?.keep == null ? 3 : Number(schedule.keep),
+    })
+    setSchedDialog(true)
+  }
+
+  async function saveSchedule(e) {
+    e?.preventDefault?.()
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/v1/vms/${vmId}/snapshot-schedule`, {
+        method: 'PUT',
+        body: {
+          enabled: Boolean(form.enabled),
+          interval_hours: Math.max(1, Number(form.interval_hours) || 24),
+          keep: Math.max(0, Number(form.keep) || 0),
+        },
+      })
+      setSchedDialog(false)
+      await inv.refresh()
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function clearSchedule() {
+    const ok = await confirm({
+      title: 'Clear snapshot schedule',
+      message: 'Remove the automatic snapshot job for this guest? Existing snapshots stay.',
+      confirmLabel: 'Clear',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/v1/vms/${vmId}/snapshot-schedule`, { method: 'DELETE' })
+      setSchedDialog(false)
+      await inv.refresh()
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function rollback() {
     if (!selected) return
     if (running) {
@@ -117,6 +172,38 @@ export default function GuestSnapshots() {
           </button>
         </div>
       )}
+
+      <section className="pve-card-panel">
+        <header className="pve-card-panel-head">
+          <h3>Snapshot schedule</h3>
+          {canWrite && (
+            <div className="pve-card-panel-actions">
+              <Btn icon="pencil" variant="secondary" onClick={openSchedule} disabled={busy}>
+                Edit
+              </Btn>
+            </div>
+          )}
+        </header>
+        <dl className="pve-kv pve-backup-kv">
+          <dt>Job</dt>
+          <dd className={`mono-inline ${schedule?.enabled ? '' : 'muted'}`}>
+            {!schedule ? 'Not configured' : schedule.enabled ? 'Enabled' : 'Disabled'}
+          </dd>
+          <dt>Schedule</dt>
+          <dd className="mono-inline muted">{schedule ? `every ${schedule.interval_hours || 24}h` : '—'}</dd>
+          <dt>Last run</dt>
+          <dd className="mono-inline muted">
+            {schedule?.last_run_unix ? formatUnix(schedule.last_run_unix) : schedule ? 'never' : '—'}
+          </dd>
+          <dt>Retention</dt>
+          <dd className="mono-inline">{!schedule || !schedule.keep ? 'Keep all' : `Keep ${schedule.keep}`}</dd>
+          <dt>Mode</dt>
+          <dd className="mono-inline muted">automatic, including while the guest is running</dd>
+        </dl>
+        <p className="muted">
+          Named snapshots you take yourself are kept. Retention only removes snapshots named sched-.
+        </p>
+      </section>
 
       <section className="pve-card-panel">
         <header className="pve-card-panel-head">
@@ -187,6 +274,63 @@ export default function GuestSnapshots() {
           </div>
         )}
       </section>
+
+      {schedDialog && (
+        <Modal
+          title="Edit snapshot schedule"
+          hint="Runs on this guest's disks. A running qcow2, RBD, or ZFS disk is snapshotted in place. A raw disk waits until the guest is stopped."
+          onClose={() => setSchedDialog(false)}
+          footer={
+            <>
+              {schedule && (
+                <button type="button" className="secondary" onClick={clearSchedule} disabled={busy}>
+                  Clear
+                </button>
+              )}
+              <button type="button" className="secondary" onClick={() => setSchedDialog(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="snap-sched-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          {error && <div className="error">{error}</div>}
+          <form id="snap-sched-form" onSubmit={saveSchedule}>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enabled}
+                onChange={(e) => setForm((f) => ({ ...f, enabled: e.target.checked }))}
+              />
+              <span className="chk-box" />
+              <span className="chk-label">Enabled</span>
+            </label>
+            <div className="field">
+              <label htmlFor="snap-every">Every (hours)</label>
+              <input
+                id="snap-every"
+                type="number"
+                min="1"
+                value={form.interval_hours}
+                onChange={(e) => setForm((f) => ({ ...f, interval_hours: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="snap-keep">Keep</label>
+              <input
+                id="snap-keep"
+                type="number"
+                min="0"
+                value={form.keep}
+                onChange={(e) => setForm((f) => ({ ...f, keep: e.target.value }))}
+              />
+              <p className="field-hint">Newest scheduled snapshots to keep. Zero keeps all.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {dialog && (
         <Modal

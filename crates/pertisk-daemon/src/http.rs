@@ -24,8 +24,10 @@ use pertisk_types::{
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DrainRequest,
     HeartbeatMessage, ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord,
-    ResizeVolumeRequest, SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, StorageBackend,
-    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord, WitnessClaim,
+    ResizeVolumeRequest, SetBackupScheduleRequest, SetHaArmedRequest, SetRepositoryRequest,
+    SetSnapshotScheduleRequest,
+    SnapshotRequest, StorageBackend, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
+    VolumeId, VolumeRecord, WitnessClaim,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -79,6 +81,14 @@ pub fn router(service: Service) -> Router {
         .route(
             "/v1/vms/{id}/backups/{backup_id}/restore",
             post(restore_vm_backup),
+        )
+        .route(
+            "/v1/vms/{id}/backup-schedule",
+            put(set_backup_schedule).delete(clear_backup_schedule),
+        )
+        .route(
+            "/v1/vms/{id}/snapshot-schedule",
+            put(set_snapshot_schedule).delete(clear_snapshot_schedule),
         )
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
@@ -841,6 +851,76 @@ async fn restore_vm_backup(
             "vm.backup.restore",
             format!("{id}/{backup_id}"),
             service.restore_vm_backup(id, &backup_id),
+        )
+        .await?,
+    ))
+}
+
+async fn set_snapshot_schedule(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<SetSnapshotScheduleRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.snapshot.schedule",
+            id.to_string(),
+            service.set_snapshot_schedule(id, req),
+        )
+        .await?,
+    ))
+}
+
+async fn clear_snapshot_schedule(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.snapshot.schedule.clear",
+            id.to_string(),
+            service.clear_snapshot_schedule(id),
+        )
+        .await?,
+    ))
+}
+
+async fn set_backup_schedule(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<SetBackupScheduleRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.backup.schedule",
+            id.to_string(),
+            service.set_backup_schedule(id, req),
+        )
+        .await?,
+    ))
+}
+
+async fn clear_backup_schedule(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.backup.schedule.clear",
+            id.to_string(),
+            service.clear_backup_schedule(id),
         )
         .await?,
     ))

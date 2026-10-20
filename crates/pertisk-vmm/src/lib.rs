@@ -179,6 +179,20 @@ impl VmmBackend {
         }
     }
 
+    pub async fn snapshot_delete_internal(
+        &self,
+        record: &VmRecord,
+        device: &str,
+        name: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.snapshot_delete_internal(record, device, name).await,
+            _ => Err(VmmError::Message(
+                "live snapshot delete requires the qemu driver".into(),
+            )),
+        }
+    }
+
     pub async fn migrate_to(&self, record: &VmRecord, uri: &str) -> Result<()> {
         match self {
             Self::Qemu(driver) => {
