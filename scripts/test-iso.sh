@@ -143,6 +143,8 @@ bash -n "$ROOT/packaging/installer/pertisk-install-ui" \
   || { echo "FAIL bash -n pertisk-install-ui"; fail=1; }
 grep -q '/dev/ttyS0' "$ROOT/packaging/installer/pertisk-install-ui" \
   || { echo "FAIL installer must print its URL on the serial console"; fail=1; }
+grep -q 'console/active' "$ROOT/packaging/installer/pertisk-install-ui" \
+  || { echo "FAIL installer must not print the URL twice when the console is serial"; fail=1; }
 python3 "$ROOT/packaging/installer/test_kickstart.py" \
   || { echo "FAIL installer kickstart generator"; fail=1; }
 grep -q 'images/product.img' "$ROOT/scripts/build-alma-iso.sh" \

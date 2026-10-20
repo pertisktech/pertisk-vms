@@ -636,6 +636,7 @@ impl Service {
             if enrich_observed_ips(vm, &run_dir) {
                 let _ = self.persist_observed_nic_addrs(vm.id, &vm.spec.nets);
             }
+            note_public_ipv6_on_console(vm);
         }
     }
 
@@ -653,6 +654,7 @@ impl Service {
                 vm = latest;
             }
         }
+        note_public_ipv6_on_console(&vm);
         Ok(vm)
     }
 
@@ -4805,6 +4807,57 @@ fn ipv4_from_serial_log(path: &Path, mac: Option<&str>) -> Option<String> {
     last
 }
 
+/// The VM console is the guest serial log. TUI and the web UI already know the
+/// public IPv6; write it here when the guest boot text never printed it.
+fn note_public_ipv6_on_console(vm: &VmRecord) {
+    let Some(path) = vm
+        .serial_log
+        .as_deref()
+        .or(vm.spec.serial_log.as_deref())
+    else {
+        return;
+    };
+    let existing = serial_tail_text(path);
+    let mut extra = String::new();
+    for nic in &vm.spec.nets {
+        let Some(ip) = nic.ipv6.as_deref().map(str::trim).filter(|ip| is_public_ipv6(ip)) else {
+            continue;
+        };
+        if existing.contains(ip) || extra.contains(ip) {
+            continue;
+        }
+        extra.push_str("IPv6 address: ");
+        extra.push_str(ip);
+        extra.push('\n');
+    }
+    if extra.is_empty() {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = file.write_all(extra.as_bytes());
+    }
+}
+
+fn serial_tail_text(path: &Path) -> String {
+    let Ok(data) = std::fs::read(path) else {
+        return String::new();
+    };
+    let start = data.len().saturating_sub(64 * 1024);
+    String::from_utf8_lossy(&data[start..]).into_owned()
+}
+
+fn is_public_ipv6(ip: &str) -> bool {
+    let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() else {
+        return false;
+    };
+    !addr.is_loopback()
+        && !addr.is_unspecified()
+        && !addr.is_multicast()
+        && !addr.is_unicast_link_local()
+        && !addr.is_unique_local()
+}
+
 fn ipv6_from_serial_log(path: &Path, mac: Option<&str>, allow_without_mac: bool) -> Option<String> {
     let data = std::fs::read(path).ok()?;
     let start = data.len().saturating_sub(64 * 1024);
@@ -5446,6 +5499,50 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
             ipv6_from_serial_log(&path, Some("52:54:00:79:37:c4"), false).as_deref(),
             Some("2405:9800:b901:194c:5054:ff:fe79:37c4")
         );
+    }
+
+    #[test]
+    fn console_gains_public_ipv6_when_boot_text_omits_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial.log");
+        std::fs::write(&path, "IPv4 address for enp0s5: 10.1.1.16\n").unwrap();
+        let mut spec = spec("ubuntu-1");
+        spec.nets.push(NetSpec {
+            network_id: None,
+            tap: Some("tap0".into()),
+            mac: Some("52:54:00:79:37:ca".into()),
+            ip: Some("10.1.1.16".into()),
+            ipv6: Some("2405:9800:b901:194c:5054:ff:fe79:37ca".into()),
+            dual_stack: true,
+        });
+        spec.nets.push(NetSpec {
+            network_id: None,
+            tap: None,
+            mac: Some("52:54:00:00:00:01".into()),
+            ip: None,
+            ipv6: Some("fe80::1".into()),
+            dual_stack: false,
+        });
+        let vm = VmRecord {
+            id: vm_id(101),
+            spec,
+            state: VmState::Running,
+            pid: None,
+            api_socket: None,
+            serial_log: Some(path.clone()),
+            console_socket: None,
+            graphics_socket: None,
+            last_error: None,
+            node_id: None,
+            template: false,
+        };
+        note_public_ipv6_on_console(&vm);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("IPv6 address: 2405:9800:b901:194c:5054:ff:fe79:37ca\n"), "{text}");
+        assert!(!text.contains("fe80::1"), "{text}");
+        note_public_ipv6_on_console(&vm);
+        let again = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, again);
     }
 
     #[tokio::test]

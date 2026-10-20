@@ -535,14 +535,14 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Reprint the live IPv4 on serial after DHCP settles. Cloud-init ci-info runs
-/// too early; the first lease is what Terraform used to capture.
+/// Reprint settled addresses on the serial console. Cloud-init runs before
+/// SLAAC, so the public IPv6 is missing from the VM console unless we wait.
 fn schedule_netinfo(root: &Path) {
     let unit_dir = root.join("etc/systemd/system");
     let _ = fs::create_dir_all(&unit_dir);
     let unit = "\
 [Unit]\n\
-Description=Print settled guest IPv4 on serial for pertisk\n\
+Description=Print settled guest IPv4 and public IPv6 on serial for pertisk\n\
 After=network-online.target\n\
 Wants=network-online.target\n\
 \n\
@@ -562,26 +562,60 @@ WantedBy=multi-user.target\n";
     let libexec = root.join("usr/libexec");
     let _ = fs::create_dir_all(&libexec);
     let script = r#"#!/bin/sh
-sleep 8
-{
-  echo
+emit() {
+  for tty in /dev/ttyS0 /dev/hvc0 /dev/console /dev/tty0; do
+    [ -c "$tty" ] || continue
+    printf '%s\n' "$1" >"$tty" 2>/dev/null || true
+  done
+}
+# Public GUA only. Link-local and unique-local (fd00/fc00) stay off the console.
+public6() {
+  ip -6 -o addr show dev "$1" scope global 2>/dev/null | awk '
+    {
+      addr=$4
+      sub("/.*","",addr)
+      if (addr ~ /^[fF][eE]80:/) next
+      if (index($0, "temporary") > 0) next
+      if (addr ~ /^[fF][cCdD]/) next
+      print addr
+      exit
+    }
+  '
+}
+echo
+for nic in /sys/class/net/*; do
+  name=$(basename "$nic")
+  [ "$name" = lo ] && continue
+  mac=$(cat "$nic/address" 2>/dev/null) || continue
+  [ "$mac" = "00:00:00:00:00:00" ] && continue
+  cidr=$(ip -4 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4; exit}')
+  if [ -n "$cidr" ]; then
+    addr=${cidr%/*}
+    emit "ci-info: | $name | True |         $addr         | 255.255.255.0 | global | $mac |"
+  fi
+done
+have6=""
+attempt=0
+while [ "$attempt" -lt 10 ]; do
+  missing=0
   for nic in /sys/class/net/*; do
     name=$(basename "$nic")
     [ "$name" = lo ] && continue
-    mac=$(cat "$nic/address" 2>/dev/null) || continue
-    cidr=$(ip -4 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4}' | head -1)
-    cidr6=$(ip -6 -o addr show dev "$name" scope global 2>/dev/null | awk '{print $4}' | head -1)
-    [ -n "$cidr" ] || [ -n "$cidr6" ] || continue
-    if [ -n "$cidr" ]; then
-      addr=${cidr%/*}
-      echo "ci-info: | $name | True |         $addr         | 255.255.255.0 | global | $mac |"
-    fi
-    if [ -n "$cidr6" ]; then
-      addr6=${cidr6%/*}
-      echo "IPv6 address for $name: $addr6 $mac"
+    case " $have6 " in
+      *" $name "*) continue ;;
+    esac
+    addr6=$(public6 "$name")
+    if [ -n "$addr6" ]; then
+      emit "IPv6 address for $name: $addr6"
+      have6="$have6 $name"
+    else
+      missing=1
     fi
   done
-} >/dev/ttyS0 2>/dev/null || true
+  [ "$missing" -eq 0 ] && break
+  attempt=$((attempt + 1))
+  sleep 2
+done
 exit 0
 "#;
     let path = libexec.join("pertisk-netinfo");
@@ -1607,6 +1641,15 @@ mod tests {
         assert!(root
             .join("etc/systemd/system/pertisk-netinfo.service")
             .is_file());
+        let netinfo = fs::read_to_string(root.join("usr/libexec/pertisk-netinfo")).unwrap();
+        assert!(
+            netinfo.contains("IPv6 address for"),
+            "guest console must print the public IPv6: {netinfo}"
+        );
+        assert!(
+            !netinfo.contains("print ula"),
+            "guest console must not fall back to a private IPv6: {netinfo}"
+        );
         assert!(root.join("usr/libexec/pertisk-netinfo").is_file());
         let _ = fs::remove_dir_all(&root);
     }
