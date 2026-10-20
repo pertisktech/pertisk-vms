@@ -291,3 +291,29 @@ func TestFindNetworkByName(t *testing.T) {
 		t.Fatalf("by name: %v %+v", err, net)
 	}
 }
+
+func TestGroupJSON(t *testing.T) {
+	empty := ""
+	raw, err := json.Marshal(UpdateVMRequest{Group: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"group":""}` {
+		t.Fatalf("clear group: %s", raw)
+	}
+	raw, err = json.Marshal(UpdateVMRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "group") {
+		t.Fatalf("omitted group should stay omitted: %s", raw)
+	}
+	web := "web"
+	raw, err = json.Marshal(CloneVMRequest{Name: "web-1", Group: &web})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"group":"web"`) {
+		t.Fatalf("clone group: %s", raw)
+	}
+}

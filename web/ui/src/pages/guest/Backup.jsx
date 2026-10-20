@@ -49,6 +49,29 @@ export default function GuestBackup() {
     }
   }
 
+  async function restoreBackup(backup) {
+    const ok = await confirm({
+      title: 'Restore backup',
+      message: `Replace this guest's disks with ${backup.name || backup.id}? The guest stays stopped.`,
+      confirmLabel: 'Restore',
+    })
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/v1/vms/${vmId}/backups/${encodeURIComponent(backup.id)}/restore`, {
+        method: 'POST',
+        body: {},
+      })
+      await inv.refresh()
+      await refresh()
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function removeBackup(id) {
     const ok = await confirm({
       title: 'Delete backup',
@@ -91,7 +114,7 @@ export default function GuestBackup() {
           <dt>Storage</dt>
           <dd className="mono-inline">local backups/</dd>
           <dt>Mode</dt>
-          <dd className="mono-inline muted">manual export (guest stopped)</dd>
+          <dd className="mono-inline muted">manual export and restore (guest stopped, local disks)</dd>
           <dt>Retention</dt>
           <dd className="mono-inline muted">Keep all</dd>
         </dl>
@@ -143,14 +166,25 @@ export default function GuestBackup() {
                     <td className="muted">{(b.disks || []).length}</td>
                     <td className="pve-hw-act">
                       {canWrite && (
-                        <Btn
-                          icon="trash"
-                          variant="danger"
-                          disabled={busy}
-                          onClick={() => removeBackup(b.id)}
-                        >
-                          Delete
-                        </Btn>
+                        <>
+                          <Btn
+                            icon="refresh"
+                            variant="secondary"
+                            disabled={busy || running}
+                            title={running ? 'Stop the guest first' : 'Replace the current disks'}
+                            onClick={() => restoreBackup(b)}
+                          >
+                            Restore
+                          </Btn>
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            disabled={busy}
+                            onClick={() => removeBackup(b.id)}
+                          >
+                            Delete
+                          </Btn>
+                        </>
                       )}
                     </td>
                   </tr>

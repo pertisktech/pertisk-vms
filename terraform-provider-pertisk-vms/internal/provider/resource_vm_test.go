@@ -170,13 +170,34 @@ func TestNicsToModelKeepsPlannedDualStack(t *testing.T) {
 }
 
 func TestGuestMatchesPlan(t *testing.T) {
-	plan := vmModel{Name: types.StringValue("rocky-1")}
-	ok := &client.VM{ID: "105", Spec: client.VMSpec{Name: "rocky-1"}}
+	plan := vmModel{Name: types.StringValue("rocky-1"), Group: types.StringValue("web")}
+	ok := &client.VM{ID: "105", Spec: client.VMSpec{Name: "rocky-1", Group: "web"}}
 	if err := guestMatchesPlan(plan, ok); err != nil {
 		t.Fatal(err)
 	}
 	err := guestMatchesPlan(plan, &client.VM{ID: "105", Spec: client.VMSpec{Name: "almalinux-2"}})
 	if err == nil || !strings.Contains(err.Error(), "almalinux-2") {
 		t.Fatalf("got %v", err)
+	}
+	err = guestMatchesPlan(plan, &client.VM{ID: "105", Spec: client.VMSpec{Name: "rocky-1"}})
+	if err == nil || !strings.Contains(err.Error(), "group") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlannedGroupTrims(t *testing.T) {
+	if plannedGroup(types.StringValue("  web  ")) != "web" {
+		t.Fatal("trim")
+	}
+	if plannedGroup(types.StringNull()) != "" || plannedGroup(types.StringUnknown()) != "" {
+		t.Fatal("empty")
+	}
+}
+
+func TestVmToModelGroup(t *testing.T) {
+	vm := &client.VM{ID: "100", Spec: client.VMSpec{Name: "web", Group: " web "}, State: "created"}
+	got := vmToModel(t.Context(), vm, vmModel{})
+	if got.Group.ValueString() != "web" {
+		t.Fatalf("group %q", got.Group.ValueString())
 	}
 }

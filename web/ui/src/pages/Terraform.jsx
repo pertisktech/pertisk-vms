@@ -162,6 +162,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
         `started    = ${vm.state === 'running'}`,
         `ha         = ${spec.ha !== false}`,
       ]
+      if (spec.group) rows.push(`group      = ${quote(spec.group)}`)
       if (spec.autostart) rows.push('autostart  = true')
       if (spec.console_type && spec.console_type !== 'serial') {
         rows.push(`console_type = ${quote(spec.console_type)}`)
@@ -210,6 +211,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
 #   vcpus      = 2
 #   memory_mib = 2048
 #   started    = true
+#   group      = "web"
 #   disk { size = "32G" }
 #   nic { network_id = pertisk_vms_network.lan.id }
 # }`)

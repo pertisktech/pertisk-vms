@@ -209,7 +209,7 @@ When creating or restarting a VM:
    - Prefer nodes that already have VM's volumes (Ceph/RBD)
    - Fall back to least-loaded if no affinity match
 
-4. **Group**: `pertisk vm create --group web`
+4. **Group**: `pertisk vm create --group web`, clone with `--group`, or `group = "web"` on `pertisk_vms_vm`
    - A new guest avoids nodes that already hold another guest in that group
    - If every node that fits already has the group, the least-loaded node is used
    - An explicit migrate target is kept

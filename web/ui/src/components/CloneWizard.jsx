@@ -37,6 +37,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
       memory_mib: memory,
       diskGib,
       ha: true,
+      group: source?.spec?.group || '',
       autostart: false,
       linked: false,
       networkId: source?.spec?.nets?.[0]?.network_id || networks[0]?.id || '',
@@ -102,6 +103,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
           memory_mib: Number(form.memory_mib),
           disk_size_bytes: parseSize(`${Math.max(minDiskGib, Number(form.diskGib) || minDiskGib)}G`),
           ha: form.ha,
+          group: form.group.trim(),
           autostart: form.autostart,
           network_id: form.networkId || undefined,
           ip: form.nicIp.trim() || undefined,
@@ -414,6 +416,19 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
                   <small>High availability</small>
                 </span>
               </label>
+              <div className="field">
+                <label htmlFor="clone-group">Placement group</label>
+                <input
+                  id="clone-group"
+                  value={form.group}
+                  onChange={(e) => set({ group: e.target.value })}
+                  placeholder="web"
+                />
+                <p className="field-hint">
+                  Guests that share a group are placed on different nodes when another node fits. Leave empty to clear
+                  a group copied from the source.
+                </p>
+              </div>
               <label className="chk">
                 <input
                   type="checkbox"

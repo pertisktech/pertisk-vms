@@ -1034,6 +1034,97 @@ impl Service {
         Ok(())
     }
 
+    /// Copy a stopped guest's backup images back onto the local disks that are still attached.
+    pub async fn restore_vm_backup(
+        &self,
+        id: VmId,
+        backup_id: &str,
+    ) -> Result<VmBackupRecord, DaemonError> {
+        let vm = self.store.get(id)?;
+        self.require_not_template(&vm, "restore")?;
+        self.require_stopped(&vm, "restore")?;
+        let backup = self
+            .load_backups()?
+            .into_iter()
+            .find(|item| item.vm_id == id && item.id == backup_id)
+            .ok_or_else(|| DaemonError::BackupNotFound(backup_id.to_string()))?;
+        if backup.disks.is_empty() {
+            return Err(
+                pertisk_types::TypesError::InvalidSpec("backup has no disks".into()).into(),
+            );
+        }
+
+        let mut jobs = Vec::new();
+        for disk in &backup.disks {
+            if !disk.path.is_file() {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "backup image for {} is missing",
+                    disk.name
+                ))
+                .into());
+            }
+            let attached = vm
+                .spec
+                .disks
+                .iter()
+                .any(|spec| !spec.cdrom && spec.volume_id == Some(disk.volume_id));
+            if !attached {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "backup disk {} is not attached to this guest",
+                    disk.name
+                ))
+                .into());
+            }
+            self.require_volume_idle(disk.volume_id, "restore")?;
+            let vol = self.volumes.get_volume(disk.volume_id)?;
+            if vol.backend.external() {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "{} volumes cannot be restored from a local backup",
+                    vol.backend
+                ))
+                .into());
+            }
+            jobs.push((disk.path.clone(), vol));
+        }
+
+        let volume_ids: Vec<VolumeId> = jobs.iter().map(|(_, vol)| vol.id).collect();
+        let volumes = Arc::clone(&self.volumes);
+        let restored = tokio::task::spawn_blocking(move || -> Result<(), DaemonError> {
+            for (src, vol) in &jobs {
+                let tmp = vol
+                    .path
+                    .with_extension(format!("{}.restore", vol.format.extension()));
+                if let Err(err) = volumes.export_image(src, &tmp, vol.format) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(err.into());
+                }
+                if let Err(err) = std::fs::rename(&tmp, &vol.path) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(DaemonError::Storage(StorageError::Message(format!(
+                        "replace {}: {err}",
+                        vol.path.display()
+                    ))));
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| {
+            DaemonError::Storage(StorageError::Message(format!(
+                "backup restore task failed: {err}"
+            )))
+        })?;
+        restored?;
+
+        for volume_id in volume_ids {
+            let record = self.volumes.get_volume(volume_id)?;
+            self.sync_volume_replicas(&record).await;
+        }
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(backup)
+    }
+
     fn backups_path(&self) -> PathBuf {
         self.data_dir.join("state/backups.json")
     }
@@ -6077,6 +6168,39 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         assert!(svc.delete_volume(vol.id).await.is_err());
         svc.detach_disk(vm.id, vol.id).unwrap();
         svc.delete_volume(vol.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restores_a_stopped_guest_backup() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(106), spec("backup")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        std::fs::write(&vol.path, b"original-disk").unwrap();
+        let backup = svc
+            .create_vm_backup(vm.id, CreateVmBackupRequest::default())
+            .await
+            .unwrap();
+        std::fs::write(&vol.path, b"changed-disk").unwrap();
+        svc.start(vm.id).await.unwrap();
+        let err = svc.restore_vm_backup(vm.id, &backup.id).await.unwrap_err();
+        assert!(matches!(err, DaemonError::MustBeStopped(_, "restore")));
+        svc.stop(vm.id).await.unwrap();
+        svc.restore_vm_backup(vm.id, &backup.id).await.unwrap();
+        let got = std::fs::read(&vol.path).unwrap();
+        assert_eq!(got, b"original-disk");
+        let missing = svc.restore_vm_backup(vm.id, "missing").await.unwrap_err();
+        assert!(matches!(missing, DaemonError::BackupNotFound(_)));
     }
 
     #[tokio::test]

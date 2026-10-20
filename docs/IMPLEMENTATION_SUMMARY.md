@@ -298,6 +298,7 @@ pertisk audit
 - **Graphics console** is QEMU VNC on Linux (USB tablet). Mock has no display
 - **Serial and Display** are separate console tabs
 - **Snapshot rollback** needs the guest stopped. A running guest can still be snapshotted (QEMU qcow2, RBD, or ZFS)
+- **Guest backup restore** needs the guest stopped. It copies a local export back onto the attached replica disks. RBD and ZFS are not part of that export
 - **Cluster coordination** is best-effort (network partitions possible)
 
 ## Deployment Recommendations
@@ -337,7 +338,7 @@ pertisk cluster status
 - Hardware proof of the flashable node image
 - GPU sharing, a continuous balancer that moves guests on its own
 
-Terraform provider: `terraform-provider-pertisk-vms/`, UI at Datacenter → Terraform.
+Terraform provider: `terraform-provider-pertisk-vms/`, UI at Datacenter → Terraform. `pertisk_vms_vm.group` sets the placement group.
 
 ## Building & Testing
 

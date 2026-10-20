@@ -44,6 +44,7 @@ Skip:  Ceph / vSAN / custom distributed FS
   [x] Local directory volume store (raw + qcow2)
   [x] Create / resize / delete; attach virtio-block
   [x] ISO library + CD-ROM attach
+  [x] Guest disk backup and restore while the guest is stopped (local replica files)
   [x] qcow2 snapshot + restore. A running QEMU guest can snapshot qcow2 in place
       (guest agent is frozen when it answers). RBD and ZFS snapshot while open.
       Rollback still needs the guest stopped. Raw files cannot snapshot while open.

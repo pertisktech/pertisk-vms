@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -50,6 +51,7 @@ type vmDataModel struct {
 	State     types.String `tfsdk:"state"`
 	NodeID    types.String `tfsdk:"node_id"`
 	HA        types.Bool   `tfsdk:"ha"`
+	Group     types.String `tfsdk:"group"`
 	Template  types.Bool   `tfsdk:"template"`
 }
 
@@ -116,6 +118,7 @@ func (d *vmDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, res
 			"state":      schema.StringAttribute{Computed: true},
 			"node_id":    schema.StringAttribute{Computed: true},
 			"ha":         schema.BoolAttribute{Computed: true},
+			"group":      schema.StringAttribute{Computed: true},
 			"template":   schema.BoolAttribute{Computed: true},
 		},
 	}
@@ -148,6 +151,7 @@ func (d *templateDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 			"state":      schema.StringAttribute{Computed: true},
 			"node_id":    schema.StringAttribute{Computed: true},
 			"ha":         schema.BoolAttribute{Computed: true},
+			"group":      schema.StringAttribute{Computed: true},
 			"template":   schema.BoolAttribute{Computed: true},
 		},
 	}
@@ -288,6 +292,7 @@ func vmToData(vm *client.VM) vmDataModel {
 		MemoryMiB: types.Int64Value(int64(vm.Spec.MemoryMiB)),
 		State:     types.StringValue(vm.State),
 		HA:        types.BoolValue(vm.Spec.HA),
+		Group:     types.StringValue(strings.TrimSpace(vm.Spec.Group)),
 		Template:  types.BoolValue(vm.Template),
 	}
 	if vm.NodeID != "" {

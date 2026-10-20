@@ -94,6 +94,7 @@ type VMSpec struct {
 	Autostart      bool   `json:"autostart,omitempty"`
 	AutostartDelay uint64 `json:"autostart_delay,omitempty"`
 	AutostartOrder uint32 `json:"autostart_order,omitempty"`
+	Group          string `json:"group,omitempty"`
 }
 
 type VM struct {
@@ -115,6 +116,7 @@ type CreateVMRequest struct {
 	Autostart      bool   `json:"autostart,omitempty"`
 	AutostartDelay uint64 `json:"autostart_delay,omitempty"`
 	AutostartOrder uint32 `json:"autostart_order,omitempty"`
+	Group          string `json:"group,omitempty"`
 	Kernel         string `json:"kernel,omitempty"`
 	Initramfs      string `json:"initramfs,omitempty"`
 	Firmware       string `json:"firmware,omitempty"`
@@ -129,6 +131,8 @@ type UpdateVMRequest struct {
 	Autostart      *bool   `json:"autostart,omitempty"`
 	AutostartDelay *uint64 `json:"autostart_delay,omitempty"`
 	AutostartOrder *uint32 `json:"autostart_order,omitempty"`
+	// Empty string clears the group. Nil leaves the current group.
+	Group *string `json:"group,omitempty"`
 }
 
 type CloudInit struct {
@@ -149,21 +153,23 @@ type CreateTemplateRequest struct {
 }
 
 type CloneVMRequest struct {
-	ID             any        `json:"id,omitempty"`
-	Name           string     `json:"name"`
-	Linked         bool       `json:"linked,omitempty"`
-	VCPUs          *int       `json:"vcpus,omitempty"`
-	MemoryMiB      *int       `json:"memory_mib,omitempty"`
-	HA             *bool      `json:"ha,omitempty"`
-	Autostart      *bool      `json:"autostart,omitempty"`
-	AutostartDelay *uint64    `json:"autostart_delay,omitempty"`
-	AutostartOrder *uint32    `json:"autostart_order,omitempty"`
-	NetworkID      string     `json:"network_id,omitempty"`
-	IP             string     `json:"ip,omitempty"`
-	DualStack      bool       `json:"dual_stack,omitempty"`
-	CloudInit      *CloudInit `json:"cloud_init,omitempty"`
-	DiskSizeBytes  *uint64    `json:"disk_size_bytes,omitempty"`
-	Start          bool       `json:"start,omitempty"`
+	ID             any     `json:"id,omitempty"`
+	Name           string  `json:"name"`
+	Linked         bool    `json:"linked,omitempty"`
+	VCPUs          *int    `json:"vcpus,omitempty"`
+	MemoryMiB      *int    `json:"memory_mib,omitempty"`
+	HA             *bool   `json:"ha,omitempty"`
+	Autostart      *bool   `json:"autostart,omitempty"`
+	AutostartDelay *uint64 `json:"autostart_delay,omitempty"`
+	AutostartOrder *uint32 `json:"autostart_order,omitempty"`
+	// Empty string clears a group copied from the source. Nil keeps the source group.
+	Group         *string    `json:"group,omitempty"`
+	NetworkID     string     `json:"network_id,omitempty"`
+	IP            string     `json:"ip,omitempty"`
+	DualStack     bool       `json:"dual_stack,omitempty"`
+	CloudInit     *CloudInit `json:"cloud_init,omitempty"`
+	DiskSizeBytes *uint64    `json:"disk_size_bytes,omitempty"`
+	Start         bool       `json:"start,omitempty"`
 }
 
 type AttachDiskRequest struct {

@@ -581,7 +581,7 @@ pub struct VmBackupDisk {
     pub size_bytes: u64,
 }
 
-/// Manual guest disk export (list/create/delete; restore is out of scope).
+/// Manual guest disk export. Restore copies these images back onto the attached local disks.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmBackupRecord {
     pub id: String,

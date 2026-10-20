@@ -74,6 +74,7 @@ type vmModel struct {
 	VCPUs          types.Int64     `tfsdk:"vcpus"`
 	MemoryMiB      types.Int64     `tfsdk:"memory_mib"`
 	HA             types.Bool      `tfsdk:"ha"`
+	Group          types.String    `tfsdk:"group"`
 	Autostart      types.Bool      `tfsdk:"autostart"`
 	AutostartDelay types.Int64     `tfsdk:"autostart_delay"`
 	AutostartOrder types.Int64     `tfsdk:"autostart_order"`
@@ -151,6 +152,15 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 				MarkdownDescription: "Restart this guest on another node when its owner is lost. Every disk must be Ceph RBD (`backend = \"rbd\"`). Local disks stay on the lost node.",
+			},
+			"group": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString(""),
+				MarkdownDescription: "Placement group. Guests that share a group are placed on different nodes when another node fits. Leave this empty for no group. A clone sends this value, so an empty group does not keep the template's group.",
+				PlanModifiers: []planmodifier.String{
+					trimStringModifier{},
+				},
 			},
 			"autostart": schema.BoolAttribute{
 				Optional:            true,
@@ -410,6 +420,8 @@ func (r *vmResource) clone(ctx context.Context, plan vmModel) (*client.VM, error
 	body.VCPUs = &vcpus
 	body.MemoryMiB = &mem
 	body.Autostart = boolPtr(plan.Autostart.ValueBool())
+	group := plannedGroup(plan.Group)
+	body.Group = &group
 	if !plan.AutostartDelay.IsNull() && !plan.AutostartDelay.IsUnknown() {
 		v := uint64(plan.AutostartDelay.ValueInt64())
 		body.AutostartDelay = &v
@@ -473,6 +485,7 @@ func (r *vmResource) define(ctx context.Context, plan vmModel) (*client.VM, erro
 		AutostartDelay: uint64(plan.AutostartDelay.ValueInt64()),
 		AutostartOrder: uint32(plan.AutostartOrder.ValueInt64()),
 		ConsoleType:    plan.ConsoleType.ValueString(),
+		Group:          plannedGroup(plan.Group),
 	}
 	if !plan.VmID.IsNull() && !plan.VmID.IsUnknown() && plan.VmID.ValueString() != "" {
 		body.ID = client.NumericID(plan.VmID.ValueString())
@@ -623,6 +636,10 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 		v := uint32(plan.AutostartOrder.ValueInt64())
 		patch.AutostartOrder = &v
 	}
+	if plannedGroup(plan.Group) != plannedGroup(state.Group) {
+		group := plannedGroup(plan.Group)
+		patch.Group = &group
+	}
 	vm, err := r.api.UpdateVM(id, patch)
 	if err != nil {
 		resp.Diagnostics.AddError("Update guest failed", err.Error())
@@ -707,7 +724,17 @@ func guestMatchesPlan(plan vmModel, vm *client.VM) error {
 	if vm.Spec.Name != want {
 		return fmt.Errorf("API returned guest %s named %q, expected %q", vm.ID.String(), vm.Spec.Name, want)
 	}
+	if got := strings.TrimSpace(vm.Spec.Group); got != plannedGroup(plan.Group) {
+		return fmt.Errorf("API returned guest %s in group %q, expected %q", vm.ID.String(), got, plannedGroup(plan.Group))
+	}
 	return nil
+}
+
+func plannedGroup(v types.String) string {
+	if v.IsNull() || v.IsUnknown() {
+		return ""
+	}
+	return strings.TrimSpace(v.ValueString())
 }
 
 func guestIPv4(vm *client.VM) string {
@@ -822,6 +849,7 @@ func vmToModel(ctx context.Context, vm *client.VM, prev vmModel) vmModel {
 		VCPUs:          types.Int64Value(int64(vm.Spec.VCPUs)),
 		MemoryMiB:      types.Int64Value(int64(vm.Spec.MemoryMiB)),
 		HA:             types.BoolValue(vm.Spec.HA),
+		Group:          types.StringValue(strings.TrimSpace(vm.Spec.Group)),
 		Autostart:      types.BoolValue(vm.Spec.Autostart),
 		AutostartDelay: types.Int64Value(int64(vm.Spec.AutostartDelay)),
 		AutostartOrder: types.Int64Value(int64(vm.Spec.AutostartOrder)),
@@ -1005,6 +1033,9 @@ func keepPlannedBlocks(plan, state vmModel) vmModel {
 	if !plan.AutostartOrder.IsNull() && !plan.AutostartOrder.IsUnknown() {
 		state.AutostartOrder = plan.AutostartOrder
 	}
+	if !plan.Group.IsNull() && !plan.Group.IsUnknown() {
+		state.Group = plan.Group
+	}
 	return state
 }
 
@@ -1046,6 +1077,27 @@ func nicListValue(ctx context.Context, nics []nicModel) types.List {
 		return types.ListValueMust(nicObjectType, []attr.Value{})
 	}
 	return l
+}
+
+type trimStringModifier struct{}
+
+func (trimStringModifier) Description(context.Context) string {
+	return "Trim leading and trailing spaces."
+}
+
+func (m trimStringModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (trimStringModifier) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
+		return
+	}
+	trimmed := strings.TrimSpace(req.PlanValue.ValueString())
+	if trimmed == req.PlanValue.ValueString() {
+		return
+	}
+	resp.PlanValue = types.StringValue(trimmed)
 }
 
 type requiresReplaceIfConfiguredModifier struct{}

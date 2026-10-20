@@ -10,11 +10,12 @@ use pertisk_api::{
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
-    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
-    DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
-    JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId,
-    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
+    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVmBackupRequest,
+    CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult,
+    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
+    ResizeVolumeRequest, SerialChunk, SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest,
+    UpdateVmRequest, UpdatesStatus, VmBackupRecord, VmId, VmRecord, VmSpec, VolumeFormat, VolumeId,
+    VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -294,6 +295,9 @@ enum VmCommand {
         cloud_init: bool,
         #[arg(long)]
         start: bool,
+        /// Placement group for the new guest. An empty value clears a group copied from the source.
+        #[arg(long)]
+        group: Option<String>,
     },
     Disk {
         #[command(subcommand)]
@@ -307,6 +311,12 @@ enum VmCommand {
         #[command(subcommand)]
         command: NicCommand,
     },
+    /// Export or restore a stopped guest's local disks.
+    Backup {
+        id: VmId,
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
     /// Serial console. --follow tails the log; --attach is an interactive websocket.
     Console {
         id: VmId,
@@ -315,6 +325,22 @@ enum VmCommand {
         #[arg(long)]
         attach: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommand {
+    /// List backups for this guest.
+    List,
+    /// Export the guest's local disks. The guest must be stopped.
+    Create {
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Copy a backup back onto the disks still attached to this guest.
+    Restore { backup: String },
+    /// Delete a backup.
+    #[command(name = "rm")]
+    Remove { backup: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1341,6 +1367,7 @@ async fn run() -> Result<()> {
                 ssh_key,
                 cloud_init,
                 start,
+                group,
             } => {
                 let network_id = if let Some(net) = net {
                     Some(resolve_network(&client, &cli.url, &net).await?)
@@ -1377,7 +1404,7 @@ async fn run() -> Result<()> {
                         autostart: None,
                         autostart_delay: None,
                         autostart_order: None,
-                        group: None,
+                        group,
                         network_id,
                         ip,
                         dual_stack,
@@ -1423,6 +1450,47 @@ async fn run() -> Result<()> {
                         delete_json(&client, &cli.url, &format!("/v1/vms/{vm}/cdrom/{iso}"))
                             .await?;
                     print_vm(&record);
+                }
+            },
+            VmCommand::Backup { id, command } => match command {
+                BackupCommand::List => {
+                    let list: Vec<VmBackupRecord> =
+                        get_json(&client, &cli.url, &format!("/v1/vms/{id}/backups")).await?;
+                    if list.is_empty() {
+                        println!("no backups");
+                    }
+                    for backup in list {
+                        println!(
+                            "{}\t{}\t{}\t{} disk(s)",
+                            backup.id,
+                            backup.name,
+                            format_size(backup.size_bytes),
+                            backup.disks.len()
+                        );
+                    }
+                }
+                BackupCommand::Create { notes } => {
+                    let record: VmBackupRecord = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/backups"),
+                        &CreateVmBackupRequest { notes },
+                    )
+                    .await?;
+                    println!("created {}", record.id);
+                }
+                BackupCommand::Restore { backup } => {
+                    let record: VmBackupRecord = post_empty(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/backups/{backup}/restore"),
+                    )
+                    .await?;
+                    println!("restored {}", record.id);
+                }
+                BackupCommand::Remove { backup } => {
+                    delete(&client, &cli.url, &format!("/v1/vms/{id}/backups/{backup}")).await?;
+                    println!("deleted {backup}");
                 }
             },
             VmCommand::Nic { command } => match command {

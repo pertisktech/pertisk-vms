@@ -76,6 +76,10 @@ pub fn router(service: Service) -> Router {
             "/v1/vms/{id}/backups/{backup_id}",
             axum::routing::delete(delete_vm_backup),
         )
+        .route(
+            "/v1/vms/{id}/backups/{backup_id}/restore",
+            post(restore_vm_backup),
+        )
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
             "/v1/vms/{id}/disks/{volume_id}",
@@ -823,6 +827,23 @@ async fn delete_vm_backup(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn restore_vm_backup(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, backup_id)): Path<(VmId, String)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.backup.restore",
+            format!("{id}/{backup_id}"),
+            service.restore_vm_backup(id, &backup_id),
+        )
+        .await?,
+    ))
 }
 
 async fn list_templates(State(service): State<Service>) -> Result<impl IntoResponse, DaemonError> {
