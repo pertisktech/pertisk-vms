@@ -9,6 +9,9 @@ PORT="${PERTISK_INSTALLER_PORT:-8090}"
 export PERTISK_INSTALLER_PORT="$PORT"
 mkdir -p /run/pertisk
 chmod 700 /run/pertisk || true
+# fd 3 is the tmux pane (the screen the operator is watching). Keep it before
+# the log redirect so the URL is drawn by the pane, at column 0.
+exec 3>&1
 exec >>"$LOG" 2>&1
 echo "pertisk-install-ui: $(date -Is 2>/dev/null || date)"
 
@@ -20,27 +23,22 @@ fi
 python3 "$SHARE/server.py" &
 echo $! >/run/pertisk/server.pid
 
-same_dev() {
-  [[ -e "$1" && -e "$2" ]] || return 1
-  [[ "$(stat -c '%d:%i' "$1" 2>/dev/null || echo a)" == "$(stat -c '%d:%i' "$2" 2>/dev/null || echo b)" ]]
-}
-
 say() {
-  # tty0, /dev/console, and tty1 are one screen on the appliance. The serial
-  # port is a different device when this ISO runs as a guest, and that is the
-  # console the management UI shows. Write the URL there too.
-  local tty msg="$1"
-  local -a targets=(/dev/console)
-  local extra
-  [[ -c /dev/console ]] || targets=(/dev/tty0)
+  # One copy, starting at column 0. /dev/console and /dev/ttyS0 are different
+  # device nodes even when the kernel console is the serial port, so writing
+  # both paints the URL twice and the second line starts mid-screen.
+  local msg="$1" extra active=" "
+  printf '\r%s\n' "$msg" >&3 || true
+  if [[ -r /sys/class/tty/console/active ]]; then
+    active=" $(tr -s ' \n' ' ' </sys/class/tty/console/active) "
+  fi
+  case "$active" in
+    *' ttyS'*|*' ttyAMA'*|*' hvc'*) return ;;
+  esac
   for extra in /dev/ttyS0 /dev/ttyAMA0 /dev/ttyS1; do
     [[ -c "$extra" ]] || continue
-    same_dev "$extra" "${targets[0]}" && continue
-    targets+=("$extra")
-  done
-  for tty in "${targets[@]}"; do
-    [[ -c "$tty" ]] || continue
-    printf '%s\n' "$msg" >"$tty" || true
+    printf '\r%s\r\n' "$msg" >"$extra" || true
+    break
   done
 }
 
@@ -64,7 +62,6 @@ show_text_console() {
   if command -v chvt >/dev/null 2>&1; then
     chvt 1 || true
   fi
-  announce
   say "Graphical installer stopped. Use the URL above."
 }
 
