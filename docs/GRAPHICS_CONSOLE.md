@@ -8,7 +8,7 @@ Pertisk now supports **graphics consoles (VGA)** for a Proxmox-like experience. 
 - **WebSocket relay** to browser
 - **noVNC integration** for VNC client support
 - **Serial console** still available as fallback
-- **Cloud Hypervisor** compatible on Linux/KVM
+- **QEMU** on Linux (VGA or virtio-gpu, VNC, USB tablet). Cloud Hypervisor stays serial-only
 
 ## Creating a VM with Graphics Console
 
@@ -86,7 +86,7 @@ Serial console is suitable for headless servers and provides reliable logging.
 
 ### Architecture
 ```
-VM (Cloud Hypervisor)
+VM (QEMU)
   ├─ serial console → /run/pertisk/101.serial.sock → HTTP → WebSocket
   └─ graphics (VGA) → /run/pertisk/101.graphics.sock → HTTP → WebSocket
                                                               ↓
@@ -103,13 +103,13 @@ Graphics socket paths: `/run/pertisk/<vm-id>.graphics.sock`
 Automatically cleaned up on VM destroy.
 
 ## Limitations
-- Graphics console requires Cloud Hypervisor on Linux
-- Mock driver (macOS) does not support graphics
+- Graphics console is the QEMU driver on Linux. Cloud Hypervisor has no VGA
+- Mock driver (macOS) does not open a VNC socket
 - No GPU acceleration or PCIe passthrough yet
-- Single console per VM (graphics OR serial, not both simultaneously)
+- Serial and Display are separate tabs on the same guest
 
 ## Future Enhancements
 - [ ] USB device passthrough for better installer support
-- [ ] Multi-console (view both serial + graphics)
-- [ ] Remote console recording
-- [ ] Clipboard integration
+- [x] Multi-console (Serial and Display tabs on the same guest)
+- [x] Remote console recording (Display saves a WebM; Serial downloads the log)
+- [x] Clipboard paste types into the Display tab (works before a guest agent is installed)

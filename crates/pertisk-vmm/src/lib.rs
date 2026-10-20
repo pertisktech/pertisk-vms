@@ -12,7 +12,7 @@ use pertisk_types::{DriverKind, VmId, VmRecord, VmSpec, VmState};
 
 pub use cloud_hypervisor::CloudHypervisorDriver;
 pub use mock::MockDriver;
-pub use qemu::{MirrorExport, QemuDriver, mirror_exports};
+pub use qemu::{MirrorExport, QemuDriver, disk_device_id, mirror_exports};
 pub use qga::{
     GuestAddrs, addrs_by_mac as qga_addrs_by_mac, ipv4_by_mac as qga_ipv4_by_mac,
     ssh_add_authorized_keys as qga_ssh_add_authorized_keys,
@@ -158,14 +158,24 @@ impl VmmBackend {
         }
     }
 
-    pub async fn cancel_mirrors(
-        &self,
-        record: &VmRecord,
-        exports: &[MirrorExport],
-    ) -> Result<()> {
+    pub async fn cancel_mirrors(&self, record: &VmRecord, exports: &[MirrorExport]) -> Result<()> {
         match self {
             Self::Qemu(driver) => driver.cancel_mirrors(record, exports).await,
             _ => Ok(()),
+        }
+    }
+
+    pub async fn snapshot_internal(
+        &self,
+        record: &VmRecord,
+        device: &str,
+        name: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.snapshot_internal(record, device, name).await,
+            _ => Err(VmmError::Message(
+                "live snapshot requires the qemu driver".into(),
+            )),
         }
     }
 
@@ -257,11 +267,10 @@ pub struct StartResult {
 
 fn qemu_system_binary() -> Option<PathBuf> {
     if cfg!(target_arch = "aarch64") {
-        pertisk_types::find_in_path("qemu-system-aarch64")
-            .or_else(|| {
-                let p = PathBuf::from("/usr/libexec/qemu-kvm");
-                p.is_file().then_some(p)
-            })
+        pertisk_types::find_in_path("qemu-system-aarch64").or_else(|| {
+            let p = PathBuf::from("/usr/libexec/qemu-kvm");
+            p.is_file().then_some(p)
+        })
     } else {
         // Debian/Ubuntu: qemu-system-x86_64. RHEL/Alma: /usr/libexec/qemu-kvm.
         pertisk_types::find_in_path("qemu-system-x86_64")

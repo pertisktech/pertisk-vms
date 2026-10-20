@@ -291,13 +291,13 @@ pertisk audit
 - **VFIO device passthrough** (other than basic PCI hotplug)
 - **Multi-tenant networks** (overlay networks, EVPN)
 - **Live migration of a ZFS zvol** (those disks stay on the node that created them)
-- **Advanced scheduling** (DRS, anti-affinity)
+- **Continuous rebalance** (an operator runs `pertisk cluster rebalance` for one pass)
 
 ### Constraints
-- **No arbitrator** for 2-node clusters (can't recover from 50% split)
-- **Graphics console** requires Cloud Hypervisor (Linux/KVM only)
-- **Single console type** per VM (serial OR graphics, not both)
-- **No live snapshots** (VM must be stopped)
+- **Witness** is optional (`cluster.witness_url` on a third host). Without it a 2-node cluster still needs both nodes.
+- **Graphics console** is QEMU VNC on Linux (USB tablet). Mock has no display
+- **Serial and Display** are separate console tabs
+- **Snapshot rollback** needs the guest stopped. A running guest can still be snapshotted (QEMU qcow2, RBD, or ZFS)
 - **Cluster coordination** is best-effort (network partitions possible)
 
 ## Deployment Recommendations
@@ -335,7 +335,7 @@ pertisk cluster status
 ## What's Next
 
 - Hardware proof of the flashable node image
-- GPU sharing, DRS-style scheduling
+- GPU sharing, a continuous balancer that moves guests on its own
 
 Terraform provider: `terraform-provider-pertisk-vms/`, UI at Datacenter → Terraform.
 

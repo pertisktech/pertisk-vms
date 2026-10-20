@@ -636,6 +636,25 @@ impl VolumePool {
         Ok(record)
     }
 
+    /// Record a snapshot that QEMU already created inside an open qcow2.
+    pub fn note_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()));
+        }
+        let mut record = self.get_volume(id)?;
+        if record.snapshots.iter().any(|snap| snap.name == name) {
+            return Err(StorageError::SnapshotExists(name.to_string()));
+        }
+        record.snapshots.push(VolumeSnapshot {
+            name: name.to_string(),
+            created_unix: unix_now(),
+            path: None,
+        });
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
     pub fn restore_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
         let record = self.get_volume(id)?;
         let snap = record
@@ -1369,12 +1388,13 @@ mod tests {
             err.contains("rbd"),
             "expected an rbd client error, got {err}"
         );
-        assert!(!dir
-            .path()
-            .join("snapshots")
-            .join(vol.id.to_string())
-            .join("before")
-            .exists());
+        assert!(
+            !dir.path()
+                .join("snapshots")
+                .join(vol.id.to_string())
+                .join("before")
+                .exists()
+        );
     }
 
     #[test]
@@ -1408,12 +1428,13 @@ mod tests {
             err.contains("zfs"),
             "expected a zfs client error, got {err}"
         );
-        assert!(!dir
-            .path()
-            .join("snapshots")
-            .join(vol.id.to_string())
-            .join("before")
-            .exists());
+        assert!(
+            !dir.path()
+                .join("snapshots")
+                .join(vol.id.to_string())
+                .join("before")
+                .exists()
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import RFB from '@novnc/novnc'
 import '@xterm/xterm/css/xterm.css'
-import { getToken } from '../../api'
+import { api, getToken } from '../../api'
+import { foldSerial, recordStem, recorderMime, saveBlob } from '../../consoleRecord'
+import { keysymsFor, typeKeysyms } from '../../vncPaste'
 import { Btn, Icon } from '../../components/Icons'
 import { useTheme } from '../../ThemeContext'
 import { applyXtermTheme } from '../../termTheme'
@@ -27,6 +29,8 @@ export default function GuestConsole() {
   const [connecting, setConnecting] = useState(true)
   const [wsError, setWsError] = useState('')
   const [gotOutput, setGotOutput] = useState(false)
+  const [pasting, setPasting] = useState(false)
+  const [recording, setRecording] = useState(false)
   // VGA login needs Display; prefer it whenever a graphics socket exists.
   const [tab, setTab] = useState(() => (vm?.graphics_socket ? 'display' : 'serial'))
   const hasGraphics = Boolean(vm?.graphics_socket)
@@ -39,6 +43,7 @@ export default function GuestConsole() {
   const rfbRef = useRef(null)
   const tabRef = useRef(tab)
   const everConnectedRef = useRef(false)
+  const recorderRef = useRef(null)
 
   if (vm?.graphics_socket) {
     graphicsPathRef.current = vm.graphics_socket
@@ -215,6 +220,11 @@ export default function GuestConsole() {
       rfb.focusOnClick = true
       rfb.viewOnly = false
       rfbRef.current = rfb
+      rfb.addEventListener('clipboard', (ev) => {
+        const text = ev?.detail?.text
+        if (!text) return
+        navigator.clipboard?.writeText(text).catch(() => {})
+      })
       rfb.addEventListener('connect', () => {
         if (!cancelled) {
           everConnectedRef.current = true
@@ -305,8 +315,117 @@ export default function GuestConsole() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [tab])
 
+  useEffect(() => {
+    if (tab !== 'display') return
+    const onPaste = (event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('input, textarea, select, .xterm')) return
+      const text = event.clipboardData?.getData('text')
+      if (!text || !rfbRef.current) return
+      event.preventDefault()
+      const keys = keysymsFor(text)
+      if (keys.length === 0) return
+      setPasting(true)
+      typeKeysyms(rfbRef.current, keys).finally(() => setPasting(false))
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [tab])
+
+  async function pasteIntoDisplay() {
+    if (!rfbRef.current || pasting) return
+    let text = ''
+    try {
+      text = await navigator.clipboard.readText()
+    } catch {
+      setWsError('Allow clipboard access, or click the screen and press Ctrl+V.')
+      return
+    }
+    const keys = keysymsFor(text)
+    if (keys.length === 0) return
+    setWsError('')
+    setPasting(true)
+    try {
+      await typeKeysyms(rfbRef.current, keys)
+    } finally {
+      setPasting(false)
+      try {
+        rfbRef.current?.focus?.({ preventScroll: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      const rec = recorderRef.current
+      if (rec && rec.state !== 'inactive') rec.stop()
+    }
+  }, [])
+
+  function startDisplayRecording() {
+    const canvas = screenRef.current?.querySelector('canvas')
+    if (!canvas || typeof canvas.captureStream !== 'function') {
+      setWsError('Display is not ready to record.')
+      return
+    }
+    const mime = recorderMime((type) => MediaRecorder.isTypeSupported(type))
+    if (!mime || typeof MediaRecorder === 'undefined') {
+      setWsError('This browser cannot record the display.')
+      return
+    }
+    const stream = canvas.captureStream(8)
+    const rec = new MediaRecorder(stream, { mimeType: mime })
+    const chunks = []
+    rec.ondataavailable = (event) => {
+      if (event.data?.size) chunks.push(event.data)
+    }
+    rec.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop())
+      recorderRef.current = null
+      setRecording(false)
+      if (chunks.length === 0) return
+      saveBlob(new Blob(chunks, { type: mime }), `${recordStem(vm?.spec?.name, vmId)}-display.webm`)
+    }
+    rec.start(1000)
+    recorderRef.current = rec
+    setRecording(true)
+    setWsError('')
+  }
+
+  function stopDisplayRecording() {
+    const rec = recorderRef.current
+    if (rec && rec.state !== 'inactive') rec.stop()
+  }
+
+  async function downloadSerial() {
+    try {
+      const info = await api(`/v1/vms/${vmId}/console`)
+      const size = Number(info?.size) || 0
+      const pages = []
+      let from = 0
+      while (from < size) {
+        const page = await api(`/v1/vms/${vmId}/console/serial?from=${from}&max=65536`)
+        pages.push(page)
+        const next = Number(page?.next) || from
+        if (next <= from) break
+        from = next
+      }
+      const text = foldSerial(size, pages)
+      saveBlob(
+        new Blob([text], { type: 'text/plain;charset=utf-8' }),
+        `${recordStem(vm?.spec?.name, vmId)}-serial.log`,
+      )
+      setWsError('')
+    } catch (err) {
+      setWsError(err?.message || 'Could not download the serial log.')
+    }
+  }
+
   function switchTab(next) {
     if (next === tab) return
+    if (next !== 'display') stopDisplayRecording()
     setConnected(false)
     setConnecting(true)
     setWsError('')
@@ -367,7 +486,7 @@ export default function GuestConsole() {
           {wsError
             ? wsError
             : tab === 'display'
-              ? 'Click the screen, type username, Enter, then password. Do not press Enter on header buttons.'
+              ? 'Click the screen, then type or Paste. Paste types the clipboard into the guest.'
               : connected && !gotOutput && vm?.state === 'running'
                 ? 'Connected; waiting for guest serial.'
                 : vm?.state === 'running'
@@ -375,10 +494,29 @@ export default function GuestConsole() {
                   : 'Guest is not running; serial shows the last log.'}
         </span>
         <span className="pve-header-spacer" />
+        {tab === 'display' && (
+          <>
+            <Btn
+              icon={recording ? 'stop' : 'camera'}
+              variant="secondary"
+              onClick={recording ? stopDisplayRecording : startDisplayRecording}
+            >
+              {recording ? 'Stop' : 'Record'}
+            </Btn>
+            <Btn icon="paste" variant="secondary" disabled={!connected || pasting} onClick={pasteIntoDisplay}>
+              {pasting ? 'Pasting…' : 'Paste'}
+            </Btn>
+          </>
+        )}
         {tab === 'serial' && (
-          <Btn icon="trash" variant="secondary" onClick={() => termRef.current?.clear()}>
-            Clear
-          </Btn>
+          <>
+            <Btn icon="download" variant="secondary" onClick={downloadSerial}>
+              Download
+            </Btn>
+            <Btn icon="trash" variant="secondary" onClick={() => termRef.current?.clear()}>
+              Clear
+            </Btn>
+          </>
         )}
       </div>
 

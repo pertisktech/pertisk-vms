@@ -202,13 +202,13 @@ pertisk user create -u operator -p pass --role operator
 ### Not Implemented Yet
 - Hardware proof of the flashable node image
 - GPU passthrough / sharing
-- Advanced scheduling (DRS-style)
+- A continuous balancer (`pertisk cluster rebalance` is one operator pass)
 - Multi-cloud federation
 
 ### Limitations
-- No arbitrator for 2-node clusters (use 3 or 5 nodes)
-- Graphics console Linux/KVM only (Cloud Hypervisor)
-- Single console type per VM (serial OR graphics)
+- A 2-node cluster needs `cluster.witness_url` on a third host before one node can fail
+- Graphics console is QEMU on Linux (noVNC). Mock has no display
+- Serial and Display are separate tabs
 - HA restart needs Ceph RBD disks. Local files stay on the lost node
 
 ## Architecture Decisions Made
@@ -217,7 +217,7 @@ pertisk user create -u operator -p pass --role operator
 ✅ **Fencing** (kill VMs on lost quorum) → prevents split-brain  
 ✅ **WebSocket relay** (not direct VNC) → browser-friendly, no client install  
 ✅ **SQLite + JSON** (not Postgres) → simpler deployment  
-✅ **Least-loaded scheduler** (not DRS) → good enough, extensible  
+✅ **Least-loaded scheduler**, with placement groups so same-group guests spread across nodes  
 ✅ **Trait-based VMM** → supports Cloud Hypervisor, QEMU, mock  
 
 ## Deployment Ready

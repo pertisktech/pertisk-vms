@@ -71,11 +71,26 @@ export default function Cluster() {
     const ok = await confirm({
       title: 'Drain this node',
       message:
-        'Running guests restart on another node (not live migrate). Continue?',
+        'Running guests move to another node. QEMU guests live-migrate when they can. Continue?',
       confirmLabel: 'Drain',
     })
     if (!ok) return
     await inv.mutate(() => api('/v1/cluster/drain', { method: 'POST', body: {} }))
+  }
+
+  async function rebalance() {
+    const ok = await confirm({
+      title: 'Rebalance placement groups',
+      message:
+        'Running guests that share a group move to different nodes when another node fits. Guests that are already spread stay put.',
+      confirmLabel: 'Rebalance',
+    })
+    if (!ok) return
+    let result
+    await inv.mutate(async () => {
+      result = await api('/v1/cluster/rebalance', { method: 'POST', body: {} })
+    })
+    if (result?.skipped?.length) setError(result.skipped.join('; '))
   }
 
   return (
@@ -91,6 +106,11 @@ export default function Cluster() {
       {!durable && (
         <div className="banner">
           Local disks stay on the lost node. A guest restarts elsewhere only when every disk is Ceph RBD.
+        </div>
+      )}
+      {cluster?.witness && (
+        <div className="banner">
+          A witness is configured. If one node of this pair is unreachable, the witness grants quorum to one survivor.
         </div>
       )}
       {!haArmed && (
@@ -114,6 +134,9 @@ export default function Cluster() {
               Drain this node
             </Btn>
           )}
+          <Btn icon="migrate" variant="secondary" onClick={rebalance}>
+            Rebalance
+          </Btn>
         </div>
       )}
 

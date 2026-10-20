@@ -44,7 +44,9 @@ Skip:  Ceph / vSAN / custom distributed FS
   [x] Local directory volume store (raw + qcow2)
   [x] Create / resize / delete; attach virtio-block
   [x] ISO library + CD-ROM attach
-  [x] qcow2 snapshot + restore
+  [x] qcow2 snapshot + restore. A running QEMU guest can snapshot qcow2 in place
+      (guest agent is frozen when it answers). RBD and ZFS snapshot while open.
+      Rollback still needs the guest stopped. Raw files cannot snapshot while open.
   [x] Linked clone from template
   [x] Optional ZFS zvol backend (`zfs` CLI; local to the node, not HA)
 
@@ -85,13 +87,17 @@ Skip:  fancy DRS before quorum and fencing
 
   [x] Node agent: heartbeat, local VMs, CPU/RAM/disk
   [x] Join/leave; shared inventory
-  [x] Quorum + fencing (no split-brain)
+  [x] Quorum + fencing (no split-brain). A 2-node cluster can set `cluster.witness_url`
+      so one survivor keeps quorum. The witness grants that tie to a single node.
   [x] HA restart on node loss (Ceph RBD disks only; local files stay on the lost node)
   [x] Restart migrate: stop on the source, start on the destination
   [x] Live migration via QEMU. Ceph RBD is shared; local replica disks are mirrored
       over NBD first; a library ISO is copied so a CD-ROM can stay attached.
       ZFS zvols stay on the node that created them (migrate refuses).
-  [x] Simple scheduler: least-loaded node that fits, prefer replica holders
+  [x] Simple scheduler: least-loaded node that fits, prefer replica holders.
+      Guests that share a group are placed on different nodes when another node fits.
+      `pertisk cluster rebalance` moves running guests in that group once.
+      There is no continuous balancer.
 
 Phase 4.5 — Graphics Console (VGA)             → v1.0+ graphical VMs
 -----------------------------------------
@@ -179,5 +185,5 @@ v3.0  phase 7      flashable node image (Proxmox-style)
       path:   sudo ./scripts/install-node.sh  (existing Linux)
               ./scripts/build-iso.sh          (Linux + mkosi → release/*.raw)
               sudo ./scripts/flash.sh --image release/pertisk-node-<version>-amd64.raw --disk /dev/sdX --yes
+      done:   QEMU VGA in the browser (noVNC) with a USB tablet so the pointer tracks
       open:   proof on real hardware (flash USB, Alpine guest)
-      not in v3.0: QEMU VGA / noVNC (separate; needed for Ubuntu Desktop/Windows)

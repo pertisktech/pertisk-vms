@@ -142,6 +142,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         }
     }
 

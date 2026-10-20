@@ -13,8 +13,8 @@ use pertisk_types::{
     ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVolumeRequest,
     DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
     JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord, ResizeVolumeRequest, SerialChunk,
-    SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId, VmRecord, VmSpec,
-    VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
+    SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, UpdatesStatus, VmId,
+    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -153,6 +153,8 @@ enum ClusterCommand {
         #[arg(long)]
         node: Option<String>,
     },
+    /// Spread running guests that share a placement group.
+    Rebalance,
 }
 
 #[derive(Debug, Subcommand)]
@@ -201,6 +203,9 @@ enum VmCommand {
         /// Relative autostart order (lower first).
         #[arg(long, default_value_t = 0)]
         autostart_order: u32,
+        /// Place this guest away from others with the same group name.
+        #[arg(long)]
+        group: Option<String>,
     },
     Start {
         id: VmId,
@@ -229,7 +234,7 @@ enum VmCommand {
     Show {
         id: VmId,
     },
-    /// Change name, vCPU, memory, HA, or autostart while the guest is defined.
+    /// Change name, vCPU, memory, HA, autostart, or placement group.
     Update {
         id: VmId,
         #[arg(long)]
@@ -246,6 +251,9 @@ enum VmCommand {
         autostart_delay: Option<u64>,
         #[arg(long)]
         autostart_order: Option<u32>,
+        /// Placement group. An empty value clears it.
+        #[arg(long)]
+        group: Option<String>,
     },
     /// Convert a stopped guest into a cloud template.
     Template {
@@ -595,22 +603,19 @@ async fn run() -> Result<()> {
                         info.ipv4.join(", ")
                     }
                 );
-                println!(
-                    "ipv6               {}",
-                    {
-                        let ipv6: Vec<_> = info
-                            .ipv6
-                            .iter()
-                            .filter(|ip| !ip.to_ascii_lowercase().starts_with("fe80:"))
-                            .cloned()
-                            .collect();
-                        if ipv6.is_empty() {
-                            "—".into()
-                        } else {
-                            ipv6.join(", ")
-                        }
+                println!("ipv6               {}", {
+                    let ipv6: Vec<_> = info
+                        .ipv6
+                        .iter()
+                        .filter(|ip| !ip.to_ascii_lowercase().starts_with("fe80:"))
+                        .cloned()
+                        .collect();
+                    if ipv6.is_empty() {
+                        "—".into()
+                    } else {
+                        ipv6.join(", ")
                     }
-                );
+                });
                 println!("data_dir           {}", info.data_dir.display());
                 println!("storage            {}", info.storage_root.display());
                 println!(
@@ -881,6 +886,26 @@ async fn run() -> Result<()> {
                     print_vm(&vm);
                 }
             }
+            ClusterCommand::Rebalance => {
+                let result: pertisk_types::RebalanceResponse = post_json(
+                    &client,
+                    &cli.url,
+                    "/v1/cluster/rebalance",
+                    &serde_json::json!({}),
+                )
+                .await?;
+                println!(
+                    "rebalanced ({} guests moved, {} skipped)",
+                    result.moved.len(),
+                    result.skipped.len()
+                );
+                for vm in result.moved {
+                    print_vm(&vm);
+                }
+                for note in result.skipped {
+                    println!("skipped {note}");
+                }
+            }
         },
         Command::Template { command } => match command {
             TemplateCommand::List => {
@@ -1094,6 +1119,7 @@ async fn run() -> Result<()> {
                 autostart,
                 autostart_delay,
                 autostart_order,
+                group,
             } => {
                 let host: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
                 let firmware = firmware.or(host.firmware.clone());
@@ -1137,6 +1163,7 @@ async fn run() -> Result<()> {
                     autostart_delay,
                     autostart_order,
                     ssh_user: None,
+                    group: group.filter(|name| !name.trim().is_empty()),
                 };
                 let mut record: VmRecord = post_json(
                     &client,
@@ -1272,6 +1299,7 @@ async fn run() -> Result<()> {
                 autostart,
                 autostart_delay,
                 autostart_order,
+                group,
             } => {
                 let record: VmRecord = patch_json(
                     &client,
@@ -1285,6 +1313,7 @@ async fn run() -> Result<()> {
                         autostart,
                         autostart_delay,
                         autostart_order,
+                        group,
                     },
                 )
                 .await?;
@@ -1348,6 +1377,7 @@ async fn run() -> Result<()> {
                         autostart: None,
                         autostart_delay: None,
                         autostart_order: None,
+                        group: None,
                         network_id,
                         ip,
                         dual_stack,
@@ -1396,7 +1426,12 @@ async fn run() -> Result<()> {
                 }
             },
             VmCommand::Nic { command } => match command {
-                NicCommand::Attach { vm, network, ip, dual_stack } => {
+                NicCommand::Attach {
+                    vm,
+                    network,
+                    ip,
+                    dual_stack,
+                } => {
                     let record: VmRecord = post_json(
                         &client,
                         &cli.url,

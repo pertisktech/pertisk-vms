@@ -271,6 +271,12 @@ pub struct ClusterConfig {
     /// Join this peer URL on startup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join: Option<String>,
+    /// HTTP origin of a witness (`http://witness:7480`). Used only for a 2-node tie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_url: Option<String>,
+    /// Shared secret sent as `x-pertisk-peer` when claiming the witness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_secret: Option<String>,
 }
 
 fn default_cluster_name() -> String {
@@ -297,6 +303,8 @@ impl Default for ClusterConfig {
             cpus: None,
             memory_mib: None,
             join: None,
+            witness_url: None,
+            witness_secret: None,
         }
     }
 }
@@ -329,7 +337,21 @@ pub struct ClusterStatus {
     /// When false, skip HA failover and quorum fencing (planned maintenance).
     #[serde(default = "default_true")]
     pub ha_armed: bool,
+    /// A witness URL is configured for a 2-node tie.
+    #[serde(default)]
+    pub witness: bool,
     pub members: Vec<ClusterMemberStatus>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WitnessClaim {
+    pub node_id: NodeId,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WitnessGrant {
+    pub holder: NodeId,
+    pub ttl_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -362,6 +384,13 @@ pub struct DrainResponse {
     pub moved: Vec<VmRecord>,
 }
 
+/// One pass of placement-group rebalance.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RebalanceResponse {
+    pub moved: Vec<VmRecord>,
+    pub skipped: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UpdateVmRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +410,9 @@ pub struct UpdateVmRequest {
     /// Relative start order among autostart guests (lower first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autostart_order: Option<u32>,
+    /// Placement group. Empty clears it. Omitted leaves the current group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -811,6 +843,9 @@ pub struct CloneVmRequest {
     pub autostart_delay: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autostart_order: Option<u32>,
+    /// Placement group for the new guest. Empty clears a group copied from the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_id: Option<NetworkId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1003,6 +1038,9 @@ pub struct VmSpec {
     /// Cloud-init login user for the guest SSH tab (`almalinux`, `ubuntu`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_user: Option<String>,
+    /// Placement group. A new guest avoids nodes that already hold this group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -1736,6 +1774,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         };
         assert!(spec.validate().is_err());
     }

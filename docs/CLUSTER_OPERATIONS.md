@@ -54,7 +54,7 @@ pertisk cluster status
 - **Majority vote**: `online_nodes * 2 > total_nodes`
 - With 3 nodes: need 2 online → can lose 1 node
 - With 5 nodes: need 3 online → can lose 2 nodes
-- With 2 nodes: need 2 online → CANNOT lose any (no quorum with split-brain)
+- With 2 nodes: need 2 online. Set `cluster.witness_url` on a third host so one survivor can keep quorum. The witness grants the tie to a single node.
 
 ### Fencing
 When a node loses quorum:
@@ -181,12 +181,9 @@ pertisk vm migrate 100
 ```
 
 ### What happens
-1. Guest must be **running**
-2. Destination starts a new hypervisor process
-3. Source is stopped
-4. Ownership updates in cluster inventory
-
-This is **not** Cloud Hypervisor live migrate (no memory transfer, guest reboots). Live migrate is not implemented yet.
+1. A running QEMU guest moves while it keeps running. Local disks are mirrored first
+2. A ZFS zvol, or a guest that is not QEMU, is stopped and started on the destination
+3. Ownership updates in cluster inventory
 
 ### Limitations
 - Both nodes must have quorum
@@ -211,6 +208,13 @@ When creating or restarting a VM:
 3. **Affinity**: For HA restarts
    - Prefer nodes that already have VM's volumes (Ceph/RBD)
    - Fall back to least-loaded if no affinity match
+
+4. **Group**: `pertisk vm create --group web`
+   - A new guest avoids nodes that already hold another guest in that group
+   - If every node that fits already has the group, the least-loaded node is used
+   - An explicit migrate target is kept
+   - `pertisk cluster rebalance` moves running guests that still share a node, once.
+     Guests that are already spread stay put. Nothing moves on a timer.
 
 ### Example
 ```
@@ -312,7 +316,7 @@ curl http://localhost:7480/metrics | grep pertisk_cluster
 ## Limitations & Future Work
 
 ### Current
-- No arbitrator for 2-node clusters
+- A 2-node cluster without `cluster.witness_url` still needs both nodes online
 - No automatic node replacement
 - Local replica files are the default. HA restart requires Ceph RBD disks
 - Migrate live-moves a running QEMU guest. Local replica disks are mirrored first, and a library ISO is copied for a CD-ROM. A ZFS zvol cannot move. Anything else is stopped and started on the destination

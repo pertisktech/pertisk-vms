@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pertisk_types::{
     ClusterMemberStatus, ClusterSnapshot, ClusterStatus, HeartbeatMessage, HostConfig, NodeId,
-    NodeRecord, VmSpec, probe_host_addrs,
+    NodeRecord, VmId, VmSpec, probe_host_addrs,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -26,6 +26,33 @@ pub struct NodeLoad {
 
 pub fn has_quorum(online: usize, total: usize) -> bool {
     total > 0 && online * 2 > total
+}
+
+/// Majority, or the single survivor of a 2-node cluster that holds the witness lease.
+/// The lease never creates quorum for a larger cluster, and never for both sides at once.
+pub fn quorum_with_witness(online: usize, total: usize, holds_lease: bool) -> bool {
+    has_quorum(online, total) || (total == 2 && online == 1 && holds_lease)
+}
+
+/// In-memory tie-break. The current holder keeps it until `until_ms`.
+#[derive(Clone, Debug, Default)]
+pub struct WitnessLease {
+    pub holder: Option<NodeId>,
+    pub until_ms: u64,
+}
+
+pub fn witness_claim(lease: &mut WitnessLease, claimant: NodeId, now: u64, ttl_ms: u64) -> NodeId {
+    if let Some(holder) = lease.holder
+        && now < lease.until_ms
+    {
+        if holder == claimant {
+            lease.until_ms = now.saturating_add(ttl_ms);
+        }
+        return holder;
+    }
+    lease.holder = Some(claimant);
+    lease.until_ms = now.saturating_add(ttl_ms);
+    claimant
 }
 
 /// vCPU overcommit vs advertised host threads. Memory stays a hard cap.
@@ -98,6 +125,47 @@ pub fn schedule(nodes: &[NodeLoad], spec: &VmSpec, prefer: Option<NodeId>) -> Op
         .map(|n| n.id)
 }
 
+/// Least-loaded node that fits, skipping `avoid` when some other node can take the guest.
+pub fn schedule_spread(
+    nodes: &[NodeLoad],
+    spec: &VmSpec,
+    prefer: Option<NodeId>,
+    affinity: &[NodeId],
+    avoid: &[NodeId],
+) -> Option<NodeId> {
+    if !avoid.is_empty() {
+        let free: Vec<_> = nodes
+            .iter()
+            .filter(|n| !avoid.contains(&n.id))
+            .cloned()
+            .collect();
+        if let Some(id) = schedule_storage(&free, spec, prefer, affinity) {
+            return Some(id);
+        }
+    }
+    schedule_storage(nodes, spec, prefer, affinity)
+}
+
+/// Defined guests ignore RAM. Same avoid-then-fall-back rule as [`schedule_spread`].
+pub fn schedule_define_spread(
+    nodes: &[NodeLoad],
+    prefer: Option<NodeId>,
+    affinity: &[NodeId],
+    avoid: &[NodeId],
+) -> Option<NodeId> {
+    if !avoid.is_empty() {
+        let free: Vec<_> = nodes
+            .iter()
+            .filter(|n| !avoid.contains(&n.id))
+            .cloned()
+            .collect();
+        if let Some(id) = schedule_define(&free, prefer, affinity) {
+            return Some(id);
+        }
+    }
+    schedule_define(nodes, prefer, affinity)
+}
+
 /// Prefer nodes that already hold volume replicas; fall back to least-loaded.
 pub fn schedule_storage(
     nodes: &[NodeLoad],
@@ -120,6 +188,93 @@ pub fn schedule_storage(
         return schedule(&local, spec, prefer);
     }
     schedule(nodes, spec, prefer)
+}
+
+/// A running guest the rebalance planner may move.
+#[derive(Clone, Debug)]
+pub struct PlacedGuest {
+    pub id: VmId,
+    pub node: NodeId,
+    pub group: String,
+    pub vcpus: u32,
+    pub memory_mib: u32,
+}
+
+fn guest_fits(n: &NodeLoad, vcpus: u32, memory_mib: u32) -> bool {
+    n.online
+        && cpu_capacity(n).saturating_sub(n.used_vcpus) >= vcpus
+        && guest_memory_capacity(n).saturating_sub(n.used_memory_mib) >= memory_mib
+}
+
+fn load_score(n: &NodeLoad) -> (u32, NodeId) {
+    let cpu = n.used_vcpus.saturating_mul(1_000) / n.cpus.max(1);
+    let mem_cap = guest_memory_capacity(n).max(1);
+    let mem = n.used_memory_mib.saturating_mul(1_000) / mem_cap;
+    (cpu + mem, n.id)
+}
+
+/// Move running guests that share a placement group onto free nodes.
+/// Guests in `hold` stay where they are and still occupy their node.
+/// Returns the moves in the order they should run.
+pub fn rebalance_plan(
+    guests: &[PlacedGuest],
+    nodes: &[NodeLoad],
+    hold: &[VmId],
+) -> Vec<(VmId, NodeId)> {
+    let mut nodes = nodes.to_vec();
+    let mut place: Vec<PlacedGuest> = guests.to_vec();
+    let mut moves = Vec::new();
+    loop {
+        let mut crowded: Vec<usize> = place
+            .iter()
+            .enumerate()
+            .filter(|(idx, guest)| {
+                !hold.contains(&guest.id)
+                    && place.iter().enumerate().any(|(other, peer)| {
+                        other != *idx && peer.node == guest.node && peer.group == guest.group
+                    })
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        crowded.sort_by_key(|idx| (place[*idx].node, place[*idx].id));
+        let mut progressed = false;
+        for idx in crowded {
+            let guest = place[idx].clone();
+            let occupied: Vec<NodeId> = place
+                .iter()
+                .filter(|peer| peer.group == guest.group)
+                .map(|peer| peer.node)
+                .collect();
+            let Some(dest) = nodes
+                .iter()
+                .filter(|n| {
+                    n.id != guest.node
+                        && !occupied.contains(&n.id)
+                        && guest_fits(n, guest.vcpus, guest.memory_mib)
+                })
+                .min_by_key(|n| load_score(n))
+                .map(|n| n.id)
+            else {
+                continue;
+            };
+            if let Some(src) = nodes.iter_mut().find(|n| n.id == guest.node) {
+                src.used_vcpus = src.used_vcpus.saturating_sub(guest.vcpus);
+                src.used_memory_mib = src.used_memory_mib.saturating_sub(guest.memory_mib);
+            }
+            if let Some(dst) = nodes.iter_mut().find(|n| n.id == dest) {
+                dst.used_vcpus = dst.used_vcpus.saturating_add(guest.vcpus);
+                dst.used_memory_mib = dst.used_memory_mib.saturating_add(guest.memory_mib);
+            }
+            place[idx].node = dest;
+            moves.push((guest.id, dest));
+            progressed = true;
+            break;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    moves
 }
 
 /// Place a defined (not running) guest: any online node, prefer replica holders.
@@ -341,7 +496,7 @@ fn ipv4_from_peer_url(url: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -410,6 +565,8 @@ struct Inner {
     members: BTreeMap<NodeId, MemberState>,
     fenced: bool,
     ha_armed: bool,
+    witness_holder: Option<NodeId>,
+    witness_until_ms: u64,
 }
 
 pub struct Cluster {
@@ -478,6 +635,8 @@ impl Cluster {
                 members,
                 fenced: false,
                 ha_armed: persisted.ha_armed,
+                witness_holder: None,
+                witness_until_ms: 0,
             }
         } else {
             let self_id = NodeId::new();
@@ -507,6 +666,8 @@ impl Cluster {
                 members,
                 fenced: false,
                 ha_armed: true,
+                witness_holder: None,
+                witness_until_ms: 0,
             }
         };
         let cluster = Self {
@@ -521,6 +682,10 @@ impl Cluster {
 
     pub fn heartbeat_ms(&self) -> u64 {
         self.heartbeat_ms
+    }
+
+    pub fn offline_after_ms(&self) -> u64 {
+        self.offline_after_ms
     }
 
     pub fn self_id(&self) -> NodeId {
@@ -706,7 +871,12 @@ impl Cluster {
             .collect()
     }
 
-    pub fn has_quorum(&self) -> bool {
+    pub fn member_count(&self) -> usize {
+        self.inner.lock().expect("cluster lock").members.len()
+    }
+
+    /// Strict majority, ignoring a witness lease.
+    pub fn majority(&self) -> bool {
         let inner = self.inner.lock().expect("cluster lock");
         let now = now_ms();
         let online = inner
@@ -715,6 +885,31 @@ impl Cluster {
             .filter(|m| member_is_online(m, inner.self_id, now, self.offline_after_ms))
             .count();
         has_quorum(online, inner.members.len())
+    }
+
+    pub fn note_witness(&self, holder: NodeId, ttl_ms: u64) {
+        let mut inner = self.inner.lock().expect("cluster lock");
+        inner.witness_holder = Some(holder);
+        inner.witness_until_ms = now_ms().saturating_add(ttl_ms);
+    }
+
+    fn holds_witness(inner: &Inner, now: u64) -> bool {
+        inner.witness_holder == Some(inner.self_id) && now < inner.witness_until_ms
+    }
+
+    pub fn has_quorum(&self) -> bool {
+        let inner = self.inner.lock().expect("cluster lock");
+        let now = now_ms();
+        let online = inner
+            .members
+            .values()
+            .filter(|m| member_is_online(m, inner.self_id, now, self.offline_after_ms))
+            .count();
+        quorum_with_witness(
+            online,
+            inner.members.len(),
+            Self::holds_witness(&inner, now),
+        )
     }
 
     pub fn is_leader(&self) -> bool {
@@ -944,7 +1139,7 @@ impl Cluster {
             })
             .collect();
         let online = members.iter().filter(|m| m.online).count();
-        let quorum = has_quorum(online, members.len());
+        let quorum = quorum_with_witness(online, members.len(), Self::holds_witness(&inner, now));
         let leader_id = members.iter().filter(|m| m.online).map(|m| m.id).min();
         ClusterStatus {
             name: inner.name.clone(),
@@ -954,6 +1149,7 @@ impl Cluster {
             quorum,
             fenced: inner.fenced || !quorum,
             ha_armed: inner.ha_armed,
+            witness: false,
             members,
         }
     }
@@ -1067,6 +1263,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         }
     }
 
@@ -1079,6 +1276,27 @@ mod tests {
             used_vcpus,
             used_memory_mib: used_vcpus * 512,
         }
+    }
+
+    #[test]
+    fn witness_lease_breaks_only_a_two_node_tie() {
+        assert!(!quorum_with_witness(1, 2, false));
+        assert!(quorum_with_witness(1, 2, true));
+        assert!(quorum_with_witness(2, 2, false));
+        assert!(!quorum_with_witness(1, 3, true));
+        assert!(quorum_with_witness(2, 3, false));
+    }
+
+    #[test]
+    fn witness_keeps_the_first_claimant_until_the_lease_ends() {
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let mut lease = WitnessLease::default();
+        assert_eq!(witness_claim(&mut lease, a, 1_000, 500), a);
+        assert_eq!(witness_claim(&mut lease, b, 1_200, 500), a);
+        assert_eq!(witness_claim(&mut lease, a, 1_400, 500), a);
+        assert_eq!(lease.until_ms, 1_900);
+        assert_eq!(witness_claim(&mut lease, b, 1_900, 500), b);
     }
 
     #[test]
@@ -1146,6 +1364,83 @@ mod tests {
         assert_eq!(schedule(&[node], &spec_small(), None), None);
     }
 
+    fn roomy(id: NodeId) -> NodeLoad {
+        NodeLoad {
+            id,
+            online: true,
+            cpus: 8,
+            memory_mib: 16_384,
+            used_vcpus: 0,
+            used_memory_mib: 0,
+        }
+    }
+
+    fn guest(id: u64, node: NodeId, group: &str) -> PlacedGuest {
+        PlacedGuest {
+            id: VmId::Numeric(id),
+            node,
+            group: group.into(),
+            vcpus: 1,
+            memory_mib: 512,
+        }
+    }
+
+    #[test]
+    fn rebalance_splits_a_shared_group() {
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let moves = rebalance_plan(
+            &[guest(1, a, "web"), guest(2, a, "web")],
+            &[roomy(a), roomy(b)],
+            &[],
+        );
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].1, b);
+    }
+
+    #[test]
+    fn rebalance_leaves_a_group_that_is_already_spread() {
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let moves = rebalance_plan(
+            &[guest(1, a, "web"), guest(2, b, "web")],
+            &[roomy(a), roomy(b)],
+            &[],
+        );
+        assert!(moves.is_empty());
+    }
+
+    #[test]
+    fn rebalance_stops_when_no_other_node_fits() {
+        let only = NodeId::new();
+        let moves = rebalance_plan(
+            &[guest(1, only, "web"), guest(2, only, "web")],
+            &[roomy(only)],
+            &[],
+        );
+        assert!(moves.is_empty());
+    }
+
+    #[test]
+    fn spread_skips_a_node_that_already_has_the_group() {
+        let a = load(1, 1);
+        let b = load(2, 1);
+        let id_a = a.id;
+        let id_b = b.id;
+        let first = schedule(&[a.clone(), b.clone()], &spec(), None).unwrap();
+        let other = if first == id_a { id_b } else { id_a };
+        let second = schedule_spread(&[a, b], &spec(), None, &[], &[first]).unwrap();
+        assert_eq!(second, other);
+    }
+
+    #[test]
+    fn spread_uses_the_taken_node_when_nothing_else_fits() {
+        let only = load(1, 1);
+        let id = only.id;
+        let picked = schedule_spread(&[only], &spec(), None, &[], &[id]).unwrap();
+        assert_eq!(picked, id);
+    }
+
     #[test]
     fn advertises_full_memtotal_not_three_quarters() {
         let Some(advertised) = advertised_host_memory_mib() else {
@@ -1196,6 +1491,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         };
         assert!(node_fits(&n, &spec));
         assert!(guest_start_fits(1088, 0, 1024));
@@ -1231,6 +1527,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         };
         assert_eq!(schedule(&[n.clone()], &spec, None), None);
         assert_eq!(schedule_define(&[n], None, &[]), Some(id));

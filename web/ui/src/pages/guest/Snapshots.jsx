@@ -191,7 +191,11 @@ export default function GuestSnapshots() {
       {dialog && (
         <Modal
           title="Take snapshot"
-          hint="Creates a qcow2 snapshot on each OS disk. Prefer a stopped guest for consistency."
+          hint={
+            running
+              ? 'Snapshots each OS disk while the guest keeps running. Rollback still needs the guest stopped.'
+              : 'Creates a snapshot of each OS disk. Rollback replaces the current disk contents.'
+          }
           onClose={() => setDialog(false)}
           footer={
             <>

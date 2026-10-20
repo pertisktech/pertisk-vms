@@ -319,7 +319,9 @@ impl ChVmConfig {
         let disks: Vec<ChDisk> = ordered
             .into_iter()
             .map(|disk| ChDisk {
-                path: pertisk_types::guest_disk_path(&disk.path).display().to_string(),
+                path: pertisk_types::guest_disk_path(&disk.path)
+                    .display()
+                    .to_string(),
                 readonly: disk.readonly || disk.cdrom,
                 direct: false,
             })
@@ -437,6 +439,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         }
     }
 

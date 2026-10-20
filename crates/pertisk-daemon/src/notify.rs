@@ -7,7 +7,13 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use pertisk_types::{NotifyConfig, SmtpTls};
 use tracing::{info, warn};
 
-pub async fn send_event(cfg: &NotifyConfig, node_name: &str, kind: &str, subject: &str, body: &str) {
+pub async fn send_event(
+    cfg: &NotifyConfig,
+    node_name: &str,
+    kind: &str,
+    subject: &str,
+    body: &str,
+) {
     if !cfg.wants_event(kind) {
         return;
     }
@@ -82,16 +88,16 @@ fn build_transport(cfg: &NotifyConfig) -> Result<AsyncSmtpTransport<Tokio1Execut
 
     match cfg.smtp_tls {
         SmtpTls::Off => {
-            let mut b = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
-                .port(cfg.smtp_port);
+            let mut b =
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host).port(cfg.smtp_port);
             if let Some(c) = creds {
                 b = b.credentials(c);
             }
             Ok(b.build())
         }
         SmtpTls::StartTls => {
-            let tls = TlsParameters::new(host.to_string())
-                .map_err(|err| format!("tls params: {err}"))?;
+            let tls =
+                TlsParameters::new(host.to_string()).map_err(|err| format!("tls params: {err}"))?;
             let mut b = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|err| format!("smtp relay: {err}"))?
                 .port(cfg.smtp_port)
@@ -102,8 +108,8 @@ fn build_transport(cfg: &NotifyConfig) -> Result<AsyncSmtpTransport<Tokio1Execut
             Ok(b.build())
         }
         SmtpTls::Tls => {
-            let tls = TlsParameters::new(host.to_string())
-                .map_err(|err| format!("tls params: {err}"))?;
+            let tls =
+                TlsParameters::new(host.to_string()).map_err(|err| format!("tls params: {err}"))?;
             let mut b = AsyncSmtpTransport::<Tokio1Executor>::relay(host)
                 .map_err(|err| format!("smtp relay: {err}"))?
                 .port(cfg.smtp_port)

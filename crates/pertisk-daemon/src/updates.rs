@@ -44,14 +44,17 @@ pub fn list_updates() -> Result<UpdatesStatus, String> {
 fn list_updates_for(mgr: &PkgMgr) -> Result<Vec<UpdatePackage>, String> {
     match mgr {
         PkgMgr::Apt(bin) => {
-            let output = run_apt(bin, &[
-                "-s",
-                "-o",
-                "Debug::NoLocking=true",
-                "-o",
-                "APT::Get::Show-User-Simulation-Note=false",
-                "dist-upgrade",
-            ])?;
+            let output = run_apt(
+                bin,
+                &[
+                    "-s",
+                    "-o",
+                    "Debug::NoLocking=true",
+                    "-o",
+                    "APT::Get::Show-User-Simulation-Note=false",
+                    "dist-upgrade",
+                ],
+            )?;
             Ok(parse_inst_lines(&output))
         }
         PkgMgr::Dnf(bin) => {
@@ -110,14 +113,17 @@ pub fn refresh() -> Result<AptActionResult, String> {
 pub fn upgrade() -> Result<AptActionResult, String> {
     let mgr = find_pkg_mgr().ok_or_else(|| "no apt-get or dnf on this node".to_string())?;
     let log = match &mgr {
-        PkgMgr::Apt(bin) => run_apt(bin, &[
-            "-y",
-            "-o",
-            "Dpkg::Options::=--force-confold",
-            "-o",
-            "Dpkg::Options::=--force-confdef",
-            "dist-upgrade",
-        ])?,
+        PkgMgr::Apt(bin) => run_apt(
+            bin,
+            &[
+                "-y",
+                "-o",
+                "Dpkg::Options::=--force-confold",
+                "-o",
+                "Dpkg::Options::=--force-confdef",
+                "dist-upgrade",
+            ],
+        )?,
         PkgMgr::Dnf(bin) => {
             let (status, log) = run_dnf_status(bin, &["-y", "upgrade"])?;
             if status != 0 {
@@ -139,9 +145,7 @@ pub fn upgrade() -> Result<AptActionResult, String> {
 
 pub fn list_repos() -> Result<Vec<AptRepository>, String> {
     let root = pkg_root();
-    if root.join("etc/apt/sources.list").is_file()
-        || root.join("etc/apt/sources.list.d").is_dir()
-    {
+    if root.join("etc/apt/sources.list").is_file() || root.join("etc/apt/sources.list.d").is_dir() {
         let repos = list_repos_at(&root)?;
         if !repos.is_empty() || find_apt().is_some() {
             return Ok(repos);
@@ -288,12 +292,7 @@ fn find_apt() -> Option<PathBuf> {
 }
 
 fn find_dnf() -> Option<PathBuf> {
-    const CANDIDATES: &[&str] = &[
-        "/usr/bin/dnf",
-        "/bin/dnf",
-        "/usr/bin/dnf5",
-        "/usr/bin/yum",
-    ];
+    const CANDIDATES: &[&str] = &["/usr/bin/dnf", "/bin/dnf", "/usr/bin/dnf5", "/usr/bin/yum"];
     for path in CANDIDATES {
         let candidate = PathBuf::from(path);
         if candidate.is_file() {
@@ -554,9 +553,7 @@ pub(crate) fn parse_dnf_check_update(text: &str) -> Vec<UpdatePackage> {
         }
         let (name, arch) = match nevra.rsplit_once('.') {
             Some((n, a))
-                if !a.is_empty()
-                    && a.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+                if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
             {
                 (n.to_string(), a.to_string())
             }
@@ -690,9 +687,7 @@ fn add_dnf_repo_at(root: &Path, req: AddRepositoryRequest) -> Result<AptReposito
             path.display()
         ));
     }
-    let body = format!(
-        "[{name}]\nname={name}\nbaseurl={uri}\nenabled=1\ngpgcheck=0\n"
-    );
+    let body = format!("[{name}]\nname={name}\nbaseurl={uri}\nenabled=1\ngpgcheck=0\n");
     fs::write(&path, body).map_err(|err| format!("write {}: {err}", path.display()))?;
     list_dnf_repos_at(root)?
         .into_iter()

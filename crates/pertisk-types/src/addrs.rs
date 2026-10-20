@@ -75,10 +75,7 @@ pub fn is_guest_ipv4(s: &str) -> bool {
 }
 
 fn usable_ipv6(ip: Ipv6Addr) -> bool {
-    !ip.is_loopback()
-        && !ip.is_unspecified()
-        && !ip.is_multicast()
-        && !ip.is_unicast_link_local()
+    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast() && !ip.is_unicast_link_local()
 }
 
 fn ipv6_rank(ip: Ipv6Addr) -> u8 {
@@ -209,7 +206,10 @@ mod tests {
             prefer_ipv6(["fd00:1::254", "2405:9800:b901:194c:5054:ff:fe00:65"]),
             Some("2405:9800:b901:194c:5054:ff:fe00:65".into())
         );
-        assert_eq!(prefer_ipv6(["fe80::1", "fd00:1::254"]), Some("fd00:1::254".into()));
+        assert_eq!(
+            prefer_ipv6(["fe80::1", "fd00:1::254"]),
+            Some("fd00:1::254".into())
+        );
         assert_eq!(prefer_ipv6(["fe80::1"]), None);
     }
 

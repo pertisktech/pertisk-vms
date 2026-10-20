@@ -64,6 +64,13 @@ export default function GuestOptions() {
         editable: editable && !template,
       },
       {
+        key: 'group',
+        label: 'Placement group',
+        value: vm.spec?.group || '—',
+        edit: 'group',
+        editable: editable && !template,
+      },
+      {
         key: 'autostart',
         label: 'Start at boot',
         value: vm.spec?.autostart ? 'yes' : 'no',
@@ -104,6 +111,7 @@ export default function GuestOptions() {
     setError('')
     if (kind === 'name') setForm({ name: vm.spec?.name || '' })
     if (kind === 'ha') setForm({ ha: vm.spec?.ha !== false })
+    if (kind === 'group') setForm({ group: vm.spec?.group || '' })
     if (kind === 'autostart')
       setForm({
         autostart: Boolean(vm.spec?.autostart),
@@ -126,7 +134,9 @@ export default function GuestOptions() {
         ? { name: form.name.trim() }
         : kind === 'ha'
           ? { ha: Boolean(form.ha) }
-          : {
+          : kind === 'group'
+            ? { group: form.group.trim() }
+            : {
               autostart: Boolean(form.autostart),
               autostart_delay: Number(form.autostart_delay) || 0,
               autostart_order: Number(form.autostart_order) || 0,
@@ -229,6 +239,7 @@ export default function GuestOptions() {
             {
               name: 'Edit name',
               ha: 'Edit high availability',
+              group: 'Edit placement group',
               autostart: 'Edit start at boot',
             }[dialog]
           }
@@ -275,6 +286,21 @@ export default function GuestOptions() {
                   <small>Restart works for Ceph RBD disks only. Local files stay on the lost node.</small>
                 </span>
               </label>
+            )}
+            {dialog === 'group' && (
+              <div className="field">
+                <label htmlFor="opt-group">Placement group</label>
+                <input
+                  id="opt-group"
+                  autoFocus
+                  value={form.group}
+                  onChange={(e) => setForm({ ...form, group: e.target.value })}
+                  placeholder="web"
+                />
+                <p className="field-hint">
+                  Guests that share a group are placed on different nodes when another node fits. Leave this empty to clear the group.
+                </p>
+              </div>
             )}
             {dialog === 'autostart' && (
               <div className="wizard-options">

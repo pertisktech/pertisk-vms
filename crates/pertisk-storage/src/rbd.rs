@@ -37,12 +37,7 @@ impl Rbd {
 
     pub fn create_image(&self, name: &str, size_bytes: u64) -> Result<()> {
         let mib = size_mib(size_bytes);
-        self.run(&[
-            "create",
-            &format!("{}/{}", self.pool, name),
-            "--size",
-            &mib,
-        ])
+        self.run(&["create", &format!("{}/{}", self.pool, name), "--size", &mib])
     }
 
     /// Import a raw file as a new image. The caller converts qcow2 first.
@@ -65,12 +60,7 @@ impl Rbd {
 
     pub fn resize(&self, name: &str, size_bytes: u64) -> Result<()> {
         let mib = size_mib(size_bytes);
-        self.run(&[
-            "resize",
-            &format!("{}/{}", self.pool, name),
-            "--size",
-            &mib,
-        ])
+        self.run(&["resize", &format!("{}/{}", self.pool, name), "--size", &mib])
     }
 
     pub fn remove_image(&self, name: &str) -> Result<()> {

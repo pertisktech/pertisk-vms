@@ -254,6 +254,7 @@ mod tests {
                     autostart_delay: 0,
                     autostart_order: 0,
                     ssh_user: None,
+                    group: None,
                 },
                 state: VmState::Created,
                 pid: None,
@@ -314,6 +315,7 @@ mod tests {
                             autostart_delay: 0,
                             autostart_order: 0,
                             ssh_user: None,
+                            group: None,
                         },
                         state: VmState::Created,
                         pid: None,
@@ -358,6 +360,7 @@ mod tests {
                 autostart_delay: 0,
                 autostart_order: 0,
                 ssh_user: None,
+                group: None,
             },
             state: VmState::Created,
             pid: None,
@@ -374,12 +377,8 @@ mod tests {
     #[test]
     fn insert_unique_allocates_distinct_numeric_ids() {
         let (store, _dir) = tmp_store();
-        let a = store
-            .insert_unique(None, "a", |id| rec(id, "a"))
-            .unwrap();
-        let b = store
-            .insert_unique(None, "b", |id| rec(id, "b"))
-            .unwrap();
+        let a = store.insert_unique(None, "a", |id| rec(id, "a")).unwrap();
+        let b = store.insert_unique(None, "b", |id| rec(id, "b")).unwrap();
         assert_eq!(a.id, VmId::Numeric(100));
         assert_eq!(b.id, VmId::Numeric(101));
         assert!(matches!(

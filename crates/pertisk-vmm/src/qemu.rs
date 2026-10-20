@@ -64,18 +64,43 @@ impl QemuDriver {
         self.spawn(id, spec, Some(port)).await
     }
 
+    /// Internal qcow2 snapshot of one drive while the guest keeps running.
+    /// The guest agent is frozen first when it answers.
+    pub async fn snapshot_internal(
+        &self,
+        record: &VmRecord,
+        device: &str,
+        name: &str,
+    ) -> Result<()> {
+        let qmp = qmp_socket(record)?;
+        let qga = self.qga_socket_path(record.id);
+        let frozen = tokio::task::spawn_blocking({
+            let qga = qga.clone();
+            move || crate::qga::fsfreeze(&qga, false).is_ok()
+        })
+        .await
+        .unwrap_or(false);
+        let result = qmp_ok(
+            qmp,
+            "blockdev-snapshot-internal-sync",
+            Some(serde_json::json!({ "device": device, "name": name })),
+        )
+        .await
+        .map(|_| ());
+        if frozen {
+            let _ = tokio::task::spawn_blocking(move || crate::qga::fsfreeze(&qga, true)).await;
+        }
+        result
+    }
+
     pub async fn migrate_to(&self, record: &VmRecord, uri: &str) -> Result<()> {
         let qmp = record
             .api_socket
             .as_ref()
             .ok_or_else(|| VmmError::Message("missing qemu qmp socket".into()))?;
-        qmp_execute_with(
-            qmp,
-            "migrate",
-            Some(serde_json::json!({ "uri": uri })),
-        )
-        .await
-        .map(|_| ())
+        qmp_execute_with(qmp, "migrate", Some(serde_json::json!({ "uri": uri })))
+            .await
+            .map(|_| ())
     }
 
     /// Export local (non-RBD, non-CD) drives so the source can `drive-mirror` into them.
@@ -178,7 +203,11 @@ impl QemuDriver {
         }
     }
 
-    pub async fn complete_mirrors(&self, record: &VmRecord, exports: &[MirrorExport]) -> Result<()> {
+    pub async fn complete_mirrors(
+        &self,
+        record: &VmRecord,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
         let qmp = qmp_socket(record)?;
         for export in exports {
             qmp_ok(
@@ -234,12 +263,7 @@ impl QemuDriver {
         }
     }
 
-    async fn spawn(
-        &self,
-        id: VmId,
-        spec: &VmSpec,
-        incoming: Option<u16>,
-    ) -> Result<CreateResult> {
+    async fn spawn(&self, id: VmId, spec: &VmSpec, incoming: Option<u16>) -> Result<CreateResult> {
         if spec.disks.is_empty() && spec.kernel.is_none() {
             return Err(VmmError::Message(
                 "qemu needs a kernel or at least one disk".into(),
@@ -269,7 +293,10 @@ impl QemuDriver {
         // times out. Unlinking the socket and spawning again hits the qcow2
         // write lock. Reuse a live QMP, otherwise reap leftovers first.
         let leftover = qemu_pids_for(id);
-        if incoming.is_none() && !leftover.is_empty() && wait_qmp(&qmp, Duration::from_secs(3)).await.is_ok() {
+        if incoming.is_none()
+            && !leftover.is_empty()
+            && wait_qmp(&qmp, Duration::from_secs(3)).await.is_ok()
+        {
             let pid = leftover.into_iter().next();
             info!(vm = %id, pid = ?pid, "reusing qemu");
             return Ok(CreateResult {
@@ -308,8 +335,7 @@ impl QemuDriver {
             .arg("none")
             .arg("-S");
         if let Some(port) = incoming {
-            cmd.arg("-incoming")
-                .arg(format!("tcp:0.0.0.0:{port}"));
+            cmd.arg("-incoming").arg(format!("tcp:0.0.0.0:{port}"));
         }
         cmd.arg("-qmp")
             .arg(format!("unix:{},server,nowait", qmp.display()))
@@ -329,6 +355,10 @@ impl QemuDriver {
             cmd.arg("-device").arg("virtio-gpu-pci");
         } else {
             cmd.arg("-vga").arg("std");
+        }
+        // Absolute pointer so noVNC tracks. aarch64 virt has no PS/2 keyboard.
+        for (flag, spec) in graphics_input_devices() {
+            cmd.arg(flag).arg(spec);
         }
         cmd.arg("-device")
             .arg("virtio-serial-pci,id=virtio-serial0")
@@ -756,6 +786,19 @@ fn host_is_aarch64() -> bool {
     cfg!(target_arch = "aarch64")
 }
 
+/// USB tablet gives noVNC an absolute pointer. x86 keeps the machine PS/2 keyboard
+/// so keystrokes are not delivered twice. aarch64 virt has no PS/2, so it gets a USB keyboard.
+fn graphics_input_devices() -> Vec<(&'static str, &'static str)> {
+    let mut devices = vec![
+        ("-device", "qemu-xhci,id=xhci"),
+        ("-device", "usb-tablet,bus=xhci.0"),
+    ];
+    if host_is_aarch64() {
+        devices.push(("-device", "usb-kbd,bus=xhci.0"));
+    }
+    devices
+}
+
 /// On big.LITTLE hosts (RK3588 A55+A76), pin QEMU to one cluster.
 /// Mixed cores + `-cpu host` + smp>1 crash AAVMF with "Synchronous Exception".
 fn qemu_command(binary: &Path) -> Command {
@@ -949,6 +992,19 @@ pub struct MirrorExport {
     pub format: String,
 }
 
+/// Drive id QEMU was given for this volume, after the same boot-order sort as spawn.
+pub fn disk_device_id(spec: &VmSpec, volume_id: pertisk_types::VolumeId) -> Option<String> {
+    let mut ordered: Vec<_> = spec.disks.iter().collect();
+    ordered.sort_by_key(|disk| boot_rank(disk));
+    ordered.iter().enumerate().find_map(|(index, disk)| {
+        if disk.cdrom || disk.volume_id != Some(volume_id) {
+            None
+        } else {
+            Some(format!("disk{index}"))
+        }
+    })
+}
+
 pub fn mirror_exports(spec: &VmSpec) -> Vec<MirrorExport> {
     let mut ordered: Vec<_> = spec.disks.iter().collect();
     ordered.sort_by_key(|disk| boot_rank(disk));
@@ -1062,9 +1118,7 @@ async fn qmp_roundtrip(
 ) -> Result<serde_json::Value> {
     let mut stream = tokio::time::timeout(Duration::from_secs(3), UnixStream::connect(path))
         .await
-        .map_err(|_| {
-            VmmError::Message(format!("qmp connect {}: timed out", path.display()))
-        })?
+        .map_err(|_| VmmError::Message(format!("qmp connect {}: timed out", path.display())))?
         .map_err(|err| VmmError::Message(format!("qmp connect {}: {err}", path.display())))?;
     let mut buf = vec![0u8; 65536];
     let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
@@ -1077,12 +1131,8 @@ async fn qmp_roundtrip(
     stream.write_all(b"\n").await?;
     let _ = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
         .await
-        .map_err(|_| {
-            VmmError::Message(format!("qmp capabilities {}: timed out", path.display()))
-        })?
-        .map_err(|err| {
-            VmmError::Message(format!("qmp capabilities {}: {err}", path.display()))
-        })?;
+        .map_err(|_| VmmError::Message(format!("qmp capabilities {}: timed out", path.display())))?
+        .map_err(|err| VmmError::Message(format!("qmp capabilities {}: {err}", path.display())))?;
     if execute != "qmp_capabilities" {
         let cmd = match arguments {
             Some(arguments) => serde_json::json!({"execute": execute, "arguments": arguments}),
@@ -1092,12 +1142,8 @@ async fn qmp_roundtrip(
         stream.write_all(b"\n").await?;
         let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
             .await
-            .map_err(|_| {
-                VmmError::Message(format!("qmp {execute} {}: timed out", path.display()))
-            })?
-            .map_err(|err| {
-                VmmError::Message(format!("qmp {execute} {}: {err}", path.display()))
-            })?;
+            .map_err(|_| VmmError::Message(format!("qmp {execute} {}: timed out", path.display())))?
+            .map_err(|err| VmmError::Message(format!("qmp {execute} {}: {err}", path.display())))?;
         let text = std::str::from_utf8(&buf[..n]).unwrap_or("");
         for line in text.lines() {
             if line.trim().is_empty() {
@@ -1118,6 +1164,18 @@ mod tests {
     use pertisk_types::{DiskSpec, VmSpec};
 
     #[test]
+    fn graphics_input_has_an_absolute_tablet() {
+        let devices = graphics_input_devices();
+        assert!(devices.iter().any(|(_, spec)| spec.contains("usb-tablet")));
+        assert!(devices.iter().any(|(_, spec)| spec.contains("qemu-xhci")));
+        if cfg!(target_arch = "aarch64") {
+            assert!(devices.iter().any(|(_, spec)| spec.contains("usb-kbd")));
+        } else {
+            assert!(!devices.iter().any(|(_, spec)| spec.contains("usb-kbd")));
+        }
+    }
+
+    #[test]
     fn mirror_exports_skip_cdrom_and_rbd() {
         let spec: VmSpec = serde_json::from_value(serde_json::json!({
             "name": "guest",
@@ -1132,11 +1190,55 @@ mod tests {
         assert_eq!(exports.len(), 1);
         assert_eq!(exports[0].device, "disk1");
         assert_eq!(exports[0].format, "qcow2");
-        assert_eq!(nbd_target("10.1.1.2", 9000, "disk1"), "nbd:10.1.1.2:9000:exportname=disk1");
+        assert_eq!(
+            nbd_target("10.1.1.2", 9000, "disk1"),
+            "nbd:10.1.1.2:9000:exportname=disk1"
+        );
         assert_eq!(
             nbd_target("fe80::1", 9000, "disk1"),
             "nbd:[fe80::1]:9000:exportname=disk1"
         );
+    }
+
+    #[test]
+    fn disk_device_id_follows_boot_order() {
+        let volume = pertisk_types::VolumeId::new();
+        let spec = VmSpec {
+            name: "guest".into(),
+            vcpus: 1,
+            memory_mib: 512,
+            kernel: None,
+            cmdline: None,
+            initramfs: None,
+            firmware: None,
+            disks: vec![
+                DiskSpec {
+                    path: "/iso/alpine.iso".into(),
+                    readonly: true,
+                    cdrom: true,
+                    volume_id: None,
+                    iso_name: Some("alpine.iso".into()),
+                },
+                DiskSpec {
+                    path: "/disks/root.qcow2".into(),
+                    readonly: false,
+                    cdrom: false,
+                    volume_id: Some(volume),
+                    iso_name: None,
+                },
+            ],
+            nets: vec![],
+            serial_log: None,
+            console_type: Default::default(),
+            ha: false,
+            autostart: false,
+            autostart_delay: 0,
+            autostart_order: 0,
+            ssh_user: None,
+            group: None,
+        };
+        assert_eq!(disk_device_id(&spec, volume).as_deref(), Some("disk1"));
+        assert_eq!(disk_device_id(&spec, pertisk_types::VolumeId::new()), None);
     }
 
     #[test]
@@ -1231,6 +1333,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         };
         assert_eq!(
             qemu_guest_name(pertisk_types::VmId::Numeric(101), &spec),

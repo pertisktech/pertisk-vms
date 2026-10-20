@@ -85,6 +85,17 @@ fn qga_command(path: &Path, execute: &str, arguments: Option<Value>) -> std::io:
     qga_command_timeout(path, execute, arguments, Duration::from_millis(400))
 }
 
+/// Freeze or thaw guest filesystems. Fails when the agent is absent.
+pub(crate) fn fsfreeze(path: &Path, thaw: bool) -> std::io::Result<()> {
+    let execute = if thaw {
+        "guest-fsfreeze-thaw"
+    } else {
+        "guest-fsfreeze-freeze"
+    };
+    qga_command_timeout(path, execute, None, Duration::from_secs(30))?;
+    Ok(())
+}
+
 /// Best-effort: install SSH pubkeys into the guest so the node's SSH tab can log in.
 pub fn ssh_add_authorized_keys(
     qga_sock: &Path,

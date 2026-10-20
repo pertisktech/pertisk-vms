@@ -42,6 +42,10 @@ name = "pertisk"
 # join = "http://192.168.1.10:7480"
 heartbeat_ms = 1000
 offline_after_ms = 20000     # 2-node clusters need headroom; 5s fences too easily
+# Two nodes lose quorum when either one is unreachable. A witness on a third
+# host grants that tie to one node. Set the same secret on every node.
+# witness_url = "http://192.168.1.5:7480"
+# witness_secret = "replace-me"
 # Auto-detected from nproc / MemTotal if unset (16c/64G → 16 / ~48GiB advertised).
 # cpus = 16
 # memory_mib = 49152

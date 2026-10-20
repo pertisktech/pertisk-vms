@@ -61,8 +61,10 @@ pub fn prepare_shim_disk_boot(
         if skip_blind_mount(fs.as_deref()) {
             continue;
         }
-        if matches!(fs.as_deref(), Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs"))
-            && !search.contains(part)
+        if matches!(
+            fs.as_deref(),
+            Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs")
+        ) && !search.contains(part)
         {
             search.push(part.clone());
         }

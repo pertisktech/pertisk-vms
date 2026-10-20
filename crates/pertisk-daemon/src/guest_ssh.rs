@@ -53,9 +53,8 @@ fn spawn_ssh(target: &GuestSshTarget) -> Result<SshSession, String> {
     // Drop any stale known_hosts entry for this address before connecting.
     forget_known_host(&target.host);
 
-    let ssh = ssh_bin().ok_or_else(|| {
-        "ssh client missing (install openssh-client on the node)".to_string()
-    })?;
+    let ssh = ssh_bin()
+        .ok_or_else(|| "ssh client missing (install openssh-client on the node)".to_string())?;
     let mut cmd = CommandBuilder::new(ssh);
     cmd.arg("-tt");
     cmd.arg("-o");

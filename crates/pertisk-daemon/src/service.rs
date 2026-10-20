@@ -10,13 +10,12 @@ use pertisk_types::{
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
     CloudInitNetwork, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DrainResponse,
-    DriverKind,
-    HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec, NetworkId,
-    NetworkMode, NetworkRecord, NodeId, NodeMetrics, NotifyConfig, ResizeVolumeRequest,
-    SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
-    UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics, VmRecord, VmSpec, VmState,
-    VolumeFormat, VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host,
-    probe_host_addrs,
+    DriverKind, HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec,
+    NetworkId, NetworkMode, NetworkRecord, NodeId, NodeMetrics, NotifyConfig, RebalanceResponse,
+    ResizeVolumeRequest, SerialChunk, SetRepositoryRequest, SmtpTls, SnapshotRequest,
+    StorageBackend, UpdateVmRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord, VmId, VmMetrics,
+    VmRecord, VmSpec, VmState, VolumeFormat, VolumeId, VolumeRecord, default_cloud_user,
+    is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -112,6 +111,55 @@ pub struct Service {
     node_online: Arc<Mutex<HashMap<NodeId, bool>>>,
     /// Destination QEMU processes waiting for a live migration to finish.
     incoming: Arc<Mutex<HashMap<VmId, VmRecord>>>,
+    /// Tie-break lease when this node is the configured witness.
+    witness_lease: Arc<Mutex<cluster::WitnessLease>>,
+}
+
+/// How to snapshot a volume that a running guest still has open.
+#[derive(Debug)]
+pub(crate) enum RunningSnapshot {
+    /// `rbd snap` or `zfs snapshot`. Both work while the guest is running.
+    Storage,
+    /// QEMU internal snapshot of this drive id.
+    Qemu {
+        device: String,
+    },
+    Refuse(&'static str),
+}
+
+pub(crate) fn running_snapshot_plan(
+    backend: StorageBackend,
+    format: VolumeFormat,
+    driver: DriverKind,
+    device: Option<String>,
+) -> RunningSnapshot {
+    match backend {
+        StorageBackend::Rbd | StorageBackend::Zfs => RunningSnapshot::Storage,
+        StorageBackend::Replica => {
+            if format != VolumeFormat::Qcow2 {
+                return RunningSnapshot::Refuse(
+                    "raw disks cannot be snapshotted while a guest is running",
+                );
+            }
+            if driver != DriverKind::Qemu {
+                return RunningSnapshot::Refuse("live snapshot requires the qemu driver");
+            }
+            match device {
+                Some(device) => RunningSnapshot::Qemu { device },
+                None => RunningSnapshot::Refuse("volume is not a disk on the running guest"),
+            }
+        }
+    }
+}
+
+/// Trimmed placement group. Empty means the guest has no group.
+fn placement_group(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 impl Service {
@@ -156,6 +204,7 @@ impl Service {
             metrics: Arc::new(MetricsCache::new()),
             node_online: Arc::new(Mutex::new(HashMap::new())),
             incoming: Arc::new(Mutex::new(HashMap::new())),
+            witness_lease: Arc::new(Mutex::new(cluster::WitnessLease::default())),
         }
     }
 
@@ -554,7 +603,26 @@ impl Service {
     }
 
     pub fn cluster_status(&self) -> Result<pertisk_types::ClusterStatus, DaemonError> {
-        Ok(self.cluster.status(&self.loads()?))
+        let mut status = self.cluster.status(&self.loads()?);
+        status.witness = self.config.cluster.witness_url.is_some()
+            && self
+                .config
+                .cluster
+                .witness_secret
+                .as_deref()
+                .is_some_and(|secret| !secret.is_empty());
+        Ok(status)
+    }
+
+    pub fn witness_secret_ok(&self, got: &str) -> bool {
+        self.config.cluster.witness_secret.as_deref() == Some(got) && !got.is_empty()
+    }
+
+    pub fn claim_witness(&self, node_id: pertisk_types::NodeId) -> pertisk_types::WitnessGrant {
+        let ttl_ms = self.cluster.offline_after_ms();
+        let mut lease = self.witness_lease.lock().expect("witness lease");
+        let holder = cluster::witness_claim(&mut lease, node_id, cluster::now_ms(), ttl_ms);
+        pertisk_types::WitnessGrant { holder, ttl_ms }
     }
 
     pub fn set_ha_armed(&self, armed: bool) -> Result<pertisk_types::ClusterStatus, DaemonError> {
@@ -582,7 +650,7 @@ impl Service {
             if vm.template || vm.node_id != Some(node) || vm.state != VmState::Running {
                 continue;
             }
-            let dest = self.pick_node_excluding(&vm.spec, node)?;
+            let dest = self.pick_node_excluding(&vm.spec, node, Some(vm.id))?;
             tracing::info!(vm = %vm.id, from = %node, to = %dest, "drain migrate");
             moved.push(self.migrate(vm.id, Some(dest)).await?);
         }
@@ -590,6 +658,60 @@ impl Service {
             node_id: node,
             moved,
         })
+    }
+
+    /// One pass: spread running guests that share a placement group.
+    pub async fn rebalance(&self) -> Result<RebalanceResponse, DaemonError> {
+        self.require_quorum()?;
+        let mut hold = Vec::new();
+        let mut moved = Vec::new();
+        let mut skipped = Vec::new();
+        for _ in 0..64 {
+            let places = self.placed_groups()?;
+            let plan = cluster::rebalance_plan(&places, &self.loads()?, &hold);
+            let Some(&(id, dest)) = plan.first() else {
+                break;
+            };
+            match self.migrate(id, Some(dest)).await {
+                Ok(vm) if vm.node_id == Some(dest) => moved.push(vm),
+                Ok(vm) => {
+                    hold.push(id);
+                    let stayed = vm
+                        .node_id
+                        .map(|node| node.to_string())
+                        .unwrap_or_else(|| "unknown".into());
+                    skipped.push(format!("{id} stayed on {stayed}"));
+                }
+                Err(err) => {
+                    hold.push(id);
+                    skipped.push(format!("{id}: {err}"));
+                }
+            }
+        }
+        Ok(RebalanceResponse { moved, skipped })
+    }
+
+    fn placed_groups(&self) -> Result<Vec<cluster::PlacedGuest>, DaemonError> {
+        let mut places = Vec::new();
+        for vm in self.store.list()? {
+            if vm.template || vm.state != VmState::Running {
+                continue;
+            }
+            let Some(node) = vm.node_id else {
+                continue;
+            };
+            let Some(group) = placement_group(vm.spec.group.as_deref()) else {
+                continue;
+            };
+            places.push(cluster::PlacedGuest {
+                id: vm.id,
+                node,
+                group,
+                vcpus: u32::from(vm.spec.vcpus),
+                memory_mib: vm.spec.memory_mib,
+            });
+        }
+        Ok(places)
     }
 
     pub fn set_peer_url(&self, url: String) -> Result<(), DaemonError> {
@@ -668,6 +790,8 @@ impl Service {
         spec: VmSpec,
     ) -> Result<VmRecord, DaemonError> {
         self.require_quorum()?;
+        let mut spec = spec;
+        spec.group = placement_group(spec.group.as_deref());
         spec.validate()?;
         let dest = self.pick_node_define(&spec, None)?;
         let run_dir = self.config.vmm.run_dir.clone();
@@ -731,6 +855,9 @@ impl Service {
         }
         if let Some(autostart_order) = req.autostart_order {
             vm.spec.autostart_order = autostart_order;
+        }
+        if let Some(group) = req.group {
+            vm.spec.group = placement_group(Some(group.as_str()));
         }
         vm.spec.validate()?;
         self.store.upsert(vm.clone())?;
@@ -961,6 +1088,7 @@ impl Service {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         };
         spec.validate()?;
         let record = self.create_guest(req.id, spec).await?;
@@ -997,6 +1125,9 @@ impl Service {
         spec.ha = req.ha.unwrap_or(true);
         spec.autostart_delay = req.autostart_delay.unwrap_or(0);
         spec.autostart_order = req.autostart_order.unwrap_or(0);
+        if let Some(group) = req.group.as_deref() {
+            spec.group = placement_group(Some(group));
+        }
         if let Some(vcpus) = req.vcpus {
             spec.vcpus = vcpus;
         }
@@ -1275,7 +1406,7 @@ impl Service {
         let affinity = self.volume_affinity(&record.spec);
         let dest = match record.node_id {
             Some(current) if affinity.is_empty() || affinity.contains(&current) => current,
-            _ => self.pick_node(&record.spec, affinity.first().copied())?,
+            _ => self.pick_node(&record.spec, affinity.first().copied(), Some(record.id))?,
         };
         if record.node_id != Some(dest) {
             record.node_id = Some(dest);
@@ -1670,7 +1801,11 @@ impl Service {
         self.require_quorum()?;
         let mut record = self.store.get(id)?;
         self.require_not_template(&record, "migrate")?;
-        let dest = self.pick_node(&record.spec, target)?;
+        let dest = if target.is_some() {
+            self.pick_node_pinned(&record.spec, target)?
+        } else {
+            self.pick_node(&record.spec, None, Some(record.id))?
+        };
         let src = record.node_id.unwrap_or(self.cluster.self_id());
         if dest == src {
             return Ok(record);
@@ -1731,7 +1866,12 @@ impl Service {
         dest: pertisk_types::NodeId,
     ) -> Result<VmRecord, DaemonError> {
         let prepared: IncomingListen = self
-            .peer_json_timeout(dest, "/v1/peer/incoming", record, std::time::Duration::from_secs(45))
+            .peer_json_timeout(
+                dest,
+                "/v1/peer/incoming",
+                record,
+                std::time::Duration::from_secs(45),
+            )
             .await
             .map_err(|err| DaemonError::Peer(format!("live migration listen: {err}")))?;
         let url = self
@@ -1748,7 +1888,11 @@ impl Service {
         let expected = pertisk_vmm::mirror_exports(&boot_spec);
         if expected != prepared.exports {
             let _: Result<serde_json::Value, _> = self
-                .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                .peer_json(
+                    dest,
+                    "/v1/peer/incoming/abort",
+                    &IncomingFinish { id: record.id },
+                )
                 .await;
             return Err(DaemonError::Peer(
                 "live migration drive layout does not match the running guest; stop and start it, then migrate again".into(),
@@ -1763,7 +1907,11 @@ impl Service {
             {
                 let _ = self.vmm.cancel_mirrors(record, &expected).await;
                 let _: Result<serde_json::Value, _> = self
-                    .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                    .peer_json(
+                        dest,
+                        "/v1/peer/incoming/abort",
+                        &IncomingFinish { id: record.id },
+                    )
                     .await;
                 return Err(DaemonError::Peer(format!(
                     "disk mirror failed; guest is still on the source: {err}"
@@ -1776,7 +1924,11 @@ impl Service {
             {
                 let _ = self.vmm.cancel_mirrors(record, &expected).await;
                 let _: Result<serde_json::Value, _> = self
-                    .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                    .peer_json(
+                        dest,
+                        "/v1/peer/incoming/abort",
+                        &IncomingFinish { id: record.id },
+                    )
                     .await;
                 return Err(DaemonError::Peer(format!(
                     "disk mirror failed; guest is still on the source: {err}"
@@ -1787,7 +1939,11 @@ impl Service {
         if let Err(err) = self.vmm.migrate_to(record, &uri).await {
             let _ = self.vmm.cancel_mirrors(record, &expected).await;
             let _: Result<serde_json::Value, _> = self
-                .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                .peer_json(
+                    dest,
+                    "/v1/peer/incoming/abort",
+                    &IncomingFinish { id: record.id },
+                )
                 .await;
             return Err(DaemonError::Peer(format!(
                 "live migration failed; guest is still on the source: {err}"
@@ -1799,9 +1955,15 @@ impl Service {
             tracing::warn!(vm = %record.id, %err, "block-job-complete after migration");
         }
         let mut started: VmRecord = self
-            .peer_json(dest, "/v1/peer/incoming/finish", &IncomingFinish { id: record.id })
+            .peer_json(
+                dest,
+                "/v1/peer/incoming/finish",
+                &IncomingFinish { id: record.id },
+            )
             .await
-            .map_err(|err| DaemonError::Peer(format!("live migration landed but resume failed: {err}")))?;
+            .map_err(|err| {
+                DaemonError::Peer(format!("live migration landed but resume failed: {err}"))
+            })?;
         if record.node_id.unwrap_or_else(|| self.cluster.self_id()) == self.cluster.self_id() {
             let _ = self.apply_drop(record).await;
         } else if let Some(src) = record.node_id {
@@ -1815,7 +1977,10 @@ impl Service {
         Ok(started)
     }
 
-    pub async fn apply_incoming(&self, mut record: VmRecord) -> Result<IncomingListen, DaemonError> {
+    pub async fn apply_incoming(
+        &self,
+        mut record: VmRecord,
+    ) -> Result<IncomingListen, DaemonError> {
         if self.driver() != DriverKind::Qemu {
             return Err(DaemonError::Peer(
                 "live migration requires the qemu driver".into(),
@@ -2173,12 +2338,8 @@ impl Service {
             let name = req.name.clone();
             if req.linked {
                 let snap = rbd_clone_snap(&name);
-                self.volumes.snapshot(
-                    id,
-                    SnapshotRequest {
-                        name: snap.clone(),
-                    },
-                )?;
+                self.volumes
+                    .snapshot(id, SnapshotRequest { name: snap.clone() })?;
                 let _ = rbd.snapshot_protect(&source.name, &snap);
                 rbd.clone_image(&source.name, &snap, &name)?;
             } else {
@@ -2212,12 +2373,8 @@ impl Service {
             let name = req.name.clone();
             if req.linked {
                 let snap = rbd_clone_snap(&name);
-                self.volumes.snapshot(
-                    id,
-                    SnapshotRequest {
-                        name: snap.clone(),
-                    },
-                )?;
+                self.volumes
+                    .snapshot(id, SnapshotRequest { name: snap.clone() })?;
                 zfs.clone_dataset(&dataset, &snap, &name)?;
             } else {
                 zfs.copy_dataset(&dataset, &name)?;
@@ -2263,12 +2420,74 @@ impl Service {
         id: VolumeId,
         req: SnapshotRequest,
     ) -> Result<VolumeRecord, DaemonError> {
-        self.require_volume_idle(id, "snapshot")?;
-        let record = self.volumes.snapshot(id, req)?;
-        self.sync_volume_replicas(&record).await;
-        self.cluster.bump()?;
-        self.replicate().await;
-        Ok(record)
+        self.snapshot_volume_forward(id, req, true).await
+    }
+
+    /// Snapshot on this node. Peer calls use this so a forward does not loop.
+    pub async fn snapshot_volume_here(
+        &self,
+        id: VolumeId,
+        req: SnapshotRequest,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.snapshot_volume_forward(id, req, false).await
+    }
+
+    async fn snapshot_volume_forward(
+        &self,
+        id: VolumeId,
+        req: SnapshotRequest,
+        allow_forward: bool,
+    ) -> Result<VolumeRecord, DaemonError> {
+        let running = self.running_volume_users(id)?;
+        if running.is_empty() {
+            let record = self.volumes.snapshot(id, req)?;
+            self.sync_volume_replicas(&record).await;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
+        if running.len() > 1 {
+            return Err(StorageError::Message(
+                "volume is attached to more than one running guest".into(),
+            )
+            .into());
+        }
+        let vm = self.store.get(running[0])?;
+        let owner = vm.node_id.unwrap_or_else(|| self.cluster.self_id());
+        if owner != self.cluster.self_id() {
+            if !allow_forward {
+                return Err(
+                    StorageError::Message("guest is not running on this node".into()).into(),
+                );
+            }
+            let path = format!("/v1/peer/volumes/{id}/snapshot");
+            return self.peer_json(owner, &path, &req).await;
+        }
+        let vol = self.volumes.get_volume(id)?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        if vol.snapshots.iter().any(|snap| snap.name == name) {
+            return Err(StorageError::SnapshotExists(name).into());
+        }
+        let device = pertisk_vmm::disk_device_id(&vm.spec, id);
+        match running_snapshot_plan(vol.backend, vol.format, self.vmm.kind(), device) {
+            RunningSnapshot::Storage => {
+                let record = self.volumes.snapshot(id, SnapshotRequest { name })?;
+                self.cluster.bump()?;
+                self.replicate().await;
+                Ok(record)
+            }
+            RunningSnapshot::Qemu { device } => {
+                self.vmm.snapshot_internal(&vm, &device, &name).await?;
+                let record = self.volumes.note_snapshot(id, &name)?;
+                self.cluster.bump()?;
+                self.replicate().await;
+                Ok(record)
+            }
+            RunningSnapshot::Refuse(msg) => Err(StorageError::Message(msg.into()).into()),
+        }
     }
 
     pub async fn restore_volume(
@@ -2446,6 +2665,17 @@ impl Service {
             })
             .map(|vm| vm.id)
             .collect())
+    }
+
+    fn running_volume_users(&self, id: VolumeId) -> Result<Vec<VmId>, DaemonError> {
+        let mut running = Vec::new();
+        for vm_id in self.volume_users(id)? {
+            let vm = self.store.get(vm_id)?;
+            if vm.state == VmState::Running {
+                running.push(vm.id);
+            }
+        }
+        Ok(running)
     }
 
     fn require_volume_idle(&self, id: VolumeId, _op: &str) -> Result<(), DaemonError> {
@@ -3012,6 +3242,26 @@ impl Service {
         &self,
         spec: &VmSpec,
         prefer: Option<pertisk_types::NodeId>,
+        except: Option<VmId>,
+    ) -> Result<pertisk_types::NodeId, DaemonError> {
+        self.cluster.touch_self();
+        let loads = self.loads()?;
+        let affinity = self.volume_affinity(spec);
+        cluster::schedule_spread(
+            &loads,
+            spec,
+            prefer,
+            &affinity,
+            &self.group_nodes(spec, except),
+        )
+        .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
+    }
+
+    /// Honor an explicit migrate target when it fits. Group spread does not override it.
+    fn pick_node_pinned(
+        &self,
+        spec: &VmSpec,
+        prefer: Option<pertisk_types::NodeId>,
     ) -> Result<pertisk_types::NodeId, DaemonError> {
         self.cluster.touch_self();
         let loads = self.loads()?;
@@ -3024,6 +3274,7 @@ impl Service {
         &self,
         spec: &VmSpec,
         exclude: pertisk_types::NodeId,
+        except: Option<VmId>,
     ) -> Result<pertisk_types::NodeId, DaemonError> {
         self.cluster.touch_self();
         let loads: Vec<_> = self
@@ -3032,8 +3283,14 @@ impl Service {
             .filter(|n| n.id != exclude)
             .collect();
         let affinity = self.volume_affinity(spec);
-        cluster::schedule_storage(&loads, spec, None, &affinity)
-            .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
+        cluster::schedule_spread(
+            &loads,
+            spec,
+            None,
+            &affinity,
+            &self.group_nodes(spec, except),
+        )
+        .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
     }
 
     /// Place a defined guest (create / template import). RAM is checked on start.
@@ -3045,7 +3302,7 @@ impl Service {
         self.cluster.touch_self();
         let loads = self.loads()?;
         let affinity = self.volume_affinity(spec);
-        cluster::schedule_define(&loads, prefer, &affinity)
+        cluster::schedule_define_spread(&loads, prefer, &affinity, &self.group_nodes(spec, None))
             .ok_or_else(|| DaemonError::Unschedulable(self.unschedulable_detail(&loads)))
     }
 
@@ -3069,6 +3326,24 @@ impl Service {
             })
             .collect::<Vec<_>>()
             .join("; ")
+    }
+
+    /// Nodes that already hold another guest in this placement group.
+    fn group_nodes(&self, spec: &VmSpec, except: Option<VmId>) -> Vec<pertisk_types::NodeId> {
+        let Some(group) = placement_group(spec.group.as_deref()) else {
+            return Vec::new();
+        };
+        self.store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|vm| {
+                !vm.template
+                    && Some(vm.id) != except
+                    && placement_group(vm.spec.group.as_deref()).as_deref() == Some(group.as_str())
+            })
+            .filter_map(|vm| vm.node_id)
+            .collect()
     }
 
     fn volume_affinity(&self, spec: &VmSpec) -> Vec<pertisk_types::NodeId> {
@@ -3298,6 +3573,7 @@ impl Service {
         // Apply peer inventory before HA/autostart so a restart does not boot
         // guests the other node already owns (that dual-run then stop/start-loops).
         self.send_heartbeats().await;
+        self.refresh_witness().await;
         let quorum = self.cluster.has_quorum();
         let ha_armed = self.cluster.is_ha_armed();
         if ha_armed {
@@ -3326,6 +3602,40 @@ impl Service {
             }
         }
         Ok(())
+    }
+
+    /// Ask the witness for the 2-node tie. A failed call keeps the previous grant until it expires.
+    async fn refresh_witness(&self) {
+        let Some(url) = self.config.cluster.witness_url.clone() else {
+            return;
+        };
+        let Some(secret) = self.config.cluster.witness_secret.clone() else {
+            return;
+        };
+        if secret.is_empty() || self.cluster.member_count() != 2 || self.cluster.majority() {
+            return;
+        }
+        let endpoint = format!("{}/v1/witness/claim", url.trim_end_matches('/'));
+        let claim = pertisk_types::WitnessClaim {
+            node_id: self.cluster.self_id(),
+        };
+        let Ok(response) = self
+            .http
+            .post(endpoint)
+            .header("x-pertisk-peer", secret)
+            .json(&claim)
+            .send()
+            .await
+        else {
+            return;
+        };
+        if !response.status().is_success() {
+            return;
+        }
+        let Ok(grant) = response.json::<pertisk_types::WitnessGrant>().await else {
+            return;
+        };
+        self.cluster.note_witness(grant.holder, grant.ttl_ms);
     }
 
     /// ACPI shutdown all running guests on this node (used before daemon exit).
@@ -3551,11 +3861,7 @@ impl Service {
                     "HA restart needs Ceph RBD disks; local files stay on the lost node".into(),
                 );
                 let _ = self.store.upsert(vm.clone());
-                self.notify_vm(
-                    "vm.failed",
-                    &vm,
-                    "HA restart needs Ceph RBD disks",
-                );
+                self.notify_vm("vm.failed", &vm, "HA restart needs Ceph RBD disks");
                 self.cluster.bump()?;
                 continue;
             }
@@ -3572,9 +3878,13 @@ impl Service {
                 affinity,
                 loads.iter().map(|n| (n.id, n.online)).collect::<Vec<_>>()
             );
-            let Some(dest) =
-                cluster::schedule_storage(&loads, &vm.spec, affinity.first().copied(), &affinity)
-            else {
+            let Some(dest) = cluster::schedule_spread(
+                &loads,
+                &vm.spec,
+                affinity.first().copied(),
+                &affinity,
+                &self.group_nodes(&vm.spec, Some(vm.id)),
+            ) else {
                 continue;
             };
             if dest == owner {
@@ -4698,16 +5008,14 @@ fn enrich_observed_ips(vm: &mut VmRecord, run_dir: &Path) -> bool {
             let has_public = candidates.iter().any(|ip| {
                 ip.parse::<std::net::Ipv6Addr>()
                     .ok()
-                    .is_some_and(|addr| {
-                        !addr.is_unicast_link_local() && !addr.is_unique_local()
-                    })
+                    .is_some_and(|addr| !addr.is_unicast_link_local() && !addr.is_unique_local())
             });
             // Ubuntu often answers neither guest-agent nor ping, but cloud-init
             // still prints the SLAAC address on the serial console.
             if !has_public {
-                if let Some(ip) = serial_path.and_then(|path| {
-                    ipv6_from_serial_log(path, Some(mac), single_nic)
-                }) {
+                if let Some(ip) =
+                    serial_path.and_then(|path| ipv6_from_serial_log(path, Some(mac), single_nic))
+                {
                     candidates.push(ip);
                 }
             }
@@ -4810,17 +5118,18 @@ fn ipv4_from_serial_log(path: &Path, mac: Option<&str>) -> Option<String> {
 /// The VM console is the guest serial log. TUI and the web UI already know the
 /// public IPv6; write it here when the guest boot text never printed it.
 fn note_public_ipv6_on_console(vm: &VmRecord) {
-    let Some(path) = vm
-        .serial_log
-        .as_deref()
-        .or(vm.spec.serial_log.as_deref())
-    else {
+    let Some(path) = vm.serial_log.as_deref().or(vm.spec.serial_log.as_deref()) else {
         return;
     };
     let existing = serial_tail_text(path);
     let mut extra = String::new();
     for nic in &vm.spec.nets {
-        let Some(ip) = nic.ipv6.as_deref().map(str::trim).filter(|ip| is_public_ipv6(ip)) else {
+        let Some(ip) = nic
+            .ipv6
+            .as_deref()
+            .map(str::trim)
+            .filter(|ip| is_public_ipv6(ip))
+        else {
             continue;
         };
         if existing.contains(ip) || extra.contains(ip) {
@@ -4833,7 +5142,11 @@ fn note_public_ipv6_on_console(vm: &VmRecord) {
     if extra.is_empty() {
         return;
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = file.write_all(extra.as_bytes());
     }
@@ -4903,11 +5216,16 @@ fn labeled_addr(
     }
     let after = line[idx + label.len()..].trim_start();
     let (_, addr_part) = after.split_once(':')?;
-    let token = addr_part.split_whitespace().next()?.trim_matches(|c: char| {
-        c == ',' || c == ';' || c == '|'
-    });
+    let token = addr_part
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| c == ',' || c == ';' || c == '|');
     let addr = token.split('/').next().unwrap_or(token).trim();
-    if addr.is_empty() { None } else { Some(addr.to_string()) }
+    if addr.is_empty() {
+        None
+    } else {
+        Some(addr.to_string())
+    }
 }
 
 fn serial_line_mac_ok(line: &str, mac: Option<&str>, allow_without_mac: bool) -> bool {
@@ -5255,6 +5573,7 @@ mod tests {
             autostart_delay: 0,
             autostart_order: 0,
             ssh_user: None,
+            group: None,
         }
     }
 
@@ -5338,6 +5657,7 @@ mod tests {
                     autostart: Some(false),
                     autostart_delay: None,
                     autostart_order: None,
+                    group: None,
                     network_id: None,
                     ip: None,
                     dual_stack: false,
@@ -5383,6 +5703,7 @@ mod tests {
                     autostart: Some(false),
                     autostart_delay: None,
                     autostart_order: None,
+                    group: None,
                     network_id: None,
                     ip: None,
                     dual_stack: false,
@@ -5538,7 +5859,10 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         };
         note_public_ipv6_on_console(&vm);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("IPv6 address: 2405:9800:b901:194c:5054:ff:fe79:37ca\n"), "{text}");
+        assert!(
+            text.contains("IPv6 address: 2405:9800:b901:194c:5054:ff:fe79:37ca\n"),
+            "{text}"
+        );
         assert!(!text.contains("fe80::1"), "{text}");
         note_public_ipv6_on_console(&vm);
         let again = std::fs::read_to_string(&path).unwrap();
@@ -5566,6 +5890,28 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         assert_eq!(vm.spec.vcpus, 2);
         assert_eq!(vm.spec.memory_mib, 1024);
         assert!(!vm.spec.ha);
+        let vm = svc
+            .update(
+                vm.id,
+                UpdateVmRequest {
+                    group: Some(" web ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(vm.spec.group.as_deref(), Some("web"));
+        let vm = svc
+            .update(
+                vm.id,
+                UpdateVmRequest {
+                    group: Some("  ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(vm.spec.group.is_none());
         let running = svc.start(vm.id).await.unwrap();
         let err = svc
             .update(
@@ -5805,5 +6151,54 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         svc.detach_nic(vm.id, vm.spec.nets[0].tap.as_deref().unwrap())
             .unwrap();
         svc.delete_network(net.id).unwrap();
+    }
+
+    #[test]
+    fn live_snapshot_plan_matches_the_disk() {
+        assert!(matches!(
+            running_snapshot_plan(
+                StorageBackend::Rbd,
+                VolumeFormat::Raw,
+                DriverKind::Qemu,
+                None
+            ),
+            RunningSnapshot::Storage
+        ));
+        assert!(matches!(
+            running_snapshot_plan(
+                StorageBackend::Zfs,
+                VolumeFormat::Raw,
+                DriverKind::Mock,
+                None
+            ),
+            RunningSnapshot::Storage
+        ));
+        assert!(matches!(
+            running_snapshot_plan(
+                StorageBackend::Replica,
+                VolumeFormat::Raw,
+                DriverKind::Qemu,
+                Some("disk0".into())
+            ),
+            RunningSnapshot::Refuse(_)
+        ));
+        assert!(matches!(
+            running_snapshot_plan(
+                StorageBackend::Replica,
+                VolumeFormat::Qcow2,
+                DriverKind::Mock,
+                Some("disk0".into())
+            ),
+            RunningSnapshot::Refuse(_)
+        ));
+        match running_snapshot_plan(
+            StorageBackend::Replica,
+            VolumeFormat::Qcow2,
+            DriverKind::Qemu,
+            Some("disk1".into()),
+        ) {
+            RunningSnapshot::Qemu { device } => assert_eq!(device, "disk1"),
+            other => panic!("expected qemu snapshot, got {other:?}"),
+        }
     }
 }

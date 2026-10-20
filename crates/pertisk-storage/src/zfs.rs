@@ -58,14 +58,7 @@ impl Zfs {
 
     pub fn create_zvol(&self, name: &str, size_bytes: u64) -> Result<()> {
         let size = size_arg(size_bytes);
-        self.run(&[
-            "create",
-            "-p",
-            "-s",
-            "-V",
-            &size,
-            &self.dataset_name(name),
-        ])
+        self.run(&["create", "-p", "-s", "-V", &size, &self.dataset_name(name)])
     }
 
     pub fn import_raw(&self, source: &Path, name: &str, size_bytes: u64) -> Result<()> {
@@ -106,11 +99,7 @@ impl Zfs {
     }
 
     pub fn rollback_dataset(&self, dataset: &str, snap: &str) -> Result<()> {
-        self.run(&[
-            "rollback",
-            "-r",
-            &format!("{dataset}@{}", sanitize(snap)),
-        ])
+        self.run(&["rollback", "-r", &format!("{dataset}@{}", sanitize(snap))])
     }
 
     pub fn clone_dataset(&self, dataset: &str, snap: &str, dest: &str) -> Result<()> {
@@ -141,9 +130,10 @@ impl Zfs {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdout = send.stdout.take().ok_or_else(|| {
-            StorageError::Message("zfs send produced no stdout".into())
-        })?;
+        let stdout = send
+            .stdout
+            .take()
+            .ok_or_else(|| StorageError::Message("zfs send produced no stdout".into()))?;
         let recv = Command::new(bin)
             .args(["receive", "-F", dest])
             .stdin(stdout)
@@ -204,7 +194,11 @@ fn sanitize(name: &str) -> String {
         .take(80)
         .collect();
     let token = token.trim_matches(|c| c == '-' || c == '.').to_string();
-    if token.is_empty() { "vol".into() } else { token }
+    if token.is_empty() {
+        "vol".into()
+    } else {
+        token
+    }
 }
 
 fn size_arg(size_bytes: u64) -> String {

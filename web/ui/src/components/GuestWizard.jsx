@@ -31,6 +31,7 @@ const EMPTY = {
   memory_mib: 1024,
   ha: false,
   autostart: false,
+  group: '',
   graphics: false,
   diskMode: 'new',
   diskName: '',
@@ -136,6 +137,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               memory_mib: Number(form.memory_mib),
               ha: form.ha,
               autostart: form.autostart,
+              group: form.group.trim(),
               network_id: form.networkId || undefined,
               ip: form.nicIp.trim() || undefined,
               dual_stack: Boolean(form.networkId && form.dualStack),
@@ -192,6 +194,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             memory_mib: Number(form.memory_mib),
             ha: form.ha,
             autostart: form.autostart,
+            group: form.group.trim() || undefined,
             console_type: form.graphics ? 'graphics' : 'serial',
           },
         }),
@@ -404,6 +407,18 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                   </small>
                 </span>
               </label>
+              <div className="field">
+                <label htmlFor="guest-group">Placement group</label>
+                <input
+                  id="guest-group"
+                  value={form.group}
+                  onChange={(e) => set({ group: e.target.value })}
+                  placeholder="web"
+                />
+                <p className="field-hint">
+                  Guests that share a group are placed on different nodes when another node fits.
+                </p>
+              </div>
               <label className="chk">
                 <input
                   type="checkbox"
@@ -703,6 +718,10 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               <div>
                 <dt>Start at boot</dt>
                 <dd>{form.autostart ? 'Yes' : 'No'}</dd>
+              </div>
+              <div>
+                <dt>Placement group</dt>
+                <dd>{form.group.trim() || '—'}</dd>
               </div>
               <div>
                 <dt>Disk</dt>

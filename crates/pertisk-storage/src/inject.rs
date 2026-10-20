@@ -292,10 +292,12 @@ fn wait_partitions_ready(loopdev: &str) -> Vec<PathBuf> {
             .filter(|p| blockdev_usable(p))
             .cloned()
             .collect();
-        if usable
-            .iter()
-            .any(|p| matches!(blkid_type(p).as_deref(), Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs" | "LVM2_member")))
-        {
+        if usable.iter().any(|p| {
+            matches!(
+                blkid_type(p).as_deref(),
+                Some("xfs" | "ext4" | "ext3" | "ext2" | "btrfs" | "LVM2_member")
+            )
+        }) {
             // Kernel may still be registering sibling partitions (Ubuntu p13/p15).
             std::thread::sleep(Duration::from_millis(150));
             return partitions(loopdev)
@@ -418,10 +420,7 @@ pub(crate) fn activate_lvm(parts: &[PathBuf]) -> Option<LvmSession> {
         lvm_vgchange(pv, true);
     }
     std::thread::sleep(Duration::from_millis(400));
-    let volumes: Vec<PathBuf> = mapper_devices()
-        .difference(&before)
-        .cloned()
-        .collect();
+    let volumes: Vec<PathBuf> = mapper_devices().difference(&before).cloned().collect();
     Some(LvmSession { pvs, volumes })
 }
 
@@ -472,11 +471,7 @@ pub(crate) fn blkid_type(dev: &Path) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn tempfile_mnt() -> Result<PathBuf> {
@@ -501,10 +496,7 @@ fn apply_identity(root: &Path, id: &GuestIdentity<'_>) -> Result<()> {
     // set_hostname never runs again. AlmaLinux then prefers IPv6 reverse DNS
     // (e.g. 2405-9800-b900) over the VM name.
     reset_cloud_init_instance(root);
-    patch_sshd(
-        root,
-        id.password.filter(|p| !p.is_empty()).is_some(),
-    );
+    patch_sshd(root, id.password.filter(|p| !p.is_empty()).is_some());
     ensure_user(root, &user)?;
     write_nocloud_seed(
         root,
@@ -643,12 +635,7 @@ fn write_hostname(root: &Path, hostname: &str) -> Result<()> {
     }
     let _ = Command::new("chattr").args(["-i"]).arg(&path).status();
     let _ = Command::new("setfattr")
-        .args([
-            "-n",
-            "security.selinux",
-            "-v",
-            "system_u:object_r:etc_t:s0",
-        ])
+        .args(["-n", "security.selinux", "-v", "system_u:object_r:etc_t:s0"])
         .arg(&path)
         .status();
     let dir = root.join("etc/pertisk");
@@ -750,10 +737,7 @@ WantedBy=multi-user.target\n";
             continue;
         }
         if !link.exists() {
-            let _ = std::os::unix::fs::symlink(
-                "../pertisk-selinux-restorecon.service",
-                &link,
-            );
+            let _ = std::os::unix::fs::symlink("../pertisk-selinux-restorecon.service", &link);
         }
     }
     for ssh_unit in ["sshd.service", "sshd.socket", "ssh.service"] {
@@ -782,7 +766,10 @@ fn relabel_injected(root: &Path) {
         }
     }
     set_selinux_attr(root.join("etc/shadow"), "system_u:object_r:shadow_t:s0");
-    set_selinux_attr(root.join("etc/passwd"), "system_u:object_r:passwd_file_t:s0");
+    set_selinux_attr(
+        root.join("etc/passwd"),
+        "system_u:object_r:passwd_file_t:s0",
+    );
     set_selinux_attr(root.join("etc/group"), "system_u:object_r:etc_t:s0");
     set_selinux_attr(root.join("etc/hostname"), "system_u:object_r:etc_t:s0");
     set_selinux_attr(root.join("etc/hosts"), "system_u:object_r:etc_t:s0");
@@ -1059,9 +1046,8 @@ fn write_nocloud_seed(root: &Path, id: &GuestIdentity<'_>, hostname: &str) -> Re
         .map(|k| k.trim())
         .filter(|k| !k.is_empty())
         .collect();
-    let mut meta = format!(
-        "instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n"
-    );
+    let mut meta =
+        format!("instance-id: iid-{hostname}\nlocal-hostname: {hostname}\nhostname: {hostname}\n");
     if !keys.is_empty() {
         meta.push_str("public-keys:\n");
         for (i, key) in keys.iter().enumerate() {
@@ -1576,7 +1562,10 @@ mod tests {
         let seed = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/user-data")).unwrap();
         assert!(seed.contains("prefer_fqdn_over_hostname: false"), "{seed}");
         assert!(seed.contains("chattr -i /etc/hostname"), "{seed}");
-        assert!(seed.contains("printf '%s\\n' 'AlmaLinux-10-1' >/etc/hostname"), "{seed}");
+        assert!(
+            seed.contains("printf '%s\\n' 'AlmaLinux-10-1' >/etc/hostname"),
+            "{seed}"
+        );
         assert_eq!(
             fs::read_to_string(root.join("etc/pertisk/hostname"))
                 .unwrap()
@@ -1584,23 +1573,20 @@ mod tests {
             "AlmaLinux-10-1"
         );
         assert!(root.join("usr/libexec/pertisk-set-hostname").is_file());
-        assert!(root
-            .join("etc/systemd/system/pertisk-hostname.service")
-            .is_file());
+        assert!(
+            root.join("etc/systemd/system/pertisk-hostname.service")
+                .is_file()
+        );
         let sshd = fs::read_to_string(root.join("etc/ssh/sshd_config.d/00-pertisk.conf")).unwrap();
         assert!(sshd.contains("UseDNS no"), "{sshd}");
         assert!(sshd.contains("GSSAPIAuthentication no"), "{sshd}");
-        let restore = fs::read_to_string(
-            root.join("etc/systemd/system/pertisk-selinux-restorecon.service"),
-        )
-        .unwrap();
+        let restore =
+            fs::read_to_string(root.join("etc/systemd/system/pertisk-selinux-restorecon.service"))
+                .unwrap();
         assert!(restore.contains("Before=sshd.service"), "{restore}");
         assert!(seed.contains("UseDNS no"), "{seed}");
         assert!(!root.join("var/lib/cloud/instance").exists());
-        assert_eq!(
-            fs::read_to_string(root.join("etc/machine-id")).unwrap(),
-            ""
-        );
+        assert_eq!(fs::read_to_string(root.join("etc/machine-id")).unwrap(), "");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1638,9 +1624,10 @@ mod tests {
             cfg.contains("network: {config: disabled}"),
             "ubuntu netplan guests must not let cloud-init fight netplan: {cfg}"
         );
-        assert!(root
-            .join("etc/systemd/system/pertisk-netinfo.service")
-            .is_file());
+        assert!(
+            root.join("etc/systemd/system/pertisk-netinfo.service")
+                .is_file()
+        );
         let netinfo = fs::read_to_string(root.join("usr/libexec/pertisk-netinfo")).unwrap();
         assert!(
             netinfo.contains("IPv6 address for"),
@@ -1797,14 +1784,23 @@ mod tests {
         )
         .unwrap();
         let auth = fs::read_to_string(root.join("home/ubuntu/.ssh/authorized_keys")).unwrap();
-        assert!(auth.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{auth}");
+        assert!(
+            auth.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"),
+            "{auth}"
+        );
         let seed = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/user-data")).unwrap();
         assert!(seed.contains("name: ubuntu"), "{seed}");
         assert!(seed.contains("ssh_authorized_keys:"), "{seed}");
-        assert!(seed.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{seed}");
+        assert!(
+            seed.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"),
+            "{seed}"
+        );
         let meta = fs::read_to_string(root.join("var/lib/cloud/seed/nocloud/meta-data")).unwrap();
         assert!(meta.contains("public-keys:"), "{meta}");
-        assert!(meta.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"), "{meta}");
+        assert!(
+            meta.contains("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"),
+            "{meta}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

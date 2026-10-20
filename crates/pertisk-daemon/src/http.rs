@@ -22,11 +22,10 @@ use pertisk_api::{
 use pertisk_types::{
     AddRepositoryRequest, AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest,
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, HeartbeatMessage,
-    ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord, ResizeVolumeRequest,
-    SetHaArmedRequest, DrainRequest, SetRepositoryRequest, SnapshotRequest, StorageBackend,
-    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
-    VolumeId, VolumeRecord,
+    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DrainRequest,
+    HeartbeatMessage, ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord,
+    ResizeVolumeRequest, SetHaArmedRequest, SetRepositoryRequest, SnapshotRequest, StorageBackend,
+    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord, WitnessClaim,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -123,6 +122,8 @@ pub fn router(service: Service) -> Router {
         .route("/v1/cluster/leave", post(cluster_leave))
         .route("/v1/cluster/ha", post(cluster_ha))
         .route("/v1/cluster/drain", post(cluster_drain))
+        .route("/v1/cluster/rebalance", post(cluster_rebalance))
+        .route("/v1/witness/claim", post(witness_claim))
         .route("/v1/cluster/accept", post(cluster_accept))
         .route("/v1/peer/heartbeat", post(peer_heartbeat))
         .route("/v1/peer/snapshot", post(peer_snapshot))
@@ -137,6 +138,7 @@ pub fn router(service: Service) -> Router {
         .route("/v1/peer/incoming/abort", post(peer_incoming_abort))
         .route("/v1/peer/forget", post(peer_forget))
         .route("/v1/peer/volumes/ensure", post(peer_volume_ensure))
+        .route("/v1/peer/volumes/{id}/snapshot", post(peer_volume_snapshot))
         .route(
             "/v1/peer/volumes/{id}",
             axum::routing::delete(peer_volume_delete),
@@ -268,6 +270,18 @@ async fn auth_middleware(
         .get("x-pertisk-peer")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    if path == "/v1/witness/claim" {
+        let secret = peer.ok_or(crate::control::ControlError::Unauthorized)?;
+        if !service.witness_secret_ok(&secret) {
+            return Err(crate::control::ControlError::Unauthorized.into());
+        }
+        req.extensions_mut().insert(AuthUser {
+            id: "witness".into(),
+            username: "witness".into(),
+            role: Role::Admin,
+        });
+        return Ok(next.run(req).await);
+    }
     if path.starts_with("/v1/peer/") {
         let secret = peer.ok_or(crate::control::ControlError::Unauthorized)?;
         if !service.peer_secret_ok(&secret) {
@@ -1578,12 +1592,31 @@ async fn cluster_ha(
         "cluster.ha-disarm"
     };
     Ok(Json(
+        tracked(&service, &user, kind, "cluster".into(), async {
+            service.set_ha_armed(req.armed)
+        })
+        .await?,
+    ))
+}
+
+async fn witness_claim(
+    State(service): State<Service>,
+    Json(req): Json<WitnessClaim>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.claim_witness(req.node_id)))
+}
+
+async fn cluster_rebalance(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
         tracked(
             &service,
             &user,
-            kind,
-            "cluster".into(),
-            async { service.set_ha_armed(req.armed) },
+            "cluster.rebalance",
+            "group".to_string(),
+            service.rebalance(),
         )
         .await?,
     ))
@@ -1710,6 +1743,14 @@ async fn peer_volume_ensure(
     Json(record): Json<VolumeRecord>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.apply_ensure_volume(record)?))
+}
+
+async fn peer_volume_snapshot(
+    State(service): State<Service>,
+    Path(id): Path<VolumeId>,
+    Json(req): Json<SnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.snapshot_volume_here(id, req).await?))
 }
 
 async fn peer_volume_delete(
