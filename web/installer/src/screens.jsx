@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { LuCheck, LuCopy, LuTriangleAlert } from 'react-icons/lu'
-import { Banner, Check, Field, PasswordField, SelectField, StepHeader, cx } from './components'
+import { Banner, Check, Field, PasswordField, SelectField, StepHeader, TimezoneField, cx } from './components'
 import {
   KEYBOARDS,
   LANGUAGES,
-  TIMEZONES,
   diskList,
   findDisk,
   findNic,
@@ -66,11 +65,12 @@ export function Welcome({ form, setForm, live }) {
           ))}
         </SelectField>
         <div className="wide">
-          <SelectField id="timezone" label="Time zone" value={form.timezone} onChange={(timezone) => patch(setForm, { timezone })}>
-            {TIMEZONES.map((zone) => (
-              <option key={zone} value={zone}>{zone}</option>
-            ))}
-          </SelectField>
+          <TimezoneField
+            id="timezone"
+            label="Time zone"
+            value={form.timezone}
+            onChange={(timezone) => patch(setForm, { timezone })}
+          />
         </div>
       </div>
       <p className="note">Packages come from the AlmaLinux mirrors, so this machine needs a network connection during the install.</p>

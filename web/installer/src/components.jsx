@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { LuEye, LuEyeOff } from 'react-icons/lu'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { LuChevronDown, LuEye, LuEyeOff } from 'react-icons/lu'
+import { listTimezones } from './model'
 
 export function cx(...parts) {
   return parts.filter(Boolean).join(' ')
@@ -65,6 +66,146 @@ export function SelectField({ id, label, value, onChange, children }) {
       <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
         {children}
       </select>
+    </Field>
+  )
+}
+
+export function TimezoneField({ id, label, value, onChange }) {
+  const zones = useMemo(() => listTimezones(), [])
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState(value)
+  const [active, setActive] = useState(-1)
+  const rootRef = useRef(null)
+  const listRef = useRef(null)
+  const listId = `${id}-list`
+
+  const matches = useMemo(() => {
+    const needle = query.trim().toLowerCase().replace(/\s+/g, '_')
+    const selected = value.trim().toLowerCase().replace(/\s+/g, '_')
+    // Keep the selected zone in the field, but show every zone until the
+    // operator types a different search string.
+    if (!needle || needle === selected) return zones
+    return zones.filter((zone) => zone.toLowerCase().includes(needle))
+  }, [query, value, zones])
+
+  useEffect(() => {
+    if (!open) setQuery(value)
+  }, [value, open])
+
+  useEffect(() => {
+    if (!open) return
+    function onDoc(event) {
+      if (!rootRef.current?.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  useEffect(() => {
+    if (!open || active < 0) return
+    const node = listRef.current?.children?.[active]
+    node?.scrollIntoView?.({ block: 'nearest' })
+  }, [active, open])
+
+  function pick(zone) {
+    onChange(zone)
+    setQuery(zone)
+    setOpen(false)
+    setActive(-1)
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setOpen(true)
+      setActive((i) => Math.min((i < 0 ? -1 : i) + 1, matches.length - 1))
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setOpen(true)
+      setActive((i) => Math.max((i < 0 ? matches.length : i) - 1, 0))
+      return
+    }
+    if (event.key === 'Enter') {
+      if (open && matches[active]) {
+        event.preventDefault()
+        pick(matches[active])
+      } else if (open && matches.length === 1) {
+        event.preventDefault()
+        pick(matches[0])
+      }
+      return
+    }
+    if (event.key === 'Escape') {
+      setOpen(false)
+      setQuery(value)
+      setActive(-1)
+    }
+  }
+
+  return (
+    <Field id={id} label={label}>
+      <div className={cx('combo', open && 'open')} ref={rootRef}>
+        <input
+          id={id}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={active >= 0 ? `${id}-opt-${active}` : undefined}
+          value={query}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder="Search time zones"
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setOpen(true)
+            setActive(0)
+          }}
+          onFocus={() => {
+            setOpen(true)
+            setActive(Math.max(0, matches.indexOf(value)))
+          }}
+          onKeyDown={onKeyDown}
+        />
+        <button
+          type="button"
+          className="combo-toggle"
+          tabIndex={-1}
+          aria-label="Show time zones"
+          onClick={() => {
+            setOpen((was) => !was)
+            setActive(Math.max(0, matches.indexOf(value)))
+          }}
+        >
+          <LuChevronDown />
+        </button>
+        {open ? (
+          <ul id={listId} className="combo-list" role="listbox" ref={listRef}>
+            {matches.length === 0 ? (
+              <li className="combo-empty" role="presentation">No matches</li>
+            ) : (
+              matches.map((zone, index) => (
+                <li
+                  key={zone}
+                  id={`${id}-opt-${index}`}
+                  role="option"
+                  aria-selected={zone === value}
+                  className={cx(zone === value && 'selected', index === active && 'active')}
+                  onMouseEnter={() => setActive(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    pick(zone)
+                  }}
+                >
+                  {zone}
+                </li>
+              ))
+            )}
+          </ul>
+        ) : null}
+      </div>
     </Field>
   )
 }

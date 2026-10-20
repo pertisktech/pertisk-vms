@@ -25,18 +25,91 @@ export const KEYBOARDS = [
   { id: 'jp', label: 'Japanese' },
 ]
 
-export const TIMEZONES = [
+const FALLBACK_TIMEZONES = [
   'Etc/UTC',
-  'America/New_York',
+  'Africa/Cairo',
+  'Africa/Johannesburg',
+  'Africa/Lagos',
+  'Africa/Nairobi',
+  'America/Anchorage',
+  'America/Argentina/Buenos_Aires',
+  'America/Bogota',
   'America/Chicago',
   'America/Denver',
+  'America/Halifax',
+  'America/Lima',
   'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Berlin',
+  'America/Mexico_City',
+  'America/New_York',
+  'America/Phoenix',
+  'America/Sao_Paulo',
+  'America/Toronto',
+  'America/Vancouver',
   'Asia/Bangkok',
+  'Asia/Dubai',
+  'Asia/Hong_Kong',
+  'Asia/Jakarta',
+  'Asia/Jerusalem',
+  'Asia/Kolkata',
+  'Asia/Manila',
+  'Asia/Seoul',
+  'Asia/Shanghai',
+  'Asia/Singapore',
+  'Asia/Taipei',
   'Asia/Tokyo',
+  'Australia/Melbourne',
+  'Australia/Perth',
   'Australia/Sydney',
+  'Europe/Amsterdam',
+  'Europe/Athens',
+  'Europe/Berlin',
+  'Europe/Brussels',
+  'Europe/Dublin',
+  'Europe/Helsinki',
+  'Europe/Istanbul',
+  'Europe/Lisbon',
+  'Europe/London',
+  'Europe/Madrid',
+  'Europe/Moscow',
+  'Europe/Paris',
+  'Europe/Rome',
+  'Europe/Stockholm',
+  'Europe/Vienna',
+  'Europe/Warsaw',
+  'Europe/Zurich',
+  'Pacific/Auckland',
+  'Pacific/Honolulu',
 ]
+
+let _timezones = null
+
+/** Full IANA zone list when the browser exposes it; otherwise a broad fallback. */
+export function listTimezones() {
+  if (_timezones) return _timezones
+  try {
+    if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+      _timezones = Intl.supportedValuesOf('timeZone')
+      return _timezones
+    }
+  } catch {
+    /* older engines */
+  }
+  _timezones = FALLBACK_TIMEZONES
+  return _timezones
+}
+
+/** @deprecated use listTimezones() */
+export const TIMEZONES = FALLBACK_TIMEZONES
+
+export function defaultTimezone() {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (zone && listTimezones().includes(zone)) return zone
+  } catch {
+    /* ignore */
+  }
+  return 'Etc/UTC'
+}
 
 export const HOST = {
   cpu: 'AMD EPYC 9354P',
@@ -190,7 +263,7 @@ export function initialForm() {
   return {
     lang: 'en_US.UTF-8',
     keyboard: 'us',
-    timezone: 'Etc/UTC',
+    timezone: defaultTimezone(),
     diskId: 'nvme0n1',
     eraseConfirmed: false,
     nicId: 'eno1',
