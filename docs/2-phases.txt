@@ -42,15 +42,22 @@ Demo:  clone a template, attach ISO, boot installer
 Skip:  Ceph / vSAN / custom distributed FS
 
   [x] Local directory volume store (raw + qcow2)
-  [x] Create / resize / delete; attach virtio-block
+  [x] Create / rename / resize / delete; operator notes; attach virtio-block
   [x] ISO library + CD-ROM attach
   [x] Guest disk backup and restore while the guest is stopped (local replica files).
-      A per-guest schedule can export automatically while the guest stays stopped.
+      A description can be stored with each backup and edited later. The display
+      name can be renamed without moving the on-disk UUID path. A per-guest
+      schedule can export automatically while the guest stays stopped.
   [x] qcow2 snapshot + restore. A running QEMU guest can snapshot qcow2 in place
       (guest agent is frozen when it answers). RBD and ZFS snapshot while open.
       Rollback still needs the guest stopped. Raw files cannot snapshot while open.
       A per-guest schedule snapshots automatically and keeps the newest sched- snapshots.
+      An operator can remove one snapshot without rolling the disk back.
+      A description is stored with the snapshot and can be edited later.
+      Rollback of every disk is one action.
+      An operator can clone a new guest from one snapshot while the original keeps running.
   [x] Linked clone from template
+  [x] Operator notes on a template (import / from-volume create; edit anytime; 500 characters)
   [x] Optional ZFS zvol backend (`zfs` CLI; local to the node, not HA)
 
 
@@ -64,6 +71,8 @@ Skip:  NSX / EVPN / multi-tenant overlay
   [x] Per-VM TAP + virtio-net; cleanup on destroy
   [x] Static IP or IPAM pool (dnsmasq daemon not started)
   [x] Basic isolation (Linux `bridge link isolated`)
+  [x] Rename a network's display name (bridge and CIDR stay put)
+  [x] Operator notes on a network (create and edit anytime; 500 characters)
   [x] Serial console log + attach
   [x] VNC or websocket console proxy
 
@@ -79,7 +88,12 @@ Skip:  UI without a strict API
   [x] Tokens, users, roles (admin / operator / viewer)
   [x] Async task log (clone, start, backup)
   [x] Audit events
-  [x] Web UI: inventory, create wizard, console, tasks
+  [x] Web UI: inventory, create wizard, console, tasks.
+      A guest can carry an operator note, set at create or clone and changed while it is running.
+      Clone does not inherit the source note.
+      A volume can carry an operator note, changed anytime.
+      A network can carry an operator note, changed anytime.
+      Console type (serial or graphics) can be changed while the guest is stopped.
 
 
 Phase 5 — Cluster, HA, migrate                 → v2.0 cluster

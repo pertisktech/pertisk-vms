@@ -850,7 +850,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(vec![
             Span::styled("CPU ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(meter(cpu_pct, 10), Style::default().fg(meter_color(cpu_pct))),
+            Span::styled(
+                meter(cpu_pct, 10),
+                Style::default().fg(meter_color(cpu_pct)),
+            ),
             Span::raw(format!(" {cpu}   ")),
             Span::raw(net),
         ]),
@@ -889,7 +892,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     ];
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(" [=] ", Style::default().fg(BRAND).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " [=] ",
+                Style::default().fg(BRAND).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("Pertisk  {hostname}  v{VERSION} ")),
         ]))
         .borders(Borders::ALL)
@@ -904,15 +910,27 @@ fn cluster_spans(app: &App) -> Vec<Span<'static>> {
             Style::default().add_modifier(Modifier::BOLD),
         )];
     };
-    let online = cluster.members.iter().filter(|member| member.online).count();
+    let online = cluster
+        .members
+        .iter()
+        .filter(|member| member.online)
+        .count();
     let total = cluster.members.len();
-    let quorum = if cluster.quorum { "quorum" } else { "no quorum" };
+    let quorum = if cluster.quorum {
+        "quorum"
+    } else {
+        "no quorum"
+    };
     let quorum_color = if cluster.quorum {
         Color::Green
     } else {
         Color::Red
     };
-    let ha = if cluster.ha_armed { "HA armed" } else { "HA disarmed" };
+    let ha = if cluster.ha_armed {
+        "HA armed"
+    } else {
+        "HA disarmed"
+    };
     let fence = if cluster.fenced { "  fenced" } else { "" };
     let witness = if cluster.witness { "  witness" } else { "" };
     let mut spans = vec![
@@ -937,8 +955,10 @@ fn cluster_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 fn draw_vms(frame: &mut Frame, area: Rect, app: &App) {
-    let header = Row::new(vec!["ID", "NAME", "STATE", "CPU", "MEM", "vCPU", "HA", "GROUP"])
-        .style(Style::default().fg(BRAND).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        "ID", "NAME", "STATE", "CPU", "MEM", "vCPU", "HA", "GROUP",
+    ])
+    .style(Style::default().fg(BRAND).add_modifier(Modifier::BOLD));
     let visible = area.height.saturating_sub(3) as usize;
     let start = table_window(app.vms.len(), app.selected, visible.max(1));
     let rows: Vec<Row> = app
@@ -981,7 +1001,10 @@ fn draw_vms(frame: &mut Frame, area: Rect, app: &App) {
             Row::new(vec![
                 Cell::from(vm.id.to_string()),
                 Cell::from(vm.spec.name.clone()),
-                Cell::from(Span::styled(state, Style::default().fg(state_color(vm.state)))),
+                Cell::from(Span::styled(
+                    state,
+                    Style::default().fg(state_color(vm.state)),
+                )),
                 Cell::from(cpu),
                 Cell::from(mem),
                 Cell::from(vm.spec.vcpus.to_string()),
@@ -1087,18 +1110,16 @@ fn guest_lines(app: &App, vm: &VmRecord) -> Vec<Line<'static>> {
         ips.join(", ")
     };
     let backup = match &vm.spec.backup {
-        Some(schedule) if schedule.enabled => format!(
-            "every {}h  keep {}",
-            schedule.interval_hours, schedule.keep
-        ),
+        Some(schedule) if schedule.enabled => {
+            format!("every {}h  keep {}", schedule.interval_hours, schedule.keep)
+        }
         Some(_) => "off".into(),
         None => "not set".into(),
     };
     let snaps = match &vm.spec.snapshot {
-        Some(schedule) if schedule.enabled => format!(
-            "every {}h keep {}",
-            schedule.interval_hours, schedule.keep
-        ),
+        Some(schedule) if schedule.enabled => {
+            format!("every {}h keep {}", schedule.interval_hours, schedule.keep)
+        }
         Some(_) => "off".into(),
         None => "not set".into(),
     };
@@ -1120,11 +1141,30 @@ fn guest_lines(app: &App, vm: &VmRecord) -> Vec<Line<'static>> {
         Line::from(format!(
             "node {node}   HA {ha}   group {group}   autostart {autostart}   console {console}"
         )),
-        Line::from(format!(
-            "disks {disks} ({cdroms} cd)  {disk}   nics {}  {ip_text}   backup {backup}   snapshots {snaps}",
-            vm.spec.nets.len()
-        )),
     ];
+    if let Some(notes) = vm
+        .spec
+        .notes
+        .as_deref()
+        .map(str::trim)
+        .filter(|notes| !notes.is_empty())
+    {
+        let text = if notes.chars().count() > 90 {
+            let end = notes
+                .char_indices()
+                .nth(90)
+                .map(|(idx, _)| idx)
+                .unwrap_or(notes.len());
+            format!("note  {}…", &notes[..end])
+        } else {
+            format!("note  {notes}")
+        };
+        lines.push(Line::from(text));
+    }
+    lines.push(Line::from(format!(
+        "disks {disks} ({cdroms} cd)  {disk}   nics {}  {ip_text}   backup {backup}   snapshots {snaps}",
+        vm.spec.nets.len()
+    )));
     if let Some(err) = vm.last_error.as_ref().filter(|err| !err.is_empty()) {
         let text = if err.chars().count() > 90 {
             let end = err

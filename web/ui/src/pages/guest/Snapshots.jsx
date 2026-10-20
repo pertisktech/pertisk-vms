@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { api, formatUnix, snapshotsOf } from '../../api'
+import { useNavigate } from 'react-router-dom'
+import { api, formatUnix, nextVmId, snapshotsOf } from '../../api'
 import { Btn, Icon } from '../../components/Icons'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/Confirm'
@@ -15,12 +16,17 @@ function osDisks(vm, volumes) {
 
 export default function GuestSnapshots() {
   const { vm, vmId, canWrite, inv } = useGuest()
+  const nav = useNavigate()
   const confirm = useConfirm()
   const disks = useMemo(() => osDisks(vm, inv.volumes), [vm, inv.volumes])
   const [dialog, setDialog] = useState(false)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [cloneOpen, setCloneOpen] = useState(false)
+  const [cloneForm, setCloneForm] = useState({ id: '', name: '' })
   const [schedDialog, setSchedDialog] = useState(false)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
+  const [editNotes, setEditNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState(null)
@@ -36,9 +42,11 @@ export default function GuestSnapshots() {
         const cur = byName.get(key) || {
           name: key,
           created_unix: snap.created_unix || 0,
+          notes: '',
           volumes: [],
         }
         cur.created_unix = Math.max(cur.created_unix, snap.created_unix || 0)
+        if (!cur.notes && snap.notes) cur.notes = snap.notes
         cur.volumes.push({ id: vol.id, name: vol.name })
         byName.set(key, cur)
       }
@@ -60,14 +68,13 @@ export default function GuestSnapshots() {
     setBusy(true)
     setError('')
     try {
-      await inv.mutate(async () => {
-        for (const vol of disks) {
-          await api(`/v1/volumes/${vol.id}/snapshots`, {
-            method: 'POST',
-            body: { name: snapName },
-          })
-        }
-      })
+      const notes = desc.trim()
+      await inv.mutate(() =>
+        api(`/v1/vms/${vmId}/snapshots`, {
+          method: 'POST',
+          body: { name: snapName, ...(notes ? { notes } : {}) },
+        }),
+      )
       setDialog(false)
       setName('')
       setDesc('')
@@ -131,6 +138,94 @@ export default function GuestSnapshots() {
     }
   }
 
+  async function removeSnapshot() {
+    if (!selected) return
+    const ok = await confirm({
+      title: 'Remove snapshot',
+      message: `Delete snapshot “${selected}” from this guest's disks? The current disk stays as it is.`,
+      confirmLabel: 'Remove',
+    })
+    if (!ok) return
+    const name = selected
+    setBusy(true)
+    setError('')
+    try {
+      await inv.mutate(() =>
+        api(`/v1/vms/${vmId}/snapshots/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+      )
+      setSelected(null)
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openNotes() {
+    if (!selected) return
+    const snap = entries.find((e) => e.name === selected)
+    setError('')
+    setEditNotes(snap?.notes || '')
+    setNotesOpen(true)
+  }
+
+  async function saveNotes(e) {
+    e.preventDefault()
+    if (!selected) return
+    setBusy(true)
+    setError('')
+    try {
+      await inv.mutate(() =>
+        api(`/v1/vms/${vmId}/snapshots/${encodeURIComponent(selected)}`, {
+          method: 'PATCH',
+          body: { notes: editNotes },
+        }),
+      )
+      setNotesOpen(false)
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openClone() {
+    if (!selected) return
+    setError('')
+    setCloneForm({
+      id: nextVmId(inv.vms),
+      name: vm?.spec?.name ? `${vm.spec.name}-1` : '',
+    })
+    setCloneOpen(true)
+  }
+
+  async function cloneSnapshot(e) {
+    e.preventDefault()
+    const guestName = cloneForm.name.trim()
+    if (!selected || !guestName) {
+      setError('Name is required.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const created = await api(`/v1/vms/${vmId}/snapshots/${encodeURIComponent(selected)}/clone`, {
+        method: 'POST',
+        body: {
+          name: guestName,
+          ...(cloneForm.id ? { id: Number(cloneForm.id) } : {}),
+        },
+      })
+      setCloneOpen(false)
+      await inv.refresh()
+      if (created?.id != null) nav(`/vm/${created.id}/summary`)
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function rollback() {
     if (!selected) return
     if (running) {
@@ -146,15 +241,11 @@ export default function GuestSnapshots() {
     setBusy(true)
     setError('')
     try {
-      await inv.mutate(async () => {
-        for (const vol of disks) {
-          const has = snapshotsOf(vol).some((s) => s.name === selected)
-          if (!has) continue
-          await api(`/v1/volumes/${vol.id}/snapshots/${encodeURIComponent(selected)}/restore`, {
-            method: 'POST',
-          })
-        }
-      })
+      await inv.mutate(() =>
+        api(`/v1/vms/${vmId}/snapshots/${encodeURIComponent(selected)}/restore`, {
+          method: 'POST',
+        }),
+      )
     } catch (err) {
       setError(err.message || String(err))
     } finally {
@@ -222,6 +313,33 @@ export default function GuestSnapshots() {
                 >
                   Rollback
                 </Btn>
+                <Btn
+                  icon="clone"
+                  variant="secondary"
+                  disabled={!selected || busy}
+                  onClick={openClone}
+                  title="New guest from this snapshot"
+                >
+                  Clone
+                </Btn>
+                <Btn
+                  icon="pencil"
+                  variant="secondary"
+                  disabled={!selected || busy}
+                  onClick={openNotes}
+                  title="Edit snapshot description"
+                >
+                  Notes
+                </Btn>
+                <Btn
+                  icon="trash"
+                  variant="danger"
+                  disabled={!selected || busy}
+                  onClick={removeSnapshot}
+                  title="Remove the selected snapshot"
+                >
+                  Remove
+                </Btn>
                 <Btn icon="camera" onClick={() => { setError(''); setDialog(true) }} disabled={busy || disks.length === 0}>
                   Take Snapshot
                 </Btn>
@@ -267,7 +385,7 @@ export default function GuestSnapshots() {
                       <span className="mono-inline muted">{formatUnix(snap.created_unix)}</span>
                     </span>
                     <span className="muted">
-                      {snap.volumes.map((v) => v.name).join(', ')}
+                      {[snap.volumes.map((v) => v.name).join(', '), snap.notes].filter(Boolean).join(' · ')}
                     </span>
                   </span>
                 </button>
@@ -334,6 +452,80 @@ export default function GuestSnapshots() {
         </Modal>
       )}
 
+      {cloneOpen && (
+        <Modal
+          title={`Clone ${selected || 'snapshot'}`}
+          hint="Creates a new guest from this snapshot. The original guest and its disks stay as they are, including while it is running."
+          onClose={() => setCloneOpen(false)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setCloneOpen(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="snap-clone-form" disabled={busy}>
+                {busy ? 'Cloning…' : 'Clone'}
+              </button>
+            </>
+          }
+        >
+          {error && <div className="error">{error}</div>}
+          <form id="snap-clone-form" onSubmit={cloneSnapshot}>
+            <div className="field">
+              <label htmlFor="snap-clone-id">VM ID</label>
+              <input
+                id="snap-clone-id"
+                value={cloneForm.id}
+                onChange={(e) => setCloneForm((f) => ({ ...f, id: e.target.value }))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="snap-clone-name">Name</label>
+              <input
+                id="snap-clone-name"
+                required
+                autoFocus
+                value={cloneForm.name}
+                onChange={(e) => setCloneForm((f) => ({ ...f, name: e.target.value }))}
+              />
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {notesOpen && (
+        <Modal
+          title={`Notes for ${selected || 'snapshot'}`}
+          onClose={() => setNotesOpen(false)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setNotesOpen(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="snap-notes-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          {error && <div className="error">{error}</div>}
+          <form id="snap-notes-form" onSubmit={saveNotes}>
+            <div className="field">
+              <label htmlFor="snap-edit-notes">Description</label>
+              <textarea
+                id="snap-edit-notes"
+                rows={4}
+                autoFocus
+                maxLength={500}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="What this snapshot is for"
+              />
+              <p className="field-hint">Updates every disk that carries this snapshot. Leave empty to clear.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {dialog && (
         <Modal
           title="Take snapshot"
@@ -371,6 +563,7 @@ export default function GuestSnapshots() {
               <label htmlFor="snap-desc">Description (optional)</label>
               <input
                 id="snap-desc"
+                maxLength={500}
                 value={desc}
                 onChange={(e) => setDesc(e.target.value)}
                 placeholder="Before kernel upgrade"

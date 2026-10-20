@@ -63,6 +63,14 @@ impl Rbd {
         self.run(&["resize", &format!("{}/{}", self.pool, name), "--size", &mib])
     }
 
+    pub fn rename_image(&self, from: &str, to: &str) -> Result<()> {
+        self.run(&[
+            "rename",
+            &format!("{}/{}", self.pool, from),
+            &format!("{}/{}", self.pool, to),
+        ])
+    }
+
     pub fn remove_image(&self, name: &str) -> Result<()> {
         let image = format!("{}/{}", self.pool, name);
         // Snapshots block `rbd rm`. A clone that still depends on one will fail the rm below.

@@ -257,7 +257,7 @@ pub fn openapi_json() -> serde_json::Value {
             },
             "/v1/vms/{id}": {
                 "get": { "summary": "Show VM" },
-                "patch": { "summary": "Update VM name, vCPU, memory, or HA" },
+                "patch": { "summary": "Update VM name, note, console, vCPU, memory, or HA" },
                 "delete": { "summary": "Destroy VM" }
             },
             "/v1/vms/{id}/start": { "post": { "summary": "Start VM" } },
@@ -274,13 +274,18 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/vms/{id}/nics": { "post": { "summary": "Attach NIC" } },
             "/v1/volumes": { "get": { "summary": "List volumes" }, "post": { "summary": "Create volume (replica_count via replicas)" } },
             "/v1/volumes/import": { "post": { "summary": "Upload a disk image as a volume (raw body, 8GiB)" } },
+            "/v1/volumes/{id}": { "get": { "summary": "Show volume" }, "patch": { "summary": "Update volume notes" }, "delete": { "summary": "Delete volume" } },
+            "/v1/volumes/{id}/rename": { "post": { "summary": "Rename a volume" } },
             "/v1/volumes/{id}/clone": { "post": { "summary": "Clone volume" } },
             "/v1/peer/volumes/ensure": { "post": { "summary": "Peer: create local replica file" } },
             "/v1/peer/volumes/{id}/blob": { "get": { "summary": "Peer: read replica blob" }, "put": { "summary": "Peer: write replica blob" } },
             "/v1/networks": { "get": { "summary": "List networks" }, "post": { "summary": "Create network" } },
+            "/v1/networks/{id}": { "get": { "summary": "Show network" }, "patch": { "summary": "Update network notes" }, "delete": { "summary": "Delete network" } },
+            "/v1/networks/{id}/rename": { "post": { "summary": "Rename a network" } },
             "/v1/isos": { "get": { "summary": "List ISOs" }, "post": { "summary": "Import ISO from a host path" } },
             "/v1/isos/upload": { "post": { "summary": "Upload an ISO from the browser" } },
             "/v1/isos/cloud-init": { "post": { "summary": "Create a cloud-init NoCloud (cidata) ISO" } },
+            "/v1/isos/{name}": { "patch": { "summary": "Update ISO notes" }, "delete": { "summary": "Delete ISO" } },
             "/v1/tasks": { "get": { "summary": "Task log" } },
             "/v1/audit": { "get": { "summary": "Audit events" } },
             "/v1/users": { "get": { "summary": "List users (admin)" }, "post": { "summary": "Create user (admin)" } },
@@ -294,9 +299,12 @@ pub fn openapi_json() -> serde_json::Value {
             "/v1/vms/{id}/template": { "post": { "summary": "Convert a stopped VM into a cloud template" } },
             "/v1/vms/{id}/backups": {
                 "get": { "summary": "List guest disk backups" },
-                "post": { "summary": "Export stopped guest disks (qemu-img convert)" }
+                "post": { "summary": "Export stopped guest disks (optional notes)" }
             },
-            "/v1/vms/{id}/backups/{backup_id}": { "delete": { "summary": "Delete a guest backup" } },
+            "/v1/vms/{id}/backups/{backup_id}": {
+                "patch": { "summary": "Rename a backup and/or update its notes" },
+                "delete": { "summary": "Delete a guest backup" }
+            },
             "/v1/vms/{id}/backups/{backup_id}/restore": { "post": { "summary": "Restore a stopped guest's local disks from a backup" } },
             "/v1/vms/{id}/backup-schedule": {
                 "put": { "summary": "Set automatic local-disk backup while the guest is stopped" },
@@ -306,11 +314,22 @@ pub fn openapi_json() -> serde_json::Value {
                 "put": { "summary": "Set automatic disk snapshots, including while the guest is running" },
                 "delete": { "summary": "Clear the guest snapshot schedule" }
             },
+            "/v1/vms/{id}/snapshots": { "post": { "summary": "Snapshot every disk on this guest and store a description" } },
+            "/v1/vms/{id}/snapshots/{name}": {
+                "patch": { "summary": "Update the description on a guest snapshot" },
+                "delete": { "summary": "Remove a snapshot from this guest's disks" }
+            },
+            "/v1/vms/{id}/snapshots/{name}/restore": { "post": { "summary": "Roll this guest's disks back to a snapshot" } },
+            "/v1/vms/{id}/snapshots/{name}/clone": { "post": { "summary": "Create a new guest from a snapshot while the original keeps running" } },
+            "/v1/volumes/{id}/snapshots/{name}": {
+                "patch": { "summary": "Update the description on a volume snapshot" },
+                "delete": { "summary": "Remove one volume snapshot" }
+            },
             "/v1/templates": {
                 "get": { "summary": "List cloud templates" },
-                "post": { "summary": "Create a cloud template from an imported volume" }
+                "post": { "summary": "Create a cloud template from an imported volume (optional notes)" }
             },
-            "/v1/templates/import": { "post": { "summary": "Upload a cloud disk image and wrap it as a template" } },
+            "/v1/templates/import": { "post": { "summary": "Upload a cloud disk image and wrap it as a template (optional notes query)" } },
             "/v1/updates": { "get": { "summary": "List apt packages that can be upgraded on this node" } },
             "/v1/updates/refresh": { "post": { "summary": "apt-get update" } },
             "/v1/updates/upgrade": { "post": { "summary": "apt-get dist-upgrade (in-place; keeps guests)" } },

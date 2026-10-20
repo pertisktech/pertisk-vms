@@ -89,6 +89,10 @@ impl Zfs {
         self.run(&["set", &format!("volsize={size}"), dataset])
     }
 
+    pub fn rename_dataset(&self, from: &str, to_name: &str) -> Result<()> {
+        self.run(&["rename", from, &self.dataset_name(to_name)])
+    }
+
     /// Snapshots of this dataset only. A clone that still depends on one will fail the destroy.
     pub fn destroy_dataset(&self, dataset: &str) -> Result<()> {
         self.run(&["destroy", "-r", dataset])

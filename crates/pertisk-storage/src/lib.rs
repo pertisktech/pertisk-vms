@@ -112,6 +112,7 @@ fn recover_orphan_disks(root: &Path, inv: &mut Inventory) -> usize {
                 snapshots: Vec::new(),
                 replicas: Vec::new(),
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Replica,
             },
         );
@@ -142,12 +143,30 @@ fn recover_orphan_disks(root: &Path, inv: &mut Inventory) -> usize {
                     name,
                     path,
                     size_bytes,
+                    notes: None,
                 },
             );
             recovered += 1;
         }
     }
     recovered
+}
+
+fn clean_volume_notes(notes: Option<String>) -> Result<Option<String>> {
+    let Some(notes) = notes else {
+        return Ok(None);
+    };
+    let notes = notes.trim();
+    if notes.chars().count() > 500 {
+        return Err(StorageError::Message(
+            "notes are limited to 500 characters".into(),
+        ));
+    }
+    Ok(if notes.is_empty() {
+        None
+    } else {
+        Some(notes.to_string())
+    })
 }
 
 #[derive(Debug)]
@@ -414,6 +433,7 @@ impl VolumePool {
             snapshots: vec![],
             replicas: vec![],
             replica_count: 1,
+            notes: None,
             backend: StorageBackend::Replica,
         };
         self.upsert_volume(record.clone())?;
@@ -486,6 +506,7 @@ impl VolumePool {
             VolumeFormat::Raw => create_raw(&path, req.size_bytes)?,
             VolumeFormat::Qcow2 => self.qemu.create_qcow2(&path, req.size_bytes)?,
         }
+        let notes = clean_volume_notes(req.notes)?;
         let record = VolumeRecord {
             id,
             name: req.name,
@@ -496,8 +517,43 @@ impl VolumePool {
             snapshots: vec![],
             replicas: vec![],
             replica_count: 1,
+            notes,
             backend: pertisk_types::StorageBackend::Replica,
         };
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    /// Change the inventory name. Local replica paths stay keyed by volume id.
+    pub fn rename_volume(&self, id: VolumeId, name: String) -> Result<VolumeRecord> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(StorageError::Message("volume name is required".into()));
+        }
+        {
+            let inner = self.inner.lock().expect("storage lock");
+            if inner
+                .volumes
+                .values()
+                .any(|vol| vol.id != id && vol.name == name)
+            {
+                return Err(StorageError::NameTaken(name));
+            }
+        }
+        let mut record = self.get_volume(id)?;
+        if record.name == name {
+            return Ok(record);
+        }
+        record.name = name;
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    /// Set or clear the operator note on a volume.
+    pub fn set_volume_notes(&self, id: VolumeId, notes: Option<String>) -> Result<VolumeRecord> {
+        let notes = clean_volume_notes(notes)?;
+        let mut record = self.get_volume(id)?;
+        record.notes = notes;
         self.upsert_volume(record.clone())?;
         Ok(record)
     }
@@ -581,6 +637,7 @@ impl VolumePool {
             snapshots: vec![],
             replicas: vec![],
             replica_count: source.replica_count.max(1),
+            notes: None,
             backend: source.backend,
         };
         self.upsert_volume(record.clone())?;
@@ -597,11 +654,13 @@ impl VolumePool {
             return Err(StorageError::SnapshotExists(name.to_string()));
         }
         let created_unix = unix_now();
+        let notes = clean_volume_notes(req.notes)?;
         let snap = if record.backend == StorageBackend::Rbd {
             rbd_client(&record).snapshot_create(&record.name, name)?;
             VolumeSnapshot {
                 name: name.to_string(),
                 created_unix,
+                notes: notes.clone(),
                 path: None,
             }
         } else if record.backend == StorageBackend::Zfs {
@@ -611,6 +670,7 @@ impl VolumePool {
             VolumeSnapshot {
                 name: name.to_string(),
                 created_unix,
+                notes: notes.clone(),
                 path: None,
             }
         } else if record.format == VolumeFormat::Qcow2 && self.qemu.available() {
@@ -618,6 +678,7 @@ impl VolumePool {
             VolumeSnapshot {
                 name: name.to_string(),
                 created_unix,
+                notes: notes.clone(),
                 path: None,
             }
         } else {
@@ -628,6 +689,7 @@ impl VolumePool {
             VolumeSnapshot {
                 name: name.to_string(),
                 created_unix,
+                notes,
                 path: Some(path),
             }
         };
@@ -637,7 +699,12 @@ impl VolumePool {
     }
 
     /// Record a snapshot that QEMU already created inside an open qcow2.
-    pub fn note_snapshot(&self, id: VolumeId, name: &str) -> Result<VolumeRecord> {
+    pub fn note_snapshot(
+        &self,
+        id: VolumeId,
+        name: &str,
+        notes: Option<String>,
+    ) -> Result<VolumeRecord> {
         let name = name.trim();
         if name.is_empty() {
             return Err(StorageError::Message("snapshot name is required".into()));
@@ -649,8 +716,32 @@ impl VolumePool {
         record.snapshots.push(VolumeSnapshot {
             name: name.to_string(),
             created_unix: unix_now(),
+            notes: clean_volume_notes(notes)?,
             path: None,
         });
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
+    /// Set or clear the operator note on an existing snapshot.
+    pub fn set_snapshot_notes(
+        &self,
+        id: VolumeId,
+        name: &str,
+        notes: Option<String>,
+    ) -> Result<VolumeRecord> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()));
+        }
+        let notes = clean_volume_notes(notes)?;
+        let mut record = self.get_volume(id)?;
+        let snap = record
+            .snapshots
+            .iter_mut()
+            .find(|snap| snap.name == name)
+            .ok_or_else(|| StorageError::SnapshotNotFound(name.to_string()))?;
+        snap.notes = notes;
         self.upsert_volume(record.clone())?;
         Ok(record)
     }
@@ -721,6 +812,94 @@ impl VolumePool {
         Ok(record)
     }
 
+    /// Copy one snapshot into a new replica volume. The source disk stays as it is.
+    pub fn clone_from_snapshot(
+        &self,
+        id: VolumeId,
+        snap_name: &str,
+        name: String,
+    ) -> Result<VolumeRecord> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(StorageError::Message("volume name is required".into()));
+        }
+        let snap_name = snap_name.trim();
+        if snap_name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()));
+        }
+        let source = self.get_volume(id)?;
+        if source.backend.external() {
+            return Err(StorageError::Message(format!(
+                "a {} snapshot is cloned by the storage CLI",
+                source.backend
+            )));
+        }
+        {
+            let inner = self.inner.lock().expect("storage lock");
+            if inner.volumes.values().any(|vol| vol.name == name) {
+                return Err(StorageError::NameTaken(name));
+            }
+        }
+        let snap = source
+            .snapshots
+            .iter()
+            .find(|snap| snap.name == snap_name)
+            .cloned()
+            .ok_or_else(|| StorageError::SnapshotNotFound(snap_name.to_string()))?;
+        let new_id = VolumeId::new();
+        let dest = self.local_path(new_id, source.format);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(path) = snap.path.as_ref() {
+            copy_volume_file(path, &dest)?;
+        } else if source.format == VolumeFormat::Qcow2 {
+            if let Err(err) =
+                self.qemu
+                    .convert_snapshot(&source.path, &dest, source.format, snap_name)
+            {
+                let _ = std::fs::remove_file(&dest);
+                return Err(err);
+            }
+        } else {
+            let _ = std::fs::remove_file(&dest);
+            return Err(StorageError::Message(
+                "this snapshot has no file to copy".into(),
+            ));
+        }
+        let file_size = match dest.metadata() {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                let _ = std::fs::remove_file(&dest);
+                return Err(err.into());
+            }
+        };
+        if file_size == 0 {
+            let _ = std::fs::remove_file(&dest);
+            return Err(StorageError::Message("snapshot copy is empty".into()));
+        }
+        let size_bytes = self
+            .qemu
+            .virtual_size(&dest)
+            .unwrap_or(source.size_bytes)
+            .max(file_size);
+        let record = VolumeRecord {
+            id: new_id,
+            name,
+            format: source.format,
+            size_bytes,
+            path: dest,
+            backing_id: None,
+            snapshots: vec![],
+            replicas: vec![],
+            replica_count: source.replica_count.max(1),
+            notes: None,
+            backend: StorageBackend::Replica,
+        };
+        self.upsert_volume(record.clone())?;
+        Ok(record)
+    }
+
     pub fn list_isos(&self) -> Result<Vec<IsoRecord>> {
         let inner = self.inner.lock().expect("storage lock");
         Ok(inner.isos.values().cloned().collect())
@@ -736,8 +915,14 @@ impl VolumePool {
             .ok_or_else(|| StorageError::IsoNotFound(name.to_string()))
     }
 
-    pub fn import_iso(&self, source: &Path, name: Option<String>) -> Result<IsoRecord> {
+    pub fn import_iso(
+        &self,
+        source: &Path,
+        name: Option<String>,
+        notes: Option<String>,
+    ) -> Result<IsoRecord> {
         let name = iso_name(source, name)?;
+        let notes = clean_volume_notes(notes)?;
         {
             let inner = self.inner.lock().expect("storage lock");
             if inner.isos.contains_key(&name) {
@@ -757,6 +942,7 @@ impl VolumePool {
             name: name.clone(),
             path: dest,
             size_bytes,
+            notes,
         };
         {
             let mut inner = self.inner.lock().expect("storage lock");
@@ -810,14 +996,29 @@ impl VolumePool {
                 bytes.len() as u64
             }
         };
+        let notes = clean_volume_notes(req.notes)?;
         let record = IsoRecord {
             name: name.clone(),
             path: dest,
             size_bytes,
+            notes,
         };
         {
             let mut inner = self.inner.lock().expect("storage lock");
             inner.isos.insert(name, record.clone());
+        }
+        self.flush()?;
+        Ok(record)
+    }
+
+    /// Set or clear the operator note on an ISO.
+    pub fn set_iso_notes(&self, name: &str, notes: Option<String>) -> Result<IsoRecord> {
+        let notes = clean_volume_notes(notes)?;
+        let mut record = self.get_iso(name)?;
+        record.notes = notes;
+        {
+            let mut inner = self.inner.lock().expect("storage lock");
+            inner.isos.insert(record.name.clone(), record.clone());
         }
         self.flush()?;
         Ok(record)
@@ -1316,6 +1517,7 @@ mod tests {
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .unwrap();
         let src = dir.path().join("incoming.bin");
@@ -1356,6 +1558,7 @@ mod tests {
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .unwrap();
         assert_eq!(vol.path.metadata().unwrap().len(), 8 * 1024 * 1024);
@@ -1387,6 +1590,7 @@ mod tests {
                 vol.id,
                 SnapshotRequest {
                     name: "before".into(),
+                    notes: None,
                 },
             )
             .unwrap();
@@ -1396,6 +1600,34 @@ mod tests {
         pool.delete_volume(clone.id).unwrap();
         pool.delete_volume(vol.id).unwrap();
         assert!(pool.list_volumes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_create_rejects_notes_over_500_chars() {
+        let (pool, _dir) = pool();
+        let vol = pool
+            .create_volume(CreateVolumeRequest {
+                name: "disk".into(),
+                size_bytes: 1024,
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .unwrap();
+        std::fs::write(&vol.path, b"disk").unwrap();
+        let err = pool
+            .snapshot(
+                vol.id,
+                SnapshotRequest {
+                    name: "before".into(),
+                    notes: Some("x".repeat(501)),
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("500"), "expected 500-char limit, got {err}");
+        assert!(pool.get_volume(vol.id).unwrap().snapshots.is_empty());
     }
 
     #[test]
@@ -1412,6 +1644,7 @@ mod tests {
                 snapshots: vec![],
                 replicas: vec![],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Rbd,
             })
             .unwrap();
@@ -1420,6 +1653,7 @@ mod tests {
                 vol.id,
                 SnapshotRequest {
                     name: "before".into(),
+                    notes: None,
                 },
             )
             .unwrap_err()
@@ -1451,6 +1685,7 @@ mod tests {
                 snapshots: vec![],
                 replicas: vec![],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Zfs,
             })
             .unwrap();
@@ -1460,6 +1695,7 @@ mod tests {
                 vol.id,
                 SnapshotRequest {
                     name: "before".into(),
+                    notes: None,
                 },
             )
             .unwrap_err()
@@ -1487,6 +1723,7 @@ mod tests {
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .unwrap();
         let ensured = pool.ensure_local(&vol).unwrap();
@@ -1502,11 +1739,37 @@ mod tests {
         let (pool, dir) = pool();
         let src = dir.path().join("installer.iso");
         std::fs::write(&src, b"iso-bytes").unwrap();
-        let iso = pool.import_iso(&src, None).unwrap();
+        let iso = pool.import_iso(&src, None, None).unwrap();
         assert_eq!(iso.name, "installer.iso");
         assert_eq!(iso.size_bytes, 9);
         pool.delete_iso("installer.iso").unwrap();
         assert!(pool.list_isos().unwrap().is_empty());
+    }
+
+    #[test]
+    fn iso_stores_and_clears_notes() {
+        let (pool, dir) = pool();
+        let src = dir.path().join("os.iso");
+        std::fs::write(&src, b"iso").unwrap();
+        let iso = pool
+            .import_iso(
+                &src,
+                Some("os.iso".into()),
+                Some("  alma installer  ".into()),
+            )
+            .unwrap();
+        assert_eq!(iso.notes.as_deref(), Some("alma installer"));
+        let updated = pool
+            .set_iso_notes("os.iso", Some("  before rebuild  ".into()))
+            .unwrap();
+        assert_eq!(updated.notes.as_deref(), Some("before rebuild"));
+        let cleared = pool.set_iso_notes("os.iso", Some("   ".into())).unwrap();
+        assert_eq!(cleared.notes, None);
+        let err = pool
+            .set_iso_notes("os.iso", Some("x".repeat(501)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("500"));
     }
 
     #[test]
@@ -1582,6 +1845,7 @@ mod tests {
                 ssh_authorized_keys: vec![],
                 userdata: None,
                 network: None,
+                notes: None,
             })
             .unwrap();
         assert_eq!(iso.name, "web-1-cidata.iso");
@@ -1616,6 +1880,7 @@ mod tests {
                 ssh_authorized_keys: vec![],
                 userdata: None,
                 network: None,
+                notes: None,
             })
             .unwrap();
         assert_eq!(again.name, "web-1-cidata.iso");
@@ -1631,6 +1896,7 @@ mod tests {
                 ssh_authorized_keys: vec![],
                 userdata: None,
                 network: None,
+                notes: None,
             })
             .unwrap();
         let bytes = std::fs::read(&auto.path).unwrap();

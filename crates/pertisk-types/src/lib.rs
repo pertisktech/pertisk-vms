@@ -413,6 +413,12 @@ pub struct UpdateVmRequest {
     /// Placement group. Empty clears it. Omitted leaves the current group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Operator note. Empty clears it. Omitted leaves the current note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// Serial or graphics console. The guest must be stopped to change this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_type: Option<ConsoleType>,
 }
 
 fn default_true() -> bool {
@@ -460,6 +466,9 @@ pub struct NetworkRecord {
     pub isolate: bool,
     #[serde(default)]
     pub mode: NetworkMode,
+    /// Operator note stored with the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -477,6 +486,21 @@ pub struct CreateNetworkRequest {
     pub isolate: bool,
     #[serde(default)]
     pub mode: NetworkMode,
+    /// Operator note stored with the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenameNetworkRequest {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateNetworkRequest {
+    /// Operator note. Empty clears it. Omitted leaves the current note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -495,6 +519,35 @@ pub enum ConsoleType {
     #[default]
     Serial,
     Graphics,
+}
+
+impl ConsoleType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Serial => "serial",
+            Self::Graphics => "graphics",
+        }
+    }
+}
+
+impl fmt::Display for ConsoleType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ConsoleType {
+    type Err = TypesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "serial" => Ok(Self::Serial),
+            "graphics" | "vga" | "vnc" => Ok(Self::Graphics),
+            other => Err(TypesError::InvalidSpec(format!(
+                "unknown console type '{other}' (serial | graphics)"
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -567,6 +620,9 @@ impl FromStr for VolumeFormat {
 pub struct VolumeSnapshot {
     pub name: String,
     pub created_unix: u64,
+    /// Operator description. Scheduled snapshots leave this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     /// Copy-based snapshot file. Absent for qcow2 internal snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
@@ -597,6 +653,16 @@ pub struct VmBackupRecord {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CreateVmBackupRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateVmBackupRequest {
+    /// Display name. Empty is rejected. Omitted leaves the current name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Operator note. Empty clears it. Omitted leaves the current note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
@@ -758,6 +824,9 @@ pub struct VolumeRecord {
     pub replica_count: u8,
     #[serde(default)]
     pub backend: StorageBackend,
+    /// Operator note. Empty clears it when updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -765,6 +834,16 @@ pub struct IsoRecord {
     pub name: String,
     pub path: PathBuf,
     pub size_bytes: u64,
+    /// Operator note stored with the ISO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateIsoRequest {
+    /// Operator note. Empty clears it. Omitted leaves the current note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -779,6 +858,9 @@ pub struct CreateVolumeRequest {
     /// `replica` is a local file. `rbd` is one Ceph image. `zfs` is a local zvol. None uses the host default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<StorageBackend>,
+    /// Operator note stored with the volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -794,7 +876,45 @@ pub struct ResizeVolumeRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenameVolumeRequest {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateVolumeRequest {
+    /// Operator note. Empty clears it. Omitted leaves the current note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnapshotRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Snapshot every non-CD disk on a guest under one name.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateVmSnapshotRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Update the description on an existing snapshot (guest or volume).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateSnapshotRequest {
+    /// Operator note. Empty clears it. Omitted leaves the current note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// New guest whose disks are a copy of one snapshot. The source guest can stay running.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CloneVmSnapshotRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<VmId>,
     pub name: String,
 }
 
@@ -813,6 +933,9 @@ pub struct ImportIsoRequest {
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Operator note stored with the ISO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 /// Build a NoCloud (`cidata`) ISO for cloud-init. Works with Linux cloud images on Cloud Hypervisor.
@@ -833,6 +956,9 @@ pub struct CloudInitIsoRequest {
     /// Guest NIC for cloud-init `network-config` (IPv4, plus IPv6 SLAAC when dual stack).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<CloudInitNetwork>,
+    /// Operator note stored with the seed ISO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 /// Network stanza written into a NoCloud / ConfigDrive seed.
@@ -928,6 +1054,9 @@ pub struct CloneVmRequest {
     /// Placement group for the new guest. Empty clears a group copied from the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Operator note for the new guest. Omitted clears any note copied from the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_id: Option<NetworkId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -957,6 +1086,9 @@ pub struct CreateTemplateRequest {
     pub memory_mib: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_type: Option<ConsoleType>,
+    /// Operator note stored with the template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1129,6 +1261,9 @@ pub struct VmSpec {
     /// Automatic disk snapshot, including while the guest is running when the disk allows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<VmSnapshotSchedule>,
+    /// Operator note. Shown on the guest and editable while it is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 fn is_zero_u64(v: &u64) -> bool {
@@ -1157,6 +1292,13 @@ impl VmSpec {
         }
         if self.memory_mib < 64 {
             return Err(TypesError::InvalidSpec("memory_mib must be >= 64".into()));
+        }
+        if let Some(notes) = &self.notes {
+            if notes.trim().chars().count() > 500 {
+                return Err(TypesError::InvalidSpec(
+                    "notes are limited to 500 characters".into(),
+                ));
+            }
         }
         if let Some(sched) = &self.backup {
             if sched.interval_hours == 0 {
@@ -1879,6 +2021,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         };
         assert!(spec.validate().is_err());
     }

@@ -48,6 +48,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
       ciPassword: '',
       ciSshKey: (host?.ssh_authorized_keys || []).filter(Boolean).join('\n'),
       start: false,
+      notes: '',
     }
   })
   const [busy, setBusy] = useState(false)
@@ -93,6 +94,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
     setBusy(true)
     setError('')
     try {
+      const notes = form.notes.trim()
       const vm = await api(`/v1/vms/${source.id}/clone`, {
         method: 'POST',
         body: {
@@ -105,6 +107,7 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
           ha: form.ha,
           group: form.group.trim(),
           autostart: form.autostart,
+          ...(notes ? { notes } : {}),
           network_id: form.networkId || undefined,
           ip: form.nicIp.trim() || undefined,
           dual_stack: Boolean(form.networkId && form.dualStack),
@@ -449,6 +452,17 @@ export default function CloneWizard({ source, vms, volumes, networks, cluster, h
                   <small>Boot the guest as soon as it is defined. Needs {form.memory_mib} MiB free for guests.</small>
                 </span>
               </label>
+              <div className="field">
+                <label htmlFor="clone-notes">Notes</label>
+                <textarea
+                  id="clone-notes"
+                  rows={2}
+                  maxLength={500}
+                  value={form.notes}
+                  onChange={(e) => set({ notes: e.target.value })}
+                  placeholder="Optional — what this guest is for"
+                />
+              </div>
             </div>
           </>
         )}

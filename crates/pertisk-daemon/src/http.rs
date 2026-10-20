@@ -21,13 +21,15 @@ use pertisk_api::{
 };
 use pertisk_types::{
     AddRepositoryRequest, AttachDiskRequest, AttachIsoRequest, AttachNicRequest, CloneVmRequest,
-    CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DrainRequest,
-    HeartbeatMessage, ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord,
+    CloneVmSnapshotRequest, CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput,
+    CreateNetworkRequest, CreateTemplateRequest, CreateVmBackupRequest, CreateVmSnapshotRequest,
+    CreateVolumeRequest, DrainRequest, HeartbeatMessage, ImportIsoRequest, JoinClusterRequest,
+    MigrateRequest, NodeId, NodeRecord, RenameNetworkRequest, RenameVolumeRequest,
     ResizeVolumeRequest, SetBackupScheduleRequest, SetHaArmedRequest, SetRepositoryRequest,
-    SetSnapshotScheduleRequest,
-    SnapshotRequest, StorageBackend, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
-    VolumeId, VolumeRecord, WitnessClaim,
+    SetSnapshotScheduleRequest, SnapshotRequest, StorageBackend, UpdateIsoRequest,
+    UpdateNetworkRequest, UpdateSnapshotRequest, UpdateVmBackupRequest, UpdateVmRequest,
+    UpdateVolumeRequest, VERSION, VmId, VmRecord, VolumeFormat, VolumeId, VolumeRecord,
+    WitnessClaim,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -76,7 +78,7 @@ pub fn router(service: Service) -> Router {
         )
         .route(
             "/v1/vms/{id}/backups/{backup_id}",
-            axum::routing::delete(delete_vm_backup),
+            axum::routing::patch(update_vm_backup).delete(delete_vm_backup),
         )
         .route(
             "/v1/vms/{id}/backups/{backup_id}/restore",
@@ -89,6 +91,19 @@ pub fn router(service: Service) -> Router {
         .route(
             "/v1/vms/{id}/snapshot-schedule",
             put(set_snapshot_schedule).delete(clear_snapshot_schedule),
+        )
+        .route("/v1/vms/{id}/snapshots", post(create_vm_snapshot))
+        .route(
+            "/v1/vms/{id}/snapshots/{name}",
+            axum::routing::patch(update_vm_snapshot).delete(delete_vm_snapshot),
+        )
+        .route(
+            "/v1/vms/{id}/snapshots/{name}/restore",
+            post(restore_vm_snapshot),
+        )
+        .route(
+            "/v1/vms/{id}/snapshots/{name}/clone",
+            post(clone_vm_snapshot),
         )
         .route("/v1/vms/{id}/disks", post(attach_disk))
         .route(
@@ -109,10 +124,18 @@ pub fn router(service: Service) -> Router {
         .route("/v1/vms/{id}/graphics/ws", get(graphics_ws))
         .route("/v1/vms/{id}/ssh/ws", get(guest_ssh_ws))
         .route("/v1/volumes", get(list_volumes).post(create_volume))
-        .route("/v1/volumes/{id}", get(show_volume).delete(delete_volume))
+        .route(
+            "/v1/volumes/{id}",
+            get(show_volume).patch(update_volume).delete(delete_volume),
+        )
+        .route("/v1/volumes/{id}/rename", post(rename_volume))
         .route("/v1/volumes/{id}/resize", post(resize_volume))
         .route("/v1/volumes/{id}/clone", post(clone_volume))
         .route("/v1/volumes/{id}/snapshots", post(snapshot_volume))
+        .route(
+            "/v1/volumes/{id}/snapshots/{name}",
+            axum::routing::patch(update_volume_snapshot).delete(delete_volume_snapshot),
+        )
         .route(
             "/v1/volumes/{id}/snapshots/{name}/restore",
             post(restore_volume),
@@ -120,12 +143,18 @@ pub fn router(service: Service) -> Router {
         .route("/v1/templates", get(list_templates).post(create_template))
         .route("/v1/isos", get(list_isos).post(import_iso))
         .route("/v1/isos/cloud-init", post(create_cloudinit_iso))
-        .route("/v1/isos/{name}", axum::routing::delete(delete_iso))
+        .route(
+            "/v1/isos/{name}",
+            axum::routing::patch(update_iso).delete(delete_iso),
+        )
         .route("/v1/networks", get(list_networks).post(create_network))
         .route(
             "/v1/networks/{id}",
-            get(show_network).delete(delete_network),
+            get(show_network)
+                .patch(update_network)
+                .delete(delete_network),
         )
+        .route("/v1/networks/{id}/rename", post(rename_network))
         .route("/v1/tasks", get(list_tasks))
         .route("/v1/audit", get(list_audit))
         .route("/v1/users", get(list_users).post(create_user))
@@ -820,6 +849,24 @@ async fn create_vm_backup(
     ))
 }
 
+async fn update_vm_backup(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, backup_id)): Path<(VmId, String)>,
+    Json(req): Json<UpdateVmBackupRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.backup.update",
+            format!("{id}/{backup_id}"),
+            async { service.update_vm_backup(id, &backup_id, req) },
+        )
+        .await?,
+    ))
+}
+
 async fn delete_vm_backup(
     State(service): State<Service>,
     Extension(user): Extension<AuthUser>,
@@ -991,6 +1038,43 @@ async fn delete_volume(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn update_volume(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VolumeId>,
+    Json(req): Json<UpdateVolumeRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "volume.update",
+            id.to_string(),
+            service.update_volume(id, req),
+        )
+        .await?,
+    ))
+}
+
+async fn rename_volume(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VolumeId>,
+    Json(req): Json<RenameVolumeRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "volume.rename",
+            format!("{id} -> {name}"),
+            service.rename_volume(id, req),
+        )
+        .await?,
+    ))
+}
+
 async fn resize_volume(
     State(service): State<Service>,
     Path(id): Path<VolumeId>,
@@ -1121,6 +1205,7 @@ struct TemplateImportQuery {
     vcpus: Option<u8>,
     memory_mib: Option<u32>,
     backend: Option<String>,
+    notes: Option<String>,
 }
 
 async fn import_template(
@@ -1197,6 +1282,7 @@ async fn import_template(
                 vcpus: q.vcpus,
                 memory_mib: q.memory_mib,
                 console_type: None,
+                notes: q.notes.clone(),
             })
             .await
         {
@@ -1218,6 +1304,129 @@ async fn snapshot_volume(
     Json(req): Json<SnapshotRequest>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.snapshot_volume(id, req).await?))
+}
+
+async fn update_volume_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VolumeId, String)>,
+    Json(req): Json<UpdateSnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "volume.snapshot.update",
+            format!("{id}/{name}"),
+            service.update_volume_snapshot(id, &name, req),
+        )
+        .await?,
+    ))
+}
+
+async fn delete_volume_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VolumeId, String)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "volume.snapshot.delete",
+            format!("{id}/{name}"),
+            service.delete_volume_snapshot(id, &name),
+        )
+        .await?,
+    ))
+}
+
+async fn create_vm_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<VmId>,
+    Json(req): Json<CreateVmSnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.snapshot.create",
+            format!("{id}/{name}"),
+            service.create_vm_snapshot(id, req),
+        )
+        .await?,
+    ))
+}
+
+async fn restore_vm_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VmId, String)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    tracked(
+        &service,
+        &user,
+        "vm.snapshot.restore",
+        format!("{id}/{name}"),
+        service.restore_vm_snapshot(id, &name),
+    )
+    .await?;
+    Ok(Json(service.get(id)?))
+}
+
+async fn clone_vm_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VmId, String)>,
+    Json(req): Json<CloneVmSnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let guest = req.name.clone();
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.snapshot.clone",
+            format!("{id}/{name} -> {guest}"),
+            service.clone_vm_from_snapshot(id, &name, req),
+        )
+        .await?,
+    ))
+}
+
+async fn update_vm_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VmId, String)>,
+    Json(req): Json<UpdateSnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "vm.snapshot.update",
+            format!("{id}/{name}"),
+            service.update_vm_snapshot(id, &name, req),
+        )
+        .await?,
+    ))
+}
+
+async fn delete_vm_snapshot(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, name)): Path<(VmId, String)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    tracked(
+        &service,
+        &user,
+        "vm.snapshot.delete",
+        format!("{id}/{name}"),
+        service.delete_vm_snapshot(id, &name),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn restore_volume(
@@ -1254,6 +1463,7 @@ async fn import_iso(
 #[derive(Deserialize)]
 struct IsoUploadQuery {
     name: Option<String>,
+    notes: Option<String>,
 }
 
 async fn upload_iso(
@@ -1302,6 +1512,7 @@ async fn upload_iso(
         service.import_iso(ImportIsoRequest {
             path: tmp.clone(),
             name: q.name.clone(),
+            notes: q.notes.clone(),
         })
     })
     .await;
@@ -1323,6 +1534,20 @@ async fn create_cloudinit_iso(
             })
             .await?,
         ),
+    ))
+}
+
+async fn update_iso(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateIsoRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(&service, &user, "iso.update", name.clone(), async {
+            service.update_iso(&name, req)
+        })
+        .await?,
     ))
 }
 
@@ -1609,6 +1834,39 @@ async fn show_network(
     Path(id): Path<pertisk_types::NetworkId>,
 ) -> Result<impl IntoResponse, DaemonError> {
     Ok(Json(service.get_network(id)?))
+}
+
+async fn rename_network(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<pertisk_types::NetworkId>,
+    Json(req): Json<RenameNetworkRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let name = req.name.clone();
+    Ok(Json(
+        tracked(
+            &service,
+            &user,
+            "network.rename",
+            format!("{id} -> {name}"),
+            async { service.rename_network(id, req) },
+        )
+        .await?,
+    ))
+}
+
+async fn update_network(
+    State(service): State<Service>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<pertisk_types::NetworkId>,
+    Json(req): Json<UpdateNetworkRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        tracked(&service, &user, "network.update", id.to_string(), async {
+            service.update_network(id, req)
+        })
+        .await?,
+    ))
 }
 
 async fn delete_network(
@@ -2292,7 +2550,7 @@ mod tests {
         let token = login["token"].as_str().unwrap();
         let req = Request::builder()
             .method(Method::POST)
-            .uri("/v1/isos/upload?name=tiny.iso")
+            .uri("/v1/isos/upload?name=tiny.iso&notes=alma%20installer")
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(Body::from(&b"iso-bytes"[..]))
@@ -2303,6 +2561,27 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(isos[0]["name"], "tiny.iso");
         assert_eq!(isos[0]["size_bytes"], 9);
+        assert_eq!(isos[0]["notes"], "alma installer");
+        let (status, updated) = send(
+            &app,
+            Method::PATCH,
+            "/v1/isos/tiny.iso",
+            Some(token),
+            Some(json!({ "notes": "before rebuild" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["notes"], "before rebuild");
+        let (status, cleared) = send(
+            &app,
+            Method::PATCH,
+            "/v1/isos/tiny.iso",
+            Some(token),
+            Some(json!({ "notes": "  " })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(cleared["notes"].is_null());
         let (status, tasks) = send(&app, Method::GET, "/v1/tasks", Some(token), None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(
@@ -2312,6 +2591,14 @@ mod tests {
                 .iter()
                 .any(|t| t["kind"] == "iso.import"),
             "missing iso.import task: {tasks}"
+        );
+        assert!(
+            tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["kind"] == "iso.update"),
+            "missing iso.update task: {tasks}"
         );
     }
 
@@ -2499,6 +2786,36 @@ mod tests {
                 .contains("AlmaLinux-10"),
             "{second}"
         );
+    }
+
+    #[tokio::test]
+    async fn template_import_stores_notes() {
+        let (svc, _dir) = service();
+        let app = router(svc);
+        let (status, login) = send(
+            &app,
+            Method::POST,
+            "/v1/login",
+            None,
+            Some(json!({ "username": "admin", "password": "admin" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = login["token"].as_str().unwrap();
+        let payload = vec![0u8; 64 * 1024];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/templates/import?name=noted-tpl&format=raw&vcpus=1&memory_mib=512&notes=alma%20genericcloud")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(payload))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let noted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(noted["spec"]["notes"], "alma genericcloud");
+        assert_eq!(noted["template"], true);
     }
 
     #[tokio::test]

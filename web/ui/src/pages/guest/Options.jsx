@@ -32,6 +32,13 @@ export default function GuestOptions() {
         editable,
       },
       {
+        key: 'notes',
+        label: 'Notes',
+        value: vm.spec?.notes || '—',
+        edit: 'notes',
+        editable,
+      },
+      {
         key: 'state',
         label: 'State',
         value: template ? 'template' : vm.state || '—',
@@ -55,6 +62,8 @@ export default function GuestOptions() {
         key: 'console',
         label: 'Console',
         value: vm.spec?.console_type || 'serial',
+        edit: 'console',
+        editable: editable && !template && !running,
       },
       {
         key: 'ha',
@@ -110,6 +119,8 @@ export default function GuestOptions() {
     if (!kind) return
     setError('')
     if (kind === 'name') setForm({ name: vm.spec?.name || '' })
+    if (kind === 'notes') setForm({ notes: vm.spec?.notes || '' })
+    if (kind === 'console') setForm({ console_type: vm.spec?.console_type || 'serial' })
     if (kind === 'ha') setForm({ ha: vm.spec?.ha !== false })
     if (kind === 'group') setForm({ group: vm.spec?.group || '' })
     if (kind === 'autostart')
@@ -132,15 +143,19 @@ export default function GuestOptions() {
     const body =
       kind === 'name'
         ? { name: form.name.trim() }
-        : kind === 'ha'
-          ? { ha: Boolean(form.ha) }
-          : kind === 'group'
-            ? { group: form.group.trim() }
-            : {
-              autostart: Boolean(form.autostart),
-              autostart_delay: Number(form.autostart_delay) || 0,
-              autostart_order: Number(form.autostart_order) || 0,
-            }
+        : kind === 'notes'
+          ? { notes: form.notes }
+          : kind === 'console'
+            ? { console_type: form.console_type || 'serial' }
+            : kind === 'ha'
+              ? { ha: Boolean(form.ha) }
+              : kind === 'group'
+                ? { group: form.group.trim() }
+                : {
+                    autostart: Boolean(form.autostart),
+                    autostart_delay: Number(form.autostart_delay) || 0,
+                    autostart_order: Number(form.autostart_order) || 0,
+                  }
     if (kind === 'name' && !body.name) {
       setError('Name is required.')
       return
@@ -238,6 +253,8 @@ export default function GuestOptions() {
           title={
             {
               name: 'Edit name',
+              notes: 'Edit notes',
+              console: 'Edit console',
               ha: 'Edit high availability',
               group: 'Edit placement group',
               autostart: 'Edit start at boot',
@@ -270,6 +287,38 @@ export default function GuestOptions() {
                 <p className="field-hint">
                   This is the name in Pertisk Vms. The Linux hostname is applied by cloud-init on first boot
                   (clone again after changing it).
+                </p>
+              </div>
+            )}
+            {dialog === 'notes' && (
+              <div className="field">
+                <label htmlFor="opt-notes">Notes</label>
+                <textarea
+                  id="opt-notes"
+                  rows={4}
+                  autoFocus
+                  maxLength={500}
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  placeholder="What this guest is for"
+                />
+                <p className="field-hint">Shown on the guest. Leave this empty to clear the note. It can be changed while the guest is running.</p>
+              </div>
+            )}
+            {dialog === 'console' && (
+              <div className="field">
+                <label htmlFor="opt-console">Console</label>
+                <select
+                  id="opt-console"
+                  autoFocus
+                  value={form.console_type || 'serial'}
+                  onChange={(e) => setForm({ ...form, console_type: e.target.value })}
+                >
+                  <option value="serial">Serial</option>
+                  <option value="graphics">Graphics (VGA)</option>
+                </select>
+                <p className="field-hint">
+                  Takes effect the next time this guest starts. Stop the guest before changing it.
                 </p>
               </div>
             )}

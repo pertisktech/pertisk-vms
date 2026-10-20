@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useOutletContext } from 'react-router-dom'
 import { Icon } from './Icons'
 
-export default function ResourceView({ icon, kind, name, crumbs, status, tabs, actions }) {
+export default function ResourceView({ icon, kind, name, note, crumbs, status, tabs, actions }) {
   const ctx = useOutletContext()
   const trail = crumbs?.length ? crumbs : [kind, name].filter(Boolean)
 
@@ -22,6 +22,7 @@ export default function ResourceView({ icon, kind, name, crumbs, status, tabs, a
           </span>
           <div className="pve-title-copy">
             <h2>{name}</h2>
+            {note ? <p className="pve-title-note">{note}</p> : null}
             {status ? <div className="pve-title-status">{status}</div> : null}
           </div>
           <div className="pve-toolbar-actions">{actions}</div>

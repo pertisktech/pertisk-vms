@@ -1266,6 +1266,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         }
     }
 
@@ -1496,6 +1497,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         };
         assert!(node_fits(&n, &spec));
         assert!(guest_start_fits(1088, 0, 1024));
@@ -1534,6 +1536,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         };
         assert_eq!(schedule(&[n.clone()], &spec, None), None);
         assert_eq!(schedule_define(&[n], None, &[]), Some(id));

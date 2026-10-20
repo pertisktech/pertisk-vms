@@ -145,6 +145,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         }
     }
 

@@ -18,16 +18,20 @@ export default function Storage() {
   }
   const [volOpen, setVolOpen] = useState(false)
   const [isoOpen, setIsoOpen] = useState(false)
-  const [vol, setVol] = useState({ name: '', size: '8G', backend: 'replica' })
+  const [vol, setVol] = useState({ name: '', size: '8G', backend: 'replica', notes: '' })
   const [isoPath, setIsoPath] = useState('')
   const [isoFile, setIsoFile] = useState(null)
   const [isoMode, setIsoMode] = useState('file')
+  const [isoNotes, setIsoNotes] = useState('')
   const [ci, setCi] = useState({ name: 'cidata.iso', hostname: '', user: 'ubuntu', password: '', sshKey: '' })
   const [busy, setBusy] = useState(false)
   const [action, setAction] = useState(null)
   const [actionName, setActionName] = useState('')
+  const [actionNotes, setActionNotes] = useState('')
   const [actionSize, setActionSize] = useState('')
   const [actionLinked, setActionLinked] = useState(false)
+  const [notesEdit, setNotesEdit] = useState(null)
+  const [editNotes, setEditNotes] = useState('')
 
   async function createVol(e) {
     e.preventDefault()
@@ -41,10 +45,11 @@ export default function Storage() {
             size_bytes: parseSize(vol.size),
             format: 'raw',
             backend: vol.backend,
+            notes: vol.notes.trim() || undefined,
           },
         }),
       )
-      setVol({ name: '', size: '8G', backend: 'replica' })
+      setVol({ name: '', size: '8G', backend: 'replica', notes: '' })
       setVolOpen(false)
     } catch {
       /* inventory error */
@@ -56,11 +61,14 @@ export default function Storage() {
   async function importIso(e) {
     e.preventDefault()
     setBusy(true)
+    const notes = isoNotes.trim() || undefined
     try {
       await mutate(async () => {
         if (isoMode === 'file') {
           if (!isoFile) throw new Error('Choose an ISO file')
-          await api(`/v1/isos/upload?name=${encodeURIComponent(isoFile.name)}`, {
+          const qs = new URLSearchParams({ name: isoFile.name })
+          if (notes) qs.set('notes', notes)
+          await api(`/v1/isos/upload?${qs}`, {
             method: 'POST',
             headers: { 'content-type': 'application/octet-stream' },
             body: isoFile,
@@ -77,14 +85,19 @@ export default function Storage() {
                 .split('\n')
                 .map((s) => s.trim())
                 .filter(Boolean),
+              ...(notes ? { notes } : {}),
             },
           })
         } else {
-          await api('/v1/isos', { method: 'POST', body: { path: isoPath.trim() } })
+          await api('/v1/isos', {
+            method: 'POST',
+            body: { path: isoPath.trim(), ...(notes ? { notes } : {}) },
+          })
         }
       })
       setIsoPath('')
       setIsoFile(null)
+      setIsoNotes('')
       setCi({ name: 'cidata.iso', hostname: '', user: 'ubuntu', password: '', sshKey: '' })
       setIsoOpen(false)
     } catch {
@@ -94,9 +107,47 @@ export default function Storage() {
     }
   }
 
+  function openIsoNotes(iso) {
+    setNotesEdit(iso)
+    setEditNotes(iso.notes || '')
+  }
+
+  async function saveIsoNotes(e) {
+    e.preventDefault()
+    if (!notesEdit) return
+    setBusy(true)
+    try {
+      await mutate(() =>
+        api(`/v1/isos/${encodeURIComponent(notesEdit.name)}`, {
+          method: 'PATCH',
+          body: { notes: editNotes },
+        }),
+      )
+      setNotesEdit(null)
+    } catch {
+      /* inventory */
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function openAction(type, v) {
     setAction({ type, vol: v })
-    setActionName(type === 'clone' ? `${v.name}-copy` : type === 'snap' ? 'snap-1' : '')
+    const snaps = snapshotsOf(v)
+    setActionName(
+      type === 'clone'
+        ? `${v.name}-copy`
+        : type === 'rename'
+          ? v.name
+          : type === 'notes'
+            ? v.notes || ''
+            : type === 'snap'
+              ? 'snap-1'
+              : snaps[0]?.name || '',
+    )
+    setActionNotes(
+      type === 'snapnotes' ? snaps[0]?.notes || '' : type === 'snap' ? '' : '',
+    )
     setActionSize(type === 'resize' ? String(Math.ceil((v.size_bytes || 0) / 1024 / 1024) + 'M') : '')
     setActionLinked(false)
   }
@@ -113,19 +164,39 @@ export default function Storage() {
             method: 'POST',
             body: { size_bytes: parseSize(actionSize) },
           })
+        } else if (action.type === 'rename') {
+          await api(`/v1/volumes/${id}/rename`, {
+            method: 'POST',
+            body: { name: actionName.trim() },
+          })
+        } else if (action.type === 'notes') {
+          await api(`/v1/volumes/${id}`, {
+            method: 'PATCH',
+            body: { notes: actionName },
+          })
         } else if (action.type === 'clone') {
           await api(`/v1/volumes/${id}/clone`, {
             method: 'POST',
             body: { name: actionName.trim(), linked: actionLinked },
           })
         } else if (action.type === 'snap') {
+          const notes = actionNotes.trim()
           await api(`/v1/volumes/${id}/snapshots`, {
             method: 'POST',
-            body: { name: actionName.trim() },
+            body: { name: actionName.trim(), ...(notes ? { notes } : {}) },
+          })
+        } else if (action.type === 'snapnotes') {
+          await api(`/v1/volumes/${id}/snapshots/${encodeURIComponent(actionName)}`, {
+            method: 'PATCH',
+            body: { notes: actionNotes },
           })
         } else if (action.type === 'restore') {
           await api(`/v1/volumes/${id}/snapshots/${encodeURIComponent(actionName)}/restore`, {
             method: 'POST',
+          })
+        } else if (action.type === 'drop') {
+          await api(`/v1/volumes/${id}/snapshots/${encodeURIComponent(actionName)}`, {
+            method: 'DELETE',
           })
         }
       })
@@ -191,8 +262,13 @@ export default function Storage() {
                     <tr key={v.id}>
                       <td>
                         <strong>{v.name}</strong>
+                        {v.notes && <div className="muted">{v.notes}</div>}
                         {snaps.length > 0 && (
-                          <div className="muted">{snaps.map((s) => s.name).join(', ')}</div>
+                          <div className="muted">
+                            {snaps
+                              .map((s) => (s.notes ? `${s.name} (${s.notes})` : s.name))
+                              .join(', ')}
+                          </div>
                         )}
                       </td>
                       <td className="mono-inline muted">{v.format}</td>
@@ -212,6 +288,12 @@ export default function Storage() {
                       {canWrite && (
                         <td className="col-actions">
                           <div className="row-actions">
+                            <Btn variant="secondary" onClick={() => openAction('rename', v)}>
+                              Rename
+                            </Btn>
+                            <Btn variant="secondary" onClick={() => openAction('notes', v)}>
+                              Notes
+                            </Btn>
                             <Btn variant="secondary" onClick={() => openAction('resize', v)}>
                               Resize
                             </Btn>
@@ -219,8 +301,18 @@ export default function Storage() {
                               Snapshot
                             </Btn>
                             {snaps.length > 0 && (
+                              <Btn variant="secondary" onClick={() => openAction('snapnotes', v)}>
+                                Snap notes
+                              </Btn>
+                            )}
+                            {snaps.length > 0 && (
                               <Btn variant="secondary" onClick={() => openAction('restore', v)}>
                                 Restore
+                              </Btn>
+                            )}
+                            {snaps.length > 0 && (
+                              <Btn variant="secondary" onClick={() => openAction('drop', v)}>
+                                Remove snap
                               </Btn>
                             )}
                             <Btn variant="secondary" onClick={() => openAction('clone', v)}>
@@ -273,24 +365,32 @@ export default function Storage() {
               <tbody>
                 {osIsos.map((iso) => (
                   <tr key={iso.name}>
-                    <td>{iso.name}</td>
+                    <td>
+                      {iso.name}
+                      {iso.notes && <div className="muted">{iso.notes}</div>}
+                    </td>
                     <td className="mono-inline muted">{formatBytes(iso.size_bytes)}</td>
                     {canWrite && (
                       <td className="col-actions">
-                        <Btn
-                          icon="trash"
-                          variant="danger"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: 'Remove ISO',
-                              message: `Remove ${iso.name}?`,
-                              confirmLabel: 'Remove',
-                            })
-                            if (ok) mutate(() => api(`/v1/isos/${iso.name}`, { method: 'DELETE' }))
-                          }}
-                        >
-                          Remove
-                        </Btn>
+                        <div className="row-actions">
+                          <Btn variant="secondary" onClick={() => openIsoNotes(iso)}>
+                            Notes
+                          </Btn>
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: 'Remove ISO',
+                                message: `Remove ${iso.name}?`,
+                                confirmLabel: 'Remove',
+                              })
+                              if (ok) mutate(() => api(`/v1/isos/${iso.name}`, { method: 'DELETE' }))
+                            }}
+                          >
+                            Remove
+                          </Btn>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -322,24 +422,32 @@ export default function Storage() {
               <tbody>
                 {seedIsos.map((iso) => (
                   <tr key={iso.name}>
-                    <td>{iso.name}</td>
+                    <td>
+                      {iso.name}
+                      {iso.notes && <div className="muted">{iso.notes}</div>}
+                    </td>
                     <td className="mono-inline muted">{formatBytes(iso.size_bytes)}</td>
                     {canWrite && (
                       <td className="col-actions">
-                        <Btn
-                          icon="trash"
-                          variant="danger"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: 'Remove seed',
-                              message: `Remove ${iso.name}?`,
-                              confirmLabel: 'Remove',
-                            })
-                            if (ok) mutate(() => api(`/v1/isos/${iso.name}`, { method: 'DELETE' }))
-                          }}
-                        >
-                          Remove
-                        </Btn>
+                        <div className="row-actions">
+                          <Btn variant="secondary" onClick={() => openIsoNotes(iso)}>
+                            Notes
+                          </Btn>
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: 'Remove seed',
+                                message: `Remove ${iso.name}?`,
+                                confirmLabel: 'Remove',
+                              })
+                              if (ok) mutate(() => api(`/v1/isos/${iso.name}`, { method: 'DELETE' }))
+                            }}
+                          >
+                            Remove
+                          </Btn>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -355,11 +463,19 @@ export default function Storage() {
           title={
             action.type === 'resize'
               ? `Resize ${action.vol.name}`
-              : action.type === 'clone'
-                ? `Clone ${action.vol.name}`
-                : action.type === 'restore'
-                  ? `Restore ${action.vol.name}`
-                  : `Snapshot ${action.vol.name}`
+              : action.type === 'rename'
+                ? `Rename ${action.vol.name}`
+                : action.type === 'notes'
+                  ? `Notes for ${action.vol.name}`
+                  : action.type === 'clone'
+                    ? `Clone ${action.vol.name}`
+                    : action.type === 'snapnotes'
+                      ? `Snapshot notes on ${action.vol.name}`
+                      : action.type === 'restore'
+                        ? `Restore ${action.vol.name}`
+                        : action.type === 'drop'
+                          ? `Remove snapshot from ${action.vol.name}`
+                          : `Snapshot ${action.vol.name}`
           }
           onClose={() => setAction(null)}
           footer={
@@ -368,7 +484,7 @@ export default function Storage() {
                 Cancel
               </button>
               <button type="submit" form="vol-action" disabled={busy}>
-                {busy ? 'Working…' : 'Apply'}
+                {busy ? 'Working…' : action.type === 'drop' ? 'Remove' : 'Apply'}
               </button>
             </>
           }
@@ -384,6 +500,38 @@ export default function Storage() {
                   onChange={(e) => setActionSize(e.target.value)}
                   placeholder="16G"
                 />
+              </div>
+            )}
+            {action.type === 'rename' && (
+              <div className="field">
+                <label htmlFor="act-rename">Name</label>
+                <input
+                  id="act-rename"
+                  required
+                  autoFocus
+                  value={actionName}
+                  onChange={(e) => setActionName(e.target.value)}
+                />
+                <p className="field-hint">
+                  Local disk files stay on the same path. An RBD or ZFS volume renames the image while no guest is running it.
+                </p>
+              </div>
+            )}
+            {action.type === 'notes' && (
+              <div className="field">
+                <label htmlFor="act-notes">Notes</label>
+                <textarea
+                  id="act-notes"
+                  rows={4}
+                  autoFocus
+                  maxLength={500}
+                  value={actionName}
+                  onChange={(e) => setActionName(e.target.value)}
+                  placeholder="What this volume is for"
+                />
+                <p className="field-hint">
+                  Shown on Storage. Leave empty to clear the note.
+                </p>
               </div>
             )}
             {action.type === 'clone' && (
@@ -409,15 +557,66 @@ export default function Storage() {
               </>
             )}
             {action.type === 'snap' && (
-              <div className="field">
-                <label htmlFor="act-snap">Snapshot name</label>
-                <input
-                  id="act-snap"
-                  required
-                  value={actionName}
-                  onChange={(e) => setActionName(e.target.value)}
-                />
-              </div>
+              <>
+                <div className="field">
+                  <label htmlFor="act-snap">Snapshot name</label>
+                  <input
+                    id="act-snap"
+                    required
+                    autoFocus
+                    value={actionName}
+                    onChange={(e) => setActionName(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="act-snap-notes">Description (optional)</label>
+                  <textarea
+                    id="act-snap-notes"
+                    rows={3}
+                    maxLength={500}
+                    value={actionNotes}
+                    onChange={(e) => setActionNotes(e.target.value)}
+                    placeholder="Before resize"
+                  />
+                </div>
+              </>
+            )}
+            {action.type === 'snapnotes' && (
+              <>
+                <div className="field">
+                  <label htmlFor="act-snapnotes-name">Snapshot</label>
+                  <select
+                    id="act-snapnotes-name"
+                    value={actionName}
+                    onChange={(e) => {
+                      const name = e.target.value
+                      setActionName(name)
+                      const snap = snapshotsOf(action.vol).find((s) => s.name === name)
+                      setActionNotes(snap?.notes || '')
+                    }}
+                    required
+                  >
+                    {snapshotsOf(action.vol).map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="act-snapnotes-text">Description</label>
+                  <textarea
+                    id="act-snapnotes-text"
+                    rows={3}
+                    autoFocus
+                    maxLength={500}
+                    value={actionNotes}
+                    onChange={(e) => setActionNotes(e.target.value)}
+                    placeholder="What this snapshot is for"
+                  />
+                  <p className="field-hint">Leave empty to clear the note.</p>
+                </div>
+              </>
             )}
             {action.type === 'restore' && (
               <div className="field">
@@ -434,6 +633,24 @@ export default function Storage() {
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
+            {action.type === 'drop' && (
+              <div className="field">
+                <label htmlFor="act-drop">Snapshot</label>
+                <select
+                  id="act-drop"
+                  value={actionName}
+                  onChange={(e) => setActionName(e.target.value)}
+                  required
+                >
+                  {snapshotsOf(action.vol).map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="field-hint">Removes this snapshot. The volume's current data stays.</p>
               </div>
             )}
           </form>
@@ -475,6 +692,17 @@ export default function Storage() {
               />
             </div>
             <div className="field">
+              <label htmlFor="vol-notes">Notes</label>
+              <textarea
+                id="vol-notes"
+                rows={3}
+                maxLength={500}
+                value={vol.notes}
+                onChange={(e) => setVol({ ...vol, notes: e.target.value })}
+                placeholder="Optional"
+              />
+            </div>
+            <div className="field">
               <label htmlFor="vol-backend">Storage</label>
               <select
                 id="vol-backend"
@@ -489,6 +717,39 @@ export default function Storage() {
                   ZFS zvol{inv.host?.zfs ? '' : ' — zfs CLI not found'}
                 </option>
               </select>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {notesEdit && (
+        <Modal
+          title={`Notes for ${notesEdit.name}`}
+          onClose={() => setNotesEdit(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setNotesEdit(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="iso-notes-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="iso-notes-form" onSubmit={saveIsoNotes}>
+            <div className="field">
+              <label htmlFor="iso-edit-notes">Notes</label>
+              <textarea
+                id="iso-edit-notes"
+                rows={3}
+                autoFocus
+                maxLength={500}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="What this ISO is for"
+              />
+              <p className="field-hint">Leave empty to clear the note.</p>
             </div>
           </form>
         </Modal>
@@ -615,6 +876,17 @@ export default function Storage() {
                 />
               </div>
             )}
+            <div className="field">
+              <label htmlFor="iso-notes">Notes</label>
+              <textarea
+                id="iso-notes"
+                rows={2}
+                maxLength={500}
+                value={isoNotes}
+                onChange={(e) => setIsoNotes(e.target.value)}
+                placeholder="Optional — what this ISO is for"
+              />
+            </div>
           </form>
         </Modal>
       )}

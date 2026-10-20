@@ -28,9 +28,17 @@ export default function Templates() {
   const [cloneOf, setCloneOf] = useState(null)
   const [busy, setBusy] = useState(false)
   const [file, setFile] = useState(null)
-  const [form, setForm] = useState({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2' })
-  const [volForm, setVolForm] = useState({ name: '', volume_id: '', vcpus: 1, memory_mib: 1024 })
+  const [form, setForm] = useState({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2', notes: '' })
+  const [volForm, setVolForm] = useState({
+    name: '',
+    volume_id: '',
+    vcpus: 1,
+    memory_mib: 1024,
+    notes: '',
+  })
   const [importError, setImportError] = useState('')
+  const [notesEdit, setNotesEdit] = useState(null)
+  const [editNotes, setEditNotes] = useState('')
 
   const takenNames = new Set((vms || []).map((vm) => vm.spec?.name).filter(Boolean))
   const importName = form.name.trim()
@@ -55,18 +63,23 @@ export default function Templates() {
     try {
       const name = form.name.trim() || file.name.replace(/\.[^.]+$/, '')
       const format = form.format || imageFormat(file.name)
+      const qs = new URLSearchParams({
+        name,
+        format,
+        vcpus: String(Number(form.vcpus) || 1),
+        memory_mib: String(Number(form.memory_mib) || 1024),
+      })
+      const notes = form.notes.trim()
+      if (notes) qs.set('notes', notes)
       await mutate(() =>
-        api(
-          `/v1/templates/import?name=${encodeURIComponent(name)}&format=${encodeURIComponent(format)}&vcpus=${Number(form.vcpus) || 1}&memory_mib=${Number(form.memory_mib) || 1024}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/octet-stream' },
-            body: file,
-          },
-        ),
+        api(`/v1/templates/import?${qs}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: file,
+        }),
       )
       setFile(null)
-      setForm({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2' })
+      setForm({ name: '', vcpus: 1, memory_mib: 1024, format: 'qcow2', notes: '' })
       setImportOpen(false)
     } catch (err) {
       setImportError(err.message || String(err))
@@ -79,6 +92,7 @@ export default function Templates() {
     e.preventDefault()
     setBusy(true)
     try {
+      const notes = volForm.notes.trim()
       await mutate(() =>
         api('/v1/templates', {
           method: 'POST',
@@ -87,11 +101,36 @@ export default function Templates() {
             volume_id: volForm.volume_id,
             vcpus: Number(volForm.vcpus) || 1,
             memory_mib: Number(volForm.memory_mib) || 1024,
+            ...(notes ? { notes } : {}),
           },
         }),
       )
-      setVolForm({ name: '', volume_id: '', vcpus: 1, memory_mib: 1024 })
+      setVolForm({ name: '', volume_id: '', vcpus: 1, memory_mib: 1024, notes: '' })
       setFromVolOpen(false)
+    } catch {
+      /* inventory */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openNotes(vm) {
+    setNotesEdit(vm)
+    setEditNotes(vm.spec?.notes || '')
+  }
+
+  async function saveNotes(e) {
+    e.preventDefault()
+    if (!notesEdit) return
+    setBusy(true)
+    try {
+      await mutate(() =>
+        api(`/v1/vms/${notesEdit.id}`, {
+          method: 'PATCH',
+          body: { notes: editNotes },
+        }),
+      )
+      setNotesEdit(null)
     } catch {
       /* inventory */
     } finally {
@@ -152,6 +191,7 @@ export default function Templates() {
                         <Icon name="template" size={14} />
                         <strong>{vm.spec?.name || vm.id}</strong>
                       </Link>
+                      {vm.spec?.notes && <div className="muted">{vm.spec.notes}</div>}
                     </td>
                     <td className="mono-inline muted">{vm.id}</td>
                     <td className="mono-inline muted">{vm.spec?.vcpus || 1}</td>
@@ -167,6 +207,9 @@ export default function Templates() {
                         <div className="row-actions">
                           <Btn icon="clone" variant="secondary" onClick={() => setCloneOf(vm)}>
                             Clone
+                          </Btn>
+                          <Btn variant="secondary" onClick={() => openNotes(vm)}>
+                            Notes
                           </Btn>
                           <Btn
                             icon="trash"
@@ -192,6 +235,39 @@ export default function Templates() {
           </div>
         )}
       </section>
+
+      {notesEdit && (
+        <Modal
+          title={`Notes for ${notesEdit.spec?.name || notesEdit.id}`}
+          onClose={() => setNotesEdit(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setNotesEdit(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="tpl-notes-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="tpl-notes-form" onSubmit={saveNotes}>
+            <div className="field">
+              <label htmlFor="tpl-edit-notes">Notes</label>
+              <textarea
+                id="tpl-edit-notes"
+                rows={3}
+                autoFocus
+                maxLength={500}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="What this template is for"
+              />
+              <p className="field-hint">Leave empty to clear the note. Clones do not inherit it.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {importOpen && (
         <Modal
@@ -291,6 +367,17 @@ export default function Templates() {
                 <p className="field-hint">Used when you clone and start a guest. Import does not consume this RAM.</p>
               </div>
             </div>
+            <div className="field">
+              <label htmlFor="tpl-notes">Notes</label>
+              <textarea
+                id="tpl-notes"
+                rows={2}
+                maxLength={500}
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="Optional — what this template is for"
+              />
+            </div>
           </form>
         </Modal>
       )}
@@ -359,6 +446,17 @@ export default function Templates() {
                 />
                 <p className="field-hint">Used when you clone and start a guest. Import does not consume this RAM.</p>
               </div>
+            </div>
+            <div className="field">
+              <label htmlFor="tpl-vol-notes">Notes</label>
+              <textarea
+                id="tpl-vol-notes"
+                rows={2}
+                maxLength={500}
+                value={volForm.notes}
+                onChange={(e) => setVolForm({ ...volForm, notes: e.target.value })}
+                placeholder="Optional — what this template is for"
+              />
             </div>
           </form>
         </Modal>

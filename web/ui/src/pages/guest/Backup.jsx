@@ -13,6 +13,12 @@ export default function GuestBackup() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [dialog, setDialog] = useState(false)
+  const [backupOpen, setBackupOpen] = useState(false)
+  const [backupNotes, setBackupNotes] = useState('')
+  const [notesEdit, setNotesEdit] = useState(null)
+  const [editNotes, setEditNotes] = useState('')
+  const [rename, setRename] = useState(null)
+  const [renameName, setRenameName] = useState('')
   const [form, setForm] = useState({ enabled: true, interval_hours: 24, keep: 3 })
   const running = vm?.state === 'running'
   const schedule = vm?.spec?.backup || null
@@ -88,7 +94,18 @@ export default function GuestBackup() {
     }
   }
 
-  async function backupNow() {
+  function openBackupNow() {
+    if (running) {
+      setError('Stop the guest before creating a backup.')
+      return
+    }
+    setError('')
+    setBackupNotes('')
+    setBackupOpen(true)
+  }
+
+  async function backupNow(e) {
+    e?.preventDefault?.()
     if (running) {
       setError('Stop the guest before creating a backup.')
       return
@@ -96,8 +113,64 @@ export default function GuestBackup() {
     setBusy(true)
     setError('')
     try {
-      await api(`/v1/vms/${vmId}/backups`, { method: 'POST', body: {} })
+      const notes = backupNotes.trim()
+      await api(`/v1/vms/${vmId}/backups`, {
+        method: 'POST',
+        body: notes ? { notes } : {},
+      })
+      setBackupOpen(false)
+      setBackupNotes('')
       await inv.refresh()
+      await refresh()
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openNotes(backup) {
+    setError('')
+    setNotesEdit(backup)
+    setEditNotes(backup.notes || '')
+  }
+
+  async function saveNotes(e) {
+    e.preventDefault()
+    if (!notesEdit) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/v1/vms/${vmId}/backups/${encodeURIComponent(notesEdit.id)}`, {
+        method: 'PATCH',
+        body: { notes: editNotes },
+      })
+      setNotesEdit(null)
+      await refresh()
+    } catch (err) {
+      setError(err.message || String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openRename(backup) {
+    setError('')
+    setRename(backup)
+    setRenameName(backup.name || backup.id)
+  }
+
+  async function runRename(e) {
+    e.preventDefault()
+    if (!rename) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/v1/vms/${vmId}/backups/${encodeURIComponent(rename.id)}`, {
+        method: 'PATCH',
+        body: { name: renameName.trim() },
+      })
+      setRename(null)
       await refresh()
     } catch (err) {
       setError(err.message || String(err))
@@ -208,11 +281,11 @@ export default function GuestBackup() {
             {canWrite && (
               <Btn
                 icon="archive"
-                onClick={backupNow}
+                onClick={openBackupNow}
                 disabled={busy || running}
                 title={running ? 'Stop the guest first' : 'Export disks now'}
               >
-                {busy ? 'Working…' : 'Backup now'}
+                Backup now
               </Btn>
             )}
           </div>
@@ -233,6 +306,7 @@ export default function GuestBackup() {
                 <tr>
                   <th>Date</th>
                   <th>Name</th>
+                  <th>Notes</th>
                   <th>Size</th>
                   <th>Disks</th>
                   <th />
@@ -243,11 +317,29 @@ export default function GuestBackup() {
                   <tr key={b.id}>
                     <td className="mono-inline">{formatUnix(b.created_unix)}</td>
                     <td className="mono-inline">{b.name || b.id}</td>
+                    <td className="muted">{b.notes || '—'}</td>
                     <td className="mono-inline">{formatBytes(b.size_bytes)}</td>
                     <td className="muted">{(b.disks || []).length}</td>
                     <td className="pve-hw-act">
                       {canWrite && (
                         <>
+                          <Btn
+                            variant="secondary"
+                            disabled={busy}
+                            title="Rename backup"
+                            onClick={() => openRename(b)}
+                          >
+                            Rename
+                          </Btn>
+                          <Btn
+                            icon="pencil"
+                            variant="secondary"
+                            disabled={busy}
+                            title="Edit backup notes"
+                            onClick={() => openNotes(b)}
+                          >
+                            Notes
+                          </Btn>
                           <Btn
                             icon="refresh"
                             variant="secondary"
@@ -275,6 +367,106 @@ export default function GuestBackup() {
           </div>
         )}
       </section>
+
+      {backupOpen && (
+        <Modal
+          title="Backup now"
+          onClose={() => setBackupOpen(false)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setBackupOpen(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="backup-now-form" disabled={busy || running}>
+                {busy ? 'Working…' : 'Backup'}
+              </button>
+            </>
+          }
+        >
+          <form id="backup-now-form" onSubmit={backupNow}>
+            <div className="field">
+              <label htmlFor="backup-notes">Notes</label>
+              <textarea
+                id="backup-notes"
+                rows={3}
+                autoFocus
+                maxLength={500}
+                value={backupNotes}
+                onChange={(e) => setBackupNotes(e.target.value)}
+                placeholder="Optional — why this backup was taken"
+              />
+              <p className="field-hint">Stored with the backup. The guest must stay stopped.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {rename && (
+        <Modal
+          title={`Rename ${rename.name || rename.id}`}
+          onClose={() => setRename(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setRename(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="backup-rename-form" disabled={busy || !renameName.trim()}>
+                {busy ? 'Working…' : 'Apply'}
+              </button>
+            </>
+          }
+        >
+          <form id="backup-rename-form" onSubmit={runRename}>
+            <div className="field">
+              <label htmlFor="backup-rename-name">Name</label>
+              <input
+                id="backup-rename-name"
+                required
+                autoFocus
+                maxLength={128}
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+              />
+              <p className="field-hint">
+                Only the display name changes. The backup id and files under backups/ stay put.
+              </p>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {notesEdit && (
+        <Modal
+          title={`Notes for ${notesEdit.name || notesEdit.id}`}
+          onClose={() => setNotesEdit(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setNotesEdit(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="backup-notes-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="backup-notes-form" onSubmit={saveNotes}>
+            <div className="field">
+              <label htmlFor="backup-edit-notes">Notes</label>
+              <textarea
+                id="backup-edit-notes"
+                rows={3}
+                autoFocus
+                maxLength={500}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="What this backup is for"
+              />
+              <p className="field-hint">Leave empty to clear the note.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {dialog && (
         <Modal

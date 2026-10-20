@@ -9,14 +9,16 @@ use pertisk_api::{
 };
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
-    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
-    ClusterStatus, ConsoleInfo, CreateNetworkRequest, CreateTemplateRequest, CreateVmBackupRequest,
-    CreateVolumeRequest, DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult,
-    ImportIsoRequest, IsoRecord, JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord,
-    ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest, SetHaArmedRequest,
-    SetRepositoryRequest, SetSnapshotScheduleRequest, SnapshotRequest, UpdateVmRequest,
-    UpdatesStatus, VmBackupRecord, VmId,
-    VmRecord, VmSpec, VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
+    AttachNicRequest, CloneVmRequest, CloneVmSnapshotRequest, CloneVolumeRequest, CloudInitConfig,
+    CloudInitIsoRequest, ClusterStatus, ConsoleInfo, ConsoleType, CreateNetworkRequest,
+    CreateTemplateRequest, CreateVmBackupRequest, CreateVmSnapshotRequest, CreateVolumeRequest,
+    DEFAULT_LISTEN, DiskSpec, DrainRequest, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord,
+    JoinClusterRequest, MigrateRequest, NetworkId, NetworkRecord, RenameNetworkRequest,
+    RenameVolumeRequest, ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest,
+    SetHaArmedRequest, SetRepositoryRequest, SetSnapshotScheduleRequest, SnapshotRequest,
+    UpdateIsoRequest, UpdateNetworkRequest, UpdateSnapshotRequest, UpdateVmBackupRequest,
+    UpdateVmRequest, UpdateVolumeRequest, UpdatesStatus, VmBackupRecord, VmId, VmRecord, VmSpec,
+    VolumeFormat, VolumeId, VolumeRecord, default_home, format_size, parse_size,
 };
 
 #[derive(Debug, Parser)]
@@ -208,6 +210,9 @@ enum VmCommand {
         /// Place this guest away from others with the same group name.
         #[arg(long)]
         group: Option<String>,
+        /// Operator note stored with the guest.
+        #[arg(long)]
+        notes: Option<String>,
     },
     Start {
         id: VmId,
@@ -236,7 +241,7 @@ enum VmCommand {
     Show {
         id: VmId,
     },
-    /// Change name, vCPU, memory, HA, autostart, or placement group.
+    /// Change name, note, console, vCPU, memory, HA, autostart, or placement group.
     Update {
         id: VmId,
         #[arg(long)]
@@ -256,6 +261,12 @@ enum VmCommand {
         /// Placement group. An empty value clears it.
         #[arg(long)]
         group: Option<String>,
+        /// Operator note. An empty value clears it.
+        #[arg(long)]
+        notes: Option<String>,
+        /// serial or graphics. The guest must be stopped.
+        #[arg(long, value_parser = clap::value_parser!(ConsoleType))]
+        console: Option<ConsoleType>,
     },
     /// Convert a stopped guest into a cloud template.
     Template {
@@ -299,6 +310,9 @@ enum VmCommand {
         /// Placement group for the new guest. An empty value clears a group copied from the source.
         #[arg(long)]
         group: Option<String>,
+        /// Operator note for the new guest.
+        #[arg(long)]
+        notes: Option<String>,
     },
     Disk {
         #[command(subcommand)]
@@ -336,6 +350,24 @@ enum VmCommand {
 
 #[derive(Debug, Subcommand)]
 enum SnapshotScheduleCommand {
+    /// Snapshot every disk on this guest. A running guest is snapshotted in place when the disk allows it.
+    Create {
+        name: String,
+        /// Description stored with the snapshot.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Roll every disk back to this snapshot. The guest must be stopped.
+    Rollback { name: String },
+    /// Create a new guest from this snapshot. The source guest can stay running.
+    Clone {
+        /// Snapshot name.
+        snapshot: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        new_id: Option<VmId>,
+    },
     /// Configure automatic snapshots. A running guest is snapshotted in place when the disk allows it.
     Schedule {
         /// Hours between snapshots.
@@ -351,6 +383,16 @@ enum SnapshotScheduleCommand {
         #[arg(long)]
         clear: bool,
     },
+    /// Update the description on an existing snapshot. The guest can stay running.
+    Notes {
+        name: String,
+        /// Description. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Remove this snapshot from the guest's disks. The guest can stay running.
+    #[command(name = "rm")]
+    Remove { name: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -361,6 +403,19 @@ enum BackupCommand {
     Create {
         #[arg(long)]
         notes: Option<String>,
+    },
+    /// Update the description on an existing backup.
+    Notes {
+        backup: String,
+        /// Description. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Change the display name of an existing backup (on-disk id stays put).
+    Rename {
+        backup: String,
+        #[arg(long)]
+        name: String,
     },
     /// Copy a backup back onto the disks still attached to this guest.
     Restore { backup: String },
@@ -448,10 +503,26 @@ enum NetCommand {
         dhcp: bool,
         #[arg(long, default_value_t = true)]
         isolate: bool,
+        /// Operator note stored with the network.
+        #[arg(long)]
+        notes: Option<String>,
     },
     List,
     Show {
         id: NetworkId,
+    },
+    /// Change the network's display name. Bridge and CIDR stay the same.
+    Rename {
+        id: NetworkId,
+        #[arg(long)]
+        name: String,
+    },
+    /// Set or clear the operator note on a network.
+    Update {
+        id: NetworkId,
+        /// Operator note. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
     },
     #[command(name = "rm")]
     Remove {
@@ -473,6 +544,9 @@ enum VolCommand {
         /// replica (local file) or rbd (Ceph). Default is the host setting.
         #[arg(long)]
         backend: Option<pertisk_types::StorageBackend>,
+        /// Operator note stored with the volume.
+        #[arg(long)]
+        notes: Option<String>,
     },
     List,
     Show {
@@ -487,6 +561,19 @@ enum VolCommand {
         #[arg(long)]
         size: String,
     },
+    /// Change the volume's display name. Local files stay keyed by volume id.
+    Rename {
+        id: VolumeId,
+        #[arg(long)]
+        name: String,
+    },
+    /// Set or clear the operator note on a volume.
+    Update {
+        id: VolumeId,
+        /// Operator note. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
+    },
     Clone {
         id: VolumeId,
         #[arg(long)]
@@ -498,8 +585,28 @@ enum VolCommand {
         id: VolumeId,
         #[arg(long)]
         name: String,
+        /// Description stored with the snapshot.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Update the description on an existing volume snapshot.
+    #[command(name = "snap-notes")]
+    SnapNotes {
+        id: VolumeId,
+        #[arg(long)]
+        snap: String,
+        /// Description. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
     },
     Restore {
+        id: VolumeId,
+        #[arg(long)]
+        snap: String,
+    },
+    /// Remove one snapshot from a volume.
+    #[command(name = "snap-rm")]
+    SnapRemove {
         id: VolumeId,
         #[arg(long)]
         snap: String,
@@ -521,6 +628,9 @@ enum TemplateCommand {
         cpus: u8,
         #[arg(long, default_value_t = 1024)]
         memory: u32,
+        /// Operator note stored with the template.
+        #[arg(long)]
+        notes: Option<String>,
     },
     /// Upload a cloud disk image (qcow2/raw) and wrap it as a template.
     Import {
@@ -533,6 +643,9 @@ enum TemplateCommand {
         cpus: u8,
         #[arg(long, default_value_t = 1024)]
         memory: u32,
+        /// Operator note stored with the template.
+        #[arg(long)]
+        notes: Option<String>,
     },
 }
 
@@ -573,6 +686,9 @@ enum IsoCommand {
         path: PathBuf,
         #[arg(long)]
         name: Option<String>,
+        /// Operator note stored with the ISO.
+        #[arg(long)]
+        notes: Option<String>,
     },
     /// Cloud-init NoCloud seed ISO (cidata). Attach as CD-ROM next to a cloud disk image.
     CloudInit {
@@ -588,8 +704,18 @@ enum IsoCommand {
         ssh_key: Vec<String>,
         #[arg(long)]
         userdata: Option<String>,
+        /// Operator note stored with the seed ISO.
+        #[arg(long)]
+        notes: Option<String>,
     },
     List,
+    /// Update the operator note on an ISO.
+    Update {
+        name: String,
+        /// Operator note. Pass an empty string to clear.
+        #[arg(long)]
+        notes: Option<String>,
+    },
     #[command(name = "rm")]
     Remove {
         name: String,
@@ -982,17 +1108,18 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
                 println!(
-                    "{:<38} {:<16} {:>4} {:>8} {:>6}",
-                    "ID", "NAME", "CPU", "MEM", "DISKS"
+                    "{:<38} {:<16} {:>4} {:>8} {:>6}  {}",
+                    "ID", "NAME", "CPU", "MEM", "DISKS", "NOTES"
                 );
                 for vm in vms {
                     println!(
-                        "{:<38} {:<16} {:>4} {:>8} {:>6}",
+                        "{:<38} {:<16} {:>4} {:>8} {:>6}  {}",
                         vm.id,
                         vm.spec.name,
                         vm.spec.vcpus,
                         vm.spec.memory_mib,
-                        vm.spec.disks.len()
+                        vm.spec.disks.len(),
+                        vm.spec.notes.as_deref().unwrap_or("")
                     );
                 }
             }
@@ -1002,6 +1129,7 @@ async fn run() -> Result<()> {
                 id,
                 cpus,
                 memory,
+                notes,
             } => {
                 let record: VmRecord = post_json(
                     &client,
@@ -1014,6 +1142,7 @@ async fn run() -> Result<()> {
                         vcpus: Some(cpus),
                         memory_mib: Some(memory),
                         console_type: None,
+                        notes,
                     },
                 )
                 .await?;
@@ -1025,6 +1154,7 @@ async fn run() -> Result<()> {
                 format,
                 cpus,
                 memory,
+                notes,
             } => {
                 let format = format.unwrap_or_else(|| {
                     match image
@@ -1039,12 +1169,15 @@ async fn run() -> Result<()> {
                     }
                 });
                 let bytes = tokio::fs::read(&image).await?;
-                let url = format!(
+                let mut url = format!(
                     "{}/v1/templates/import?name={}&format={}&vcpus={cpus}&memory_mib={memory}",
                     cli.url.trim_end_matches('/'),
                     urlencoding_name(&name),
                     format.as_str()
                 );
+                if let Some(notes) = notes.as_deref() {
+                    url.push_str(&format!("&notes={}", urlencoding_name(notes)));
+                }
                 let response = with_auth(client.post(url))
                     .header("content-type", "application/octet-stream")
                     .body(bytes)
@@ -1187,6 +1320,7 @@ async fn run() -> Result<()> {
                 autostart_delay,
                 autostart_order,
                 group,
+                notes,
             } => {
                 let host: HostInfo = get_json(&client, &cli.url, "/v1/host").await?;
                 let firmware = firmware.or(host.firmware.clone());
@@ -1233,6 +1367,7 @@ async fn run() -> Result<()> {
                     group: group.filter(|name| !name.trim().is_empty()),
                     backup: None,
                     snapshot: None,
+                    notes,
                 };
                 let mut record: VmRecord = post_json(
                     &client,
@@ -1252,6 +1387,7 @@ async fn run() -> Result<()> {
                             format: VolumeFormat::Raw,
                             replicas: None,
                             backend: None,
+                            notes: None,
                         },
                     )
                     .await?;
@@ -1369,6 +1505,8 @@ async fn run() -> Result<()> {
                 autostart_delay,
                 autostart_order,
                 group,
+                notes,
+                console,
             } => {
                 let record: VmRecord = patch_json(
                     &client,
@@ -1383,6 +1521,8 @@ async fn run() -> Result<()> {
                         autostart_delay,
                         autostart_order,
                         group,
+                        notes,
+                        console_type: console,
                     },
                 )
                 .await?;
@@ -1411,6 +1551,7 @@ async fn run() -> Result<()> {
                 cloud_init,
                 start,
                 group,
+                notes,
             } => {
                 let network_id = if let Some(net) = net {
                     Some(resolve_network(&client, &cli.url, &net).await?)
@@ -1448,6 +1589,7 @@ async fn run() -> Result<()> {
                         autostart_delay: None,
                         autostart_order: None,
                         group,
+                        notes,
                         network_id,
                         ip,
                         dual_stack,
@@ -1496,6 +1638,45 @@ async fn run() -> Result<()> {
                 }
             },
             VmCommand::Snapshot { id, command } => match command {
+                SnapshotScheduleCommand::Create { name, notes } => {
+                    let records: Vec<VolumeRecord> = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/snapshots"),
+                        &CreateVmSnapshotRequest {
+                            name: name.clone(),
+                            notes,
+                        },
+                    )
+                    .await?;
+                    println!("snapshot {name} on {id} ({} disk(s))", records.len());
+                }
+                SnapshotScheduleCommand::Clone {
+                    snapshot,
+                    name,
+                    new_id,
+                } => {
+                    let record: VmRecord = post_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/snapshots/{snapshot}/clone"),
+                        &CloneVmSnapshotRequest { id: new_id, name },
+                    )
+                    .await?;
+                    println!(
+                        "cloned {id} snapshot {snapshot} to {} ({})",
+                        record.id, record.spec.name
+                    );
+                }
+                SnapshotScheduleCommand::Rollback { name } => {
+                    let record: VmRecord = post_empty(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/snapshots/{name}/restore"),
+                    )
+                    .await?;
+                    println!("rolled {} back to {name}", record.id);
+                }
                 SnapshotScheduleCommand::Schedule {
                     every,
                     keep,
@@ -1532,6 +1713,23 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
+                SnapshotScheduleCommand::Notes { name, notes } => {
+                    let Some(notes) = notes else {
+                        bail!("pass --notes … (empty string clears the note)");
+                    };
+                    let _: Vec<VolumeRecord> = patch_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/snapshots/{name}"),
+                        &UpdateSnapshotRequest { notes: Some(notes) },
+                    )
+                    .await?;
+                    println!("updated snapshot {name} on {id}");
+                }
+                SnapshotScheduleCommand::Remove { name } => {
+                    delete(&client, &cli.url, &format!("/v1/vms/{id}/snapshots/{name}")).await?;
+                    println!("removed snapshot {name} from {id}");
+                }
             },
             VmCommand::Backup { id, command } => match command {
                 BackupCommand::List => {
@@ -1541,13 +1739,19 @@ async fn run() -> Result<()> {
                         println!("no backups");
                     }
                     for backup in list {
-                        println!(
+                        print!(
                             "{}\t{}\t{}\t{} disk(s)",
                             backup.id,
                             backup.name,
                             format_size(backup.size_bytes),
                             backup.disks.len()
                         );
+                        if let Some(notes) =
+                            backup.notes.as_deref().filter(|notes| !notes.is_empty())
+                        {
+                            print!("\t{notes}");
+                        }
+                        println!();
                     }
                 }
                 BackupCommand::Create { notes } => {
@@ -1559,6 +1763,35 @@ async fn run() -> Result<()> {
                     )
                     .await?;
                     println!("created {}", record.id);
+                }
+                BackupCommand::Notes { backup, notes } => {
+                    let Some(notes) = notes else {
+                        bail!("pass --notes … (empty string clears the note)");
+                    };
+                    let record: VmBackupRecord = patch_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/backups/{backup}"),
+                        &UpdateVmBackupRequest {
+                            name: None,
+                            notes: Some(notes),
+                        },
+                    )
+                    .await?;
+                    println!("updated {}", record.id);
+                }
+                BackupCommand::Rename { backup, name } => {
+                    let record: VmBackupRecord = patch_json(
+                        &client,
+                        &cli.url,
+                        &format!("/v1/vms/{id}/backups/{backup}"),
+                        &UpdateVmBackupRequest {
+                            name: Some(name),
+                            notes: None,
+                        },
+                    )
+                    .await?;
+                    println!("renamed {} -> {}", record.id, record.name);
                 }
                 BackupCommand::Restore { backup } => {
                     let record: VmBackupRecord = post_empty(
@@ -1675,6 +1908,7 @@ async fn run() -> Result<()> {
                 format,
                 replicas,
                 backend,
+                notes,
             } => {
                 let req = CreateVolumeRequest {
                     name,
@@ -1682,6 +1916,7 @@ async fn run() -> Result<()> {
                     format,
                     replicas,
                     backend,
+                    notes,
                 };
                 let vol: VolumeRecord = post_json(&client, &cli.url, "/v1/volumes", &req).await?;
                 print_vol(&vol);
@@ -1730,6 +1965,29 @@ async fn run() -> Result<()> {
                 .await?;
                 print_vol(&vol);
             }
+            VolCommand::Rename { id, name } => {
+                let vol: VolumeRecord = post_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/volumes/{id}/rename"),
+                    &RenameVolumeRequest { name },
+                )
+                .await?;
+                print_vol(&vol);
+            }
+            VolCommand::Update { id, notes } => {
+                let Some(notes) = notes else {
+                    bail!("pass --notes … (empty string clears the note)");
+                };
+                let vol: VolumeRecord = patch_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/volumes/{id}"),
+                    &UpdateVolumeRequest { notes: Some(notes) },
+                )
+                .await?;
+                print_vol(&vol);
+            }
             VolCommand::Clone { id, name, linked } => {
                 let vol: VolumeRecord = post_json(
                     &client,
@@ -1740,12 +1998,25 @@ async fn run() -> Result<()> {
                 .await?;
                 print_vol(&vol);
             }
-            VolCommand::Snap { id, name } => {
+            VolCommand::Snap { id, name, notes } => {
                 let vol: VolumeRecord = post_json(
                     &client,
                     &cli.url,
                     &format!("/v1/volumes/{id}/snapshots"),
-                    &SnapshotRequest { name },
+                    &SnapshotRequest { name, notes },
+                )
+                .await?;
+                print_vol(&vol);
+            }
+            VolCommand::SnapNotes { id, snap, notes } => {
+                let Some(notes) = notes else {
+                    bail!("pass --notes … (empty string clears the note)");
+                };
+                let vol: VolumeRecord = patch_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/volumes/{id}/snapshots/{snap}"),
+                    &UpdateSnapshotRequest { notes: Some(notes) },
                 )
                 .await?;
                 print_vol(&vol);
@@ -1759,14 +2030,23 @@ async fn run() -> Result<()> {
                 .await?;
                 print_vol(&vol);
             }
+            VolCommand::SnapRemove { id, snap } => {
+                let vol: VolumeRecord = delete_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/volumes/{id}/snapshots/{snap}"),
+                )
+                .await?;
+                print_vol(&vol);
+            }
         },
         Command::Iso { command } => match command {
-            IsoCommand::Import { path, name } => {
+            IsoCommand::Import { path, name, notes } => {
                 let iso: IsoRecord = post_json(
                     &client,
                     &cli.url,
                     "/v1/isos",
-                    &ImportIsoRequest { path, name },
+                    &ImportIsoRequest { path, name, notes },
                 )
                 .await?;
                 println!("{} {}", iso.name, format_size(iso.size_bytes));
@@ -1778,6 +2058,7 @@ async fn run() -> Result<()> {
                 password,
                 ssh_key,
                 userdata,
+                notes,
             } => {
                 let iso: IsoRecord = post_json(
                     &client,
@@ -1791,6 +2072,7 @@ async fn run() -> Result<()> {
                         ssh_authorized_keys: resolve_ssh_keys(ssh_key)?,
                         userdata,
                         network: None,
+                        notes,
                     },
                 )
                 .await?;
@@ -1802,10 +2084,28 @@ async fn run() -> Result<()> {
                     println!("no isos");
                     return Ok(());
                 }
-                println!("{:<24} {:>8}", "NAME", "SIZE");
+                println!("{:<24} {:>8}  {}", "NAME", "SIZE", "NOTES");
                 for iso in isos {
-                    println!("{:<24} {:>8}", iso.name, format_size(iso.size_bytes));
+                    println!(
+                        "{:<24} {:>8}  {}",
+                        iso.name,
+                        format_size(iso.size_bytes),
+                        iso.notes.as_deref().unwrap_or("")
+                    );
                 }
+            }
+            IsoCommand::Update { name, notes } => {
+                let Some(notes) = notes else {
+                    bail!("pass --notes … (empty string clears the note)");
+                };
+                let iso: IsoRecord = patch_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/isos/{name}"),
+                    &UpdateIsoRequest { notes: Some(notes) },
+                )
+                .await?;
+                println!("{} {}", iso.name, format_size(iso.size_bytes));
             }
             IsoCommand::Remove { name } => {
                 delete(&client, &cli.url, &format!("/v1/isos/{name}")).await?;
@@ -1820,6 +2120,7 @@ async fn run() -> Result<()> {
                 mode,
                 dhcp,
                 isolate,
+                notes,
             } => {
                 let mode = match mode.as_str() {
                     "bridge" => pertisk_types::NetworkMode::Bridge,
@@ -1849,13 +2150,11 @@ async fn run() -> Result<()> {
                             isolate
                         },
                         mode,
+                        notes,
                     },
                 )
                 .await?;
-                println!(
-                    "{} {} {} {} {}",
-                    net.id, net.name, net.mode, net.bridge, net.cidr
-                );
+                print_net(&net);
             }
             NetCommand::List => {
                 let nets: Vec<NetworkRecord> = get_json(&client, &cli.url, "/v1/networks").await?;
@@ -1868,16 +2167,43 @@ async fn run() -> Result<()> {
                     "ID", "NAME", "MODE", "BRIDGE", "CIDR", "DHCP"
                 );
                 for net in nets {
-                    println!(
+                    print!(
                         "{:<38} {:<12} {:<8} {:<8} {:<18} {}",
                         net.id, net.name, net.mode, net.bridge, net.cidr, net.dhcp
                     );
+                    if let Some(notes) = net.notes.as_deref().filter(|n| !n.is_empty()) {
+                        print!("\t{notes}");
+                    }
+                    println!();
                 }
             }
             NetCommand::Show { id } => {
                 let net: NetworkRecord =
                     get_json(&client, &cli.url, &format!("/v1/networks/{id}")).await?;
                 println!("{}", serde_json::to_string_pretty(&net)?);
+            }
+            NetCommand::Rename { id, name } => {
+                let net: NetworkRecord = post_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/networks/{id}/rename"),
+                    &RenameNetworkRequest { name },
+                )
+                .await?;
+                print_net(&net);
+            }
+            NetCommand::Update { id, notes } => {
+                let Some(notes) = notes else {
+                    bail!("pass --notes … (empty string clears the note)");
+                };
+                let net: NetworkRecord = patch_json(
+                    &client,
+                    &cli.url,
+                    &format!("/v1/networks/{id}"),
+                    &UpdateNetworkRequest { notes: Some(notes) },
+                )
+                .await?;
+                print_net(&net);
             }
             NetCommand::Remove { id } => {
                 delete(&client, &cli.url, &format!("/v1/networks/{id}")).await?;
@@ -1902,6 +2228,14 @@ fn print_vm(record: &VmRecord) {
             .map(|id| id.to_string())
             .unwrap_or_else(|| "-".into())
     );
+    if let Some(notes) = record
+        .spec
+        .notes
+        .as_deref()
+        .filter(|notes| !notes.is_empty())
+    {
+        println!("{notes}");
+    }
 }
 
 fn urlencoding_name(name: &str) -> String {
@@ -1966,6 +2300,16 @@ fn resolve_ssh_keys(items: Vec<String>) -> Result<Vec<String>> {
     Ok(out)
 }
 
+fn print_net(record: &NetworkRecord) {
+    println!(
+        "{} {} {} {} {}",
+        record.id, record.name, record.mode, record.bridge, record.cidr
+    );
+    if let Some(notes) = record.notes.as_deref().filter(|notes| !notes.is_empty()) {
+        println!("{notes}");
+    }
+}
+
 fn print_vol(record: &VolumeRecord) {
     println!(
         "{} {} {} {} backend={} replicas={}",
@@ -1976,6 +2320,9 @@ fn print_vol(record: &VolumeRecord) {
         record.backend,
         record.replicas.len()
     );
+    if let Some(notes) = record.notes.as_deref().filter(|notes| !notes.is_empty()) {
+        println!("{notes}");
+    }
 }
 
 fn token_path() -> PathBuf {
@@ -2059,7 +2406,11 @@ async fn ensure_iso(client: &reqwest::Client, base: &str, iso: &str) -> Result<S
             client,
             base,
             "/v1/isos",
-            &ImportIsoRequest { path, name: None },
+            &ImportIsoRequest {
+                path,
+                name: None,
+                notes: None,
+            },
         )
         .await?;
         return Ok(record.name);

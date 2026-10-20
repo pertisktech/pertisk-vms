@@ -1255,6 +1255,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         };
         assert_eq!(disk_device_id(&spec, volume).as_deref(), Some("disk1"));
         assert_eq!(disk_device_id(&spec, pertisk_types::VolumeId::new()), None);
@@ -1355,6 +1356,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         };
         assert_eq!(
             qemu_guest_name(pertisk_types::VmId::Numeric(101), &spec),

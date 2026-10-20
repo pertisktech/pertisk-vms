@@ -297,10 +297,23 @@ pertisk audit
 - **Witness** is optional (`cluster.witness_url` on a third host). Without it a 2-node cluster still needs both nodes.
 - **Graphics console** is QEMU VNC on Linux (USB tablet). Mock has no display
 - **Serial and Display** are separate console tabs
-- **Snapshot rollback** needs the guest stopped. A running guest can still be snapshotted (QEMU qcow2, RBD, or ZFS)
+- **Snapshot rollback** needs the guest stopped. A running guest can still be snapshotted (QEMU qcow2, RBD, or ZFS). A description is stored with the snapshot. Cloning a new guest from a snapshot leaves the original running
 - **Guest backup restore** needs the guest stopped. It copies a local export back onto the attached replica disks. RBD and ZFS are not part of that export
 - **Scheduled backups** only run while the guest is stopped. A running guest is skipped until the next due tick
 - **Scheduled snapshots** run while the guest is running when the disk is qcow2, RBD, or ZFS. A raw disk is skipped until the guest is stopped. Retention removes only `sched-` names
+- **Guest notes** can be set when creating or cloning a guest (wizard, CLI `--notes`) and changed while it is running. A note is limited to 500 characters. Clone does not inherit the source note
+- **Clone notes** are set on the new guest only; the template or source note is left alone
+- **Console type** (serial or graphics) can be changed while the guest is stopped
+- **Volume rename** updates inventory for local disks. RBD and ZFS rename the image while no guest is running it
+- **Volume notes** can be set or cleared anytime (same 500-character limit as guest notes)
+- **Network rename** changes the display name only; bridge, CIDR, and attached guests stay put
+- **Network notes** can be set on create or edited later (same 500-character limit as volume notes)
+- **Backup notes** can be set when taking a backup and edited later (UI, CLI); shown in the backup list. Create and edit both enforce the 500-character limit
+- **Backup rename** changes the display name only; the UUID path under `backups/` stays put. Names are unique per guest (128 characters)
+- **Snapshot notes** can be set on create and edited later (guest or volume); empty clears. Create and edit both enforce the 500-character limit
+- **ISO notes** can be set on import (upload, host path, or cloud-init seed) and edited later (UI, CLI); empty clears. Same 500-character limit
+- **Template notes** can be set when importing an image or wrapping a volume, and edited later (Templates list, Options, CLI). Same 500-character limit; clones do not inherit the template note
+- **Storage volume snapshots** accept a description on create and can edit it later
 - **Cluster coordination** is best-effort (network partitions possible)
 
 ## Deployment Recommendations

@@ -13,6 +13,7 @@ const EMPTY = {
   bridge: '',
   dhcp: true,
   isolate: true,
+  notes: '',
 }
 
 export default function Networks() {
@@ -22,6 +23,10 @@ export default function Networks() {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [busy, setBusy] = useState(false)
+  const [rename, setRename] = useState(null)
+  const [renameName, setRenameName] = useState('')
+  const [notesEdit, setNotesEdit] = useState(null)
+  const [editNotes, setEditNotes] = useState('')
 
   function guestsOn(netId) {
     return vms.filter((vm) => netsOf(vm).some((n) => n.network_id === netId)).length
@@ -53,6 +58,7 @@ export default function Networks() {
     e.preventDefault()
     setBusy(true)
     try {
+      const notes = form.notes.trim()
       await mutate(() =>
         api('/v1/networks', {
           method: 'POST',
@@ -64,11 +70,60 @@ export default function Networks() {
             bridge: form.bridge.trim() || undefined,
             dhcp: form.dhcp,
             isolate: form.isolate,
+            ...(notes ? { notes } : {}),
           },
         }),
       )
       setForm(EMPTY)
       setOpen(false)
+    } catch {
+      /* inventory */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openRename(n) {
+    setRename(n)
+    setRenameName(n.name)
+  }
+
+  async function runRename(e) {
+    e.preventDefault()
+    if (!rename) return
+    setBusy(true)
+    try {
+      await mutate(() =>
+        api(`/v1/networks/${rename.id}/rename`, {
+          method: 'POST',
+          body: { name: renameName.trim() },
+        }),
+      )
+      setRename(null)
+    } catch {
+      /* inventory */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openNotes(n) {
+    setNotesEdit(n)
+    setEditNotes(n.notes || '')
+  }
+
+  async function saveNotes(e) {
+    e.preventDefault()
+    if (!notesEdit) return
+    setBusy(true)
+    try {
+      await mutate(() =>
+        api(`/v1/networks/${notesEdit.id}`, {
+          method: 'PATCH',
+          body: { notes: editNotes },
+        }),
+      )
+      setNotesEdit(null)
     } catch {
       /* inventory */
     } finally {
@@ -123,6 +178,7 @@ export default function Networks() {
                   <tr key={n.id}>
                     <td>
                       <strong>{n.name}</strong>
+                      {n.notes && <div className="muted">{n.notes}</div>}
                     </td>
                     <td className="mono-inline muted">{n.mode || 'nat'}</td>
                     <td className="mono-inline muted">{n.cidr}</td>
@@ -139,20 +195,28 @@ export default function Networks() {
                     <td className="mono-inline muted">{guestsOn(n.id)}</td>
                     {canWrite && (
                       <td className="col-actions">
-                        <Btn
-                          icon="trash"
-                          variant="danger"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: 'Delete network',
-                              message: `Delete ${n.name}?`,
-                              confirmLabel: 'Delete',
-                            })
-                            if (ok) mutate(() => api(`/v1/networks/${n.id}`, { method: 'DELETE' }))
-                          }}
-                        >
-                          Delete
-                        </Btn>
+                        <div className="row-actions">
+                          <Btn variant="secondary" onClick={() => openRename(n)}>
+                            Rename
+                          </Btn>
+                          <Btn variant="secondary" onClick={() => openNotes(n)}>
+                            Notes
+                          </Btn>
+                          <Btn
+                            icon="trash"
+                            variant="danger"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: 'Delete network',
+                                message: `Delete ${n.name}?`,
+                                confirmLabel: 'Delete',
+                              })
+                              if (ok) mutate(() => api(`/v1/networks/${n.id}`, { method: 'DELETE' }))
+                            }}
+                          >
+                            Delete
+                          </Btn>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -162,6 +226,72 @@ export default function Networks() {
           </div>
         )}
       </section>
+
+      {rename && (
+        <Modal
+          title={`Rename ${rename.name}`}
+          onClose={() => setRename(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setRename(null)}>
+                Cancel
+              </button>
+              <button type="submit" form="rename-net" disabled={busy || !renameName.trim()}>
+                {busy ? 'Working…' : 'Apply'}
+              </button>
+            </>
+          }
+        >
+          <form id="rename-net" onSubmit={runRename}>
+            <div className="field">
+              <label htmlFor="rename-net-name">Name</label>
+              <input
+                id="rename-net-name"
+                required
+                autoFocus
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+              />
+              <p className="field-hint">
+                Bridge, CIDR, and attached guests stay the same. Only the display name changes.
+              </p>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {notesEdit && (
+        <Modal
+          title={`Notes for ${notesEdit.name}`}
+          onClose={() => setNotesEdit(null)}
+          footer={
+            <>
+              <button type="button" className="secondary" onClick={() => setNotesEdit(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" form="net-notes-form" disabled={busy}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </>
+          }
+        >
+          <form id="net-notes-form" onSubmit={saveNotes}>
+            <div className="field">
+              <label htmlFor="net-edit-notes">Notes</label>
+              <textarea
+                id="net-edit-notes"
+                rows={3}
+                autoFocus
+                maxLength={500}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="What this network is for"
+              />
+              <p className="field-hint">Leave empty to clear the note.</p>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {open && (
         <Modal
@@ -254,6 +384,17 @@ export default function Networks() {
                 </label>
               </>
             )}
+            <div className="field">
+              <label htmlFor="net-notes">Notes</label>
+              <textarea
+                id="net-notes"
+                rows={2}
+                maxLength={500}
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="Optional — what this network is for"
+              />
+            </div>
           </form>
         </Modal>
       )}

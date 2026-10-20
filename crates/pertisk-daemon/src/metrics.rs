@@ -426,6 +426,7 @@ mod tests {
             snapshots: vec![],
             replicas: vec![],
             replica_count: 1,
+            notes: None,
             backend: Default::default(),
         };
         let vm = VmRecord {
@@ -456,6 +457,7 @@ mod tests {
                 group: None,
                 backup: None,
                 snapshot: None,
+                notes: None,
             },
             state: VmState::Running,
             pid: None,

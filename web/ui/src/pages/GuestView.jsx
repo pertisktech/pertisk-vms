@@ -96,6 +96,7 @@ export default function GuestView() {
         icon={template ? 'template' : 'guests'}
         kind={template ? 'Template' : 'Guest'}
         name={vmCaption(vm).title}
+        note={vm.spec?.notes || ''}
         crumbs={['Datacenter', nodeName, vm.spec?.name || vmCaption(vm).title]}
         status={
           <>

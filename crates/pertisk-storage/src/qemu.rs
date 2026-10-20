@@ -109,6 +109,33 @@ impl QemuImg {
         self.run(&["snapshot", "-d", name, &image.display().to_string()])
     }
 
+    /// Export one internal snapshot to a new image. The source file is not rolled back.
+    pub fn convert_snapshot(
+        &self,
+        source: &Path,
+        dest: &Path,
+        format: VolumeFormat,
+        snapshot: &str,
+    ) -> Result<()> {
+        if snapshot.contains([',', '=']) {
+            return Err(StorageError::Message(
+                "snapshot name cannot contain ',' or '='".into(),
+            ));
+        }
+        let spec = format!("snapshot.name={snapshot}");
+        self.run(&[
+            "convert",
+            "-f",
+            format.as_str(),
+            "-O",
+            format.as_str(),
+            "-l",
+            &spec,
+            &source.display().to_string(),
+            &dest.display().to_string(),
+        ])
+    }
+
     /// Virtual size from `qemu-img info` (qcow2 sparse file length is smaller).
     pub fn virtual_size(&self, path: &Path) -> Option<u64> {
         self.inspect(path)?

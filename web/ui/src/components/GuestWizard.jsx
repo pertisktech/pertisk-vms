@@ -49,6 +49,7 @@ const EMPTY = {
   nicIp: '',
   dualStack: false,
   start: true,
+  notes: '',
 }
 
 export default function GuestWizard({ vms, volumes, isos, networks, host, cluster, onClose, onCreated }) {
@@ -126,6 +127,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
     setProgress([])
     if (form.diskMode === 'template') {
       try {
+        const notes = form.notes.trim()
         const cloned = await run('Clone template', () =>
           api(`/v1/vms/${form.templateId}/clone`, {
             method: 'POST',
@@ -138,6 +140,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               ha: form.ha,
               autostart: form.autostart,
               group: form.group.trim(),
+              ...(notes ? { notes } : {}),
               network_id: form.networkId || undefined,
               ip: form.nicIp.trim() || undefined,
               dual_stack: Boolean(form.networkId && form.dualStack),
@@ -184,6 +187,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
         volumeId = vol.id
         createdVolumeId = vol.id
       }
+      const notes = form.notes.trim()
       const vm = await run('Define guest', () =>
         api('/v1/vms', {
           method: 'POST',
@@ -196,6 +200,7 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
             autostart: form.autostart,
             group: form.group.trim() || undefined,
             console_type: form.graphics ? 'graphics' : 'serial',
+            ...(notes ? { notes } : {}),
           },
         }),
       )
@@ -444,6 +449,17 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
                   <small>VNC display — requires the QEMU driver</small>
                 </span>
               </label>
+              <div className="field">
+                <label htmlFor="guest-notes">Notes</label>
+                <textarea
+                  id="guest-notes"
+                  rows={2}
+                  maxLength={500}
+                  value={form.notes}
+                  onChange={(e) => set({ notes: e.target.value })}
+                  placeholder="Optional — what this guest is for"
+                />
+              </div>
             </div>
           </>
         )}
@@ -722,6 +738,10 @@ export default function GuestWizard({ vms, volumes, isos, networks, host, cluste
               <div>
                 <dt>Placement group</dt>
                 <dd>{form.group.trim() || '—'}</dd>
+              </div>
+              <div>
+                <dt>Notes</dt>
+                <dd>{form.notes.trim() || '—'}</dd>
               </div>
               <div>
                 <dt>Disk</dt>

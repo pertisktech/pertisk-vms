@@ -7,16 +7,18 @@ use pertisk_net::{NetError, NetworkPool};
 use pertisk_storage::{Rbd, StorageError, VolumePool, Zfs, allocated_bytes};
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
-    AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
-    CloudInitNetwork, ClusterMetrics, ConsoleInfo, ConsoleType, CreateNetworkRequest,
-    CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, DiskSpec, DrainResponse,
-    DriverKind, HostConfig, HostInfo, HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec,
-    NetworkId, NetworkMode, NetworkRecord, NodeId, NodeMetrics, NotifyConfig, RebalanceResponse,
-    ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest, SetRepositoryRequest,
-    SetSnapshotScheduleRequest, SmtpTls, SnapshotRequest, StorageBackend, UpdateVmRequest,
-    UpdatesStatus, VmBackupDisk, VmBackupRecord, VmBackupSchedule, VmId, VmMetrics, VmRecord,
-    VmSnapshotSchedule, VmSpec, VmState, VolumeFormat, VolumeId,
-    VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
+    AttachNicRequest, CloneVmRequest, CloneVmSnapshotRequest, CloneVolumeRequest, CloudInitConfig,
+    CloudInitIsoRequest, CloudInitNetwork, ClusterMetrics, ConsoleInfo, ConsoleType,
+    CreateNetworkRequest, CreateTemplateRequest, CreateVmBackupRequest, CreateVmSnapshotRequest,
+    CreateVolumeRequest, DiskSpec, DrainResponse, DriverKind, HostConfig, HostInfo,
+    HostPowerResult, ImportIsoRequest, IsoRecord, NetSpec, NetworkId, NetworkMode, NetworkRecord,
+    NodeId, NodeMetrics, NotifyConfig, RebalanceResponse, RenameNetworkRequest,
+    RenameVolumeRequest, ResizeVolumeRequest, SerialChunk, SetBackupScheduleRequest,
+    SetRepositoryRequest, SetSnapshotScheduleRequest, SmtpTls, SnapshotRequest, StorageBackend,
+    UpdateIsoRequest, UpdateNetworkRequest, UpdateSnapshotRequest, UpdateVmBackupRequest,
+    UpdateVmRequest, UpdateVolumeRequest, UpdatesStatus, VmBackupDisk, VmBackupRecord,
+    VmBackupSchedule, VmId, VmMetrics, VmRecord, VmSnapshotSchedule, VmSpec, VmState, VolumeFormat,
+    VolumeId, VolumeRecord, default_cloud_user, is_guest_ipv4, probe_host, probe_host_addrs,
 };
 use pertisk_vmm::VmmBackend;
 use thiserror::Error;
@@ -31,7 +33,7 @@ use crate::metrics::{self, MetricsCache};
 pub enum DaemonError {
     #[error("vm not found: {0}")]
     NotFound(VmId),
-    #[error("vm name already exists: {0}")]
+    #[error("name already exists: {0}")]
     NameTaken(String),
     #[error("vm id already exists: {0}")]
     IdTaken(VmId),
@@ -799,6 +801,20 @@ impl Service {
         self.require_quorum()?;
         let mut spec = spec;
         spec.group = placement_group(spec.group.as_deref());
+        if let Some(notes) = spec.notes.take() {
+            let notes = notes.trim();
+            if notes.chars().count() > 500 {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "notes are limited to 500 characters".into(),
+                )
+                .into());
+            }
+            spec.notes = if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            };
+        }
         spec.validate()?;
         let dest = self.pick_node_define(&spec, None)?;
         let run_dir = self.config.vmm.run_dir.clone();
@@ -838,6 +854,9 @@ impl Service {
         if req.vcpus.is_some() || req.memory_mib.is_some() {
             self.require_stopped(&vm, "resize cpu or memory")?;
         }
+        if req.console_type.is_some() {
+            self.require_stopped(&vm, "change console")?;
+        }
         if let Some(name) = req.name {
             let name = name.trim().to_string();
             if self.store.name_taken(&name, Some(id))? {
@@ -865,6 +884,26 @@ impl Service {
         }
         if let Some(group) = req.group {
             vm.spec.group = placement_group(Some(group.as_str()));
+        }
+        if let Some(notes) = req.notes {
+            let notes = notes.trim();
+            if notes.chars().count() > 500 {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "notes are limited to 500 characters".into(),
+                )
+                .into());
+            }
+            vm.spec.notes = if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            };
+        }
+        if let Some(console_type) = req.console_type {
+            vm.spec.console_type = console_type;
+            if console_type != ConsoleType::Graphics {
+                vm.graphics_socket = None;
+            }
         }
         vm.spec.validate()?;
         self.store.upsert(vm.clone())?;
@@ -943,6 +982,22 @@ impl Service {
             )
             .into());
         }
+        let notes = if let Some(notes) = req.notes {
+            let notes = notes.trim();
+            if notes.chars().count() > 500 {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "notes are limited to 500 characters".into(),
+                )
+                .into());
+            }
+            if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            }
+        } else {
+            None
+        };
 
         let backup_id = uuid::Uuid::new_v4().to_string();
         let created_unix = std::time::SystemTime::now()
@@ -999,10 +1054,6 @@ impl Service {
             });
         }
 
-        let notes = req
-            .notes
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
         let record = VmBackupRecord {
             id: backup_id,
             vm_id: id,
@@ -1041,6 +1092,68 @@ impl Service {
             }
         }
         Ok(())
+    }
+
+    /// Rename a backup and/or set or clear its operator note. The on-disk id stays put.
+    pub fn update_vm_backup(
+        &self,
+        id: VmId,
+        backup_id: &str,
+        req: UpdateVmBackupRequest,
+    ) -> Result<VmBackupRecord, DaemonError> {
+        let _ = self.store.get(id)?;
+        let mut all = self.load_backups()?;
+        if !all.iter().any(|b| b.vm_id == id && b.id == backup_id) {
+            return Err(DaemonError::BackupNotFound(backup_id.to_string()));
+        }
+        let new_name = if let Some(name) = req.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "backup name is required".into(),
+                )
+                .into());
+            }
+            if name.chars().count() > 128 {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "backup name is limited to 128 characters".into(),
+                )
+                .into());
+            }
+            if all
+                .iter()
+                .any(|b| b.vm_id == id && b.id != backup_id && b.name == name)
+            {
+                return Err(DaemonError::NameTaken(name));
+            }
+            Some(name)
+        } else {
+            None
+        };
+        let record = all
+            .iter_mut()
+            .find(|b| b.vm_id == id && b.id == backup_id)
+            .expect("backup present");
+        if let Some(name) = new_name {
+            record.name = name;
+        }
+        if let Some(notes) = req.notes {
+            let notes = notes.trim();
+            if notes.chars().count() > 500 {
+                return Err(pertisk_types::TypesError::InvalidSpec(
+                    "notes are limited to 500 characters".into(),
+                )
+                .into());
+            }
+            record.notes = if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            };
+        }
+        let out = record.clone();
+        self.save_backups(&all)?;
+        Ok(out)
     }
 
     /// Copy a stopped guest's backup images back onto the local disks that are still attached.
@@ -1349,7 +1462,12 @@ impl Service {
 
     async fn snapshot_guest_scheduled(&self, id: VmId, now: u64) -> Result<(), DaemonError> {
         let vm = self.get(id)?;
-        let keep = vm.spec.snapshot.as_ref().map(|sched| sched.keep).unwrap_or(0);
+        let keep = vm
+            .spec
+            .snapshot
+            .as_ref()
+            .map(|sched| sched.keep)
+            .unwrap_or(0);
         let volumes: Vec<VolumeId> = vm
             .spec
             .disks
@@ -1366,8 +1484,14 @@ impl Service {
             if record.snapshots.iter().any(|snap| snap.name == name) {
                 continue;
             }
-            self.snapshot_volume(volume_id, SnapshotRequest { name: name.clone() })
-                .await?;
+            self.snapshot_volume(
+                volume_id,
+                SnapshotRequest {
+                    name: name.clone(),
+                    notes: None,
+                },
+            )
+            .await?;
         }
         if let Ok(mut vm) = self.get(id) {
             if let Some(sched) = vm.spec.snapshot.as_mut() {
@@ -1446,6 +1570,434 @@ impl Service {
         Ok(())
     }
 
+    /// Remove one snapshot name from every disk on this guest. A named snapshot stays until this runs.
+    pub async fn delete_vm_snapshot(&self, id: VmId, name: &str) -> Result<(), DaemonError> {
+        self.require_quorum()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let vm = self.get(id)?;
+        let found = vm.spec.disks.iter().filter(|disk| !disk.cdrom).any(|disk| {
+            disk.volume_id.is_some_and(|volume_id| {
+                self.volumes
+                    .get_volume(volume_id)
+                    .ok()
+                    .is_some_and(|record| record.snapshots.iter().any(|snap| snap.name == name))
+            })
+        });
+        if !found {
+            return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+        }
+        self.delete_named_snapshot(&vm, name).await?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(())
+    }
+
+    /// Update the description on a named snapshot across every disk that has it.
+    pub async fn update_vm_snapshot(
+        &self,
+        id: VmId,
+        name: &str,
+        req: UpdateSnapshotRequest,
+    ) -> Result<Vec<VolumeRecord>, DaemonError> {
+        self.require_quorum()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let Some(notes) = req.notes else {
+            // Nothing to change — return current disks that carry this snapshot.
+            let vm = self.get(id)?;
+            let mut out = Vec::new();
+            for disk in vm.spec.disks.iter().filter(|disk| !disk.cdrom) {
+                let Some(volume_id) = disk.volume_id else {
+                    continue;
+                };
+                let record = self.volumes.get_volume(volume_id)?;
+                if record.snapshots.iter().any(|snap| snap.name == name) {
+                    out.push(record);
+                }
+            }
+            if out.is_empty() {
+                return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+            }
+            return Ok(out);
+        };
+        let vm = self.get(id)?;
+        let mut volume_ids = Vec::new();
+        for disk in vm.spec.disks.iter().filter(|disk| !disk.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let record = self.volumes.get_volume(volume_id)?;
+            if record.snapshots.iter().any(|snap| snap.name == name) {
+                volume_ids.push(volume_id);
+            }
+        }
+        if volume_ids.is_empty() {
+            return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+        }
+        let mut out = Vec::new();
+        for volume_id in volume_ids {
+            out.push(
+                self.volumes
+                    .set_snapshot_notes(volume_id, name, Some(notes.clone()))?,
+            );
+        }
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(out)
+    }
+
+    /// Snapshot every non-CD disk under one name. A description is stored with each disk.
+    pub async fn create_vm_snapshot(
+        &self,
+        id: VmId,
+        req: CreateVmSnapshotRequest,
+    ) -> Result<Vec<VolumeRecord>, DaemonError> {
+        self.require_quorum()?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let vm = self.get(id)?;
+        self.require_not_template(&vm, "snapshot")?;
+        let volumes: Vec<VolumeId> = vm
+            .spec
+            .disks
+            .iter()
+            .filter(|disk| !disk.cdrom)
+            .filter_map(|disk| disk.volume_id)
+            .collect();
+        if volumes.is_empty() {
+            return Err(StorageError::Message("guest has no disks to snapshot".into()).into());
+        }
+        for volume_id in &volumes {
+            let record = self.volumes.get_volume(*volume_id)?;
+            if record.snapshots.iter().any(|snap| snap.name == name) {
+                return Err(StorageError::SnapshotExists(name).into());
+            }
+        }
+        let mut done = Vec::new();
+        for volume_id in volumes {
+            match self
+                .snapshot_volume(
+                    volume_id,
+                    SnapshotRequest {
+                        name: name.clone(),
+                        notes: req.notes.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(record) => done.push(record),
+                Err(err) => {
+                    for record in &done {
+                        if let Err(cleanup) = self.delete_volume_snapshot(record.id, &name).await {
+                            tracing::warn!(
+                                volume = %record.id,
+                                error = %cleanup,
+                                "rolling back a partial guest snapshot failed"
+                            );
+                        }
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(done)
+    }
+
+    /// Roll every disk that has this snapshot back to it. The guest must be stopped.
+    pub async fn restore_vm_snapshot(&self, id: VmId, name: &str) -> Result<(), DaemonError> {
+        self.require_quorum()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let vm = self.get(id)?;
+        self.require_stopped(&vm, "restore")?;
+        let mut volumes = Vec::new();
+        for disk in vm.spec.disks.iter().filter(|disk| !disk.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let record = self.volumes.get_volume(volume_id)?;
+            if record.snapshots.iter().any(|snap| snap.name == name) {
+                volumes.push(volume_id);
+            }
+        }
+        if volumes.is_empty() {
+            return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+        }
+        for volume_id in volumes {
+            self.restore_volume(volume_id, name).await?;
+        }
+        Ok(())
+    }
+
+    /// New guest whose disks are a copy of this snapshot. The source guest can stay running.
+    pub async fn clone_vm_from_snapshot(
+        &self,
+        id: VmId,
+        snap: &str,
+        req: CloneVmSnapshotRequest,
+    ) -> Result<VmRecord, DaemonError> {
+        self.require_quorum()?;
+        let snap = snap.trim();
+        if snap.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let source = self.get(id)?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(pertisk_types::TypesError::InvalidSpec("name is required".into()).into());
+        }
+        if self.store.name_taken(&name, None)? {
+            return Err(DaemonError::NameTaken(name));
+        }
+        let mut volumes = Vec::new();
+        for disk in source.spec.disks.iter().filter(|disk| !disk.cdrom) {
+            let Some(volume_id) = disk.volume_id else {
+                continue;
+            };
+            let record = self.volumes.get_volume(volume_id)?;
+            if !record.snapshots.iter().any(|item| item.name == snap) {
+                return Err(StorageError::Message(format!(
+                    "snapshot {snap} is missing on disk {}",
+                    record.name
+                ))
+                .into());
+            }
+            volumes.push((volume_id, record.name));
+        }
+        if volumes.is_empty() {
+            return Err(StorageError::SnapshotNotFound(snap.to_string()).into());
+        }
+        let mut spec = source.spec.clone();
+        spec.name = name.clone();
+        spec.disks = Vec::new();
+        spec.nets = Vec::new();
+        spec.serial_log = None;
+        spec.ssh_user = None;
+        if let Some(sched) = spec.backup.as_mut() {
+            sched.last_run_unix = 0;
+        }
+        if let Some(sched) = spec.snapshot.as_mut() {
+            sched.last_run_unix = 0;
+        }
+        spec.validate()?;
+        let created = self.create_guest(req.id, spec).await?;
+        if let Err(err) = self
+            .finish_snapshot_clone(&source, created.id, &name, snap, &volumes)
+            .await
+        {
+            let _ = self.destroy(created.id).await;
+            return Err(err);
+        }
+        self.cluster.bump()?;
+        self.replicate().await;
+        self.get(created.id)
+    }
+
+    async fn finish_snapshot_clone(
+        &self,
+        source: &VmRecord,
+        new_id: VmId,
+        name: &str,
+        snap: &str,
+        volumes: &[(VolumeId, String)],
+    ) -> Result<(), DaemonError> {
+        for (volume_id, vol_name) in volumes {
+            let vol_name = self.unique_volume_name(&format!("{name}-{vol_name}"))?;
+            let cloned = self
+                .clone_volume_from_snapshot(*volume_id, snap, vol_name)
+                .await?;
+            if let Err(err) = self.attach_disk(
+                new_id,
+                AttachDiskRequest {
+                    volume_id: cloned.id,
+                },
+            ) {
+                let _ = self.delete_volume(cloned.id).await;
+                return Err(err);
+            }
+        }
+        for disk in source.spec.disks.iter().filter(|disk| disk.cdrom) {
+            if iso_is_cidata(disk) {
+                continue;
+            }
+            if let Some(iso) = disk.iso_name.clone() {
+                self.attach_iso(new_id, AttachIsoRequest { iso })?;
+            }
+        }
+        for nic in &source.spec.nets {
+            let Some(network_id) = nic.network_id else {
+                continue;
+            };
+            self.attach_nic(
+                new_id,
+                AttachNicRequest {
+                    network_id,
+                    ip: None,
+                    dual_stack: nic.dual_stack,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn clone_volume_from_snapshot(
+        &self,
+        id: VolumeId,
+        snap: &str,
+        name: String,
+    ) -> Result<VolumeRecord, DaemonError> {
+        let source = self.volumes.get_volume(id)?;
+        if source.backend == StorageBackend::Rbd {
+            if !Rbd::available() {
+                return Err(DaemonError::Peer(
+                    "Ceph RBD snapshot clone requested but the rbd CLI was not found".into(),
+                ));
+            }
+            let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
+            let _ = rbd.snapshot_protect(&source.name, snap);
+            rbd.clone_image(&source.name, snap, &name)?;
+            let record = VolumeRecord {
+                id: VolumeId::new(),
+                path: PathBuf::from(rbd.image_path(&name)),
+                name,
+                format: VolumeFormat::Raw,
+                size_bytes: source.size_bytes,
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![],
+                replica_count: 1,
+                notes: None,
+                backend: StorageBackend::Rbd,
+            };
+            return Ok(self.volumes.put_record(record)?);
+        }
+        if source.backend == StorageBackend::Zfs {
+            if !Zfs::available() {
+                return Err(DaemonError::Peer(
+                    "ZFS snapshot clone requested but the zfs CLI was not found".into(),
+                ));
+            }
+            let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+            let dataset = Zfs::dataset_from_path(&source.path)?;
+            zfs.clone_dataset(&dataset, snap, &name)?;
+            let record = VolumeRecord {
+                id: VolumeId::new(),
+                name: name.clone(),
+                format: VolumeFormat::Raw,
+                size_bytes: source.size_bytes,
+                path: PathBuf::from(zfs.image_path(&name)),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![self.cluster.self_id()],
+                replica_count: 1,
+                notes: None,
+                backend: StorageBackend::Zfs,
+            };
+            return Ok(self.volumes.put_record(record)?);
+        }
+        let bytes = source
+            .snapshots
+            .iter()
+            .find(|item| item.name == snap)
+            .and_then(|item| item.path.as_ref())
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(source.size_bytes);
+        self.require_storage_bytes(bytes, "clone snapshot")?;
+        let volumes = Arc::clone(&self.volumes);
+        let snap = snap.to_string();
+        let mut record =
+            tokio::task::spawn_blocking(move || volumes.clone_from_snapshot(id, &snap, name))
+                .await
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))??;
+        let online = self.cluster.online_ids();
+        let want = replica_want(online.len(), record.replica_count.max(1));
+        record.replica_count = want;
+        record.replicas = cluster::place_replicas(&online, want, Some(self.cluster.self_id()));
+        record = self.volumes.put_record(record)?;
+        self.ensure_replicas(&record).await;
+        Ok(record)
+    }
+
+    pub async fn update_volume_snapshot(
+        &self,
+        id: VolumeId,
+        name: &str,
+        req: UpdateSnapshotRequest,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.require_quorum()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let record = if let Some(notes) = req.notes {
+            self.volumes.set_snapshot_notes(id, name, Some(notes))?
+        } else {
+            let record = self.volumes.get_volume(id)?;
+            if !record.snapshots.iter().any(|snap| snap.name == name) {
+                return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+            }
+            record
+        };
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
+    pub async fn delete_volume_snapshot(
+        &self,
+        id: VolumeId,
+        name: &str,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.require_quorum()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StorageError::Message("snapshot name is required".into()).into());
+        }
+        let running = self.running_volume_users(id)?;
+        if let Some(vm_id) = running.first().copied() {
+            let vm = self.store.get(vm_id)?;
+            let record = self.volumes.get_volume(id)?;
+            if !record.snapshots.iter().any(|snap| snap.name == name) {
+                return Err(StorageError::SnapshotNotFound(name.to_string()).into());
+            }
+            let live_qcow = record.backend == StorageBackend::Replica
+                && record.format == VolumeFormat::Qcow2
+                && record
+                    .snapshots
+                    .iter()
+                    .any(|snap| snap.name == name && snap.path.is_none());
+            if live_qcow {
+                if let Some(device) = pertisk_vmm::disk_device_id(&vm.spec, id) {
+                    if self
+                        .vmm
+                        .snapshot_delete_internal(&vm, &device, name)
+                        .await
+                        .is_ok()
+                    {
+                        let record = self.volumes.forget_snapshot(id, name)?;
+                        self.cluster.bump()?;
+                        self.replicate().await;
+                        return Ok(record);
+                    }
+                }
+            }
+        }
+        let record = self.volumes.delete_snapshot(id, name)?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
     fn backups_path(&self) -> PathBuf {
         self.data_dir.join("state/backups.json")
     }
@@ -1503,6 +2055,7 @@ impl Service {
             group: None,
             backup: None,
             snapshot: None,
+            notes: req.notes,
         };
         spec.validate()?;
         let record = self.create_guest(req.id, spec).await?;
@@ -1542,6 +2095,8 @@ impl Service {
         if let Some(group) = req.group.as_deref() {
             spec.group = placement_group(Some(group));
         }
+        // Do not inherit the source note; apply an explicit clone note when provided.
+        spec.notes = req.notes.clone();
         if let Some(sched) = spec.backup.as_mut() {
             sched.last_run_unix = 0;
         }
@@ -1751,6 +2306,7 @@ impl Service {
             ssh_authorized_keys: keys,
             userdata,
             network: self.cloudinit_network_for(new_id),
+            notes: None,
         })?;
         self.attach_iso(new_id, AttachIsoRequest { iso: iso.name })?;
         let _ = self.store.update(new_id, |vm| {
@@ -2521,9 +3077,14 @@ impl Service {
                 snapshots: vec![],
                 replicas: vec![],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Rbd,
             };
             let record = self.volumes.put_record(record)?;
+            let record = match req.notes {
+                Some(notes) => self.volumes.set_volume_notes(record.id, Some(notes))?,
+                None => record,
+            };
             self.cluster.bump()?;
             self.replicate().await;
             return Ok(record);
@@ -2546,9 +3107,14 @@ impl Service {
                 snapshots: vec![],
                 replicas: vec![self.cluster.self_id()],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Zfs,
             };
             let record = self.volumes.put_record(record)?;
+            let record = match req.notes {
+                Some(notes) => self.volumes.set_volume_notes(record.id, Some(notes))?,
+                None => record,
+            };
             self.cluster.bump()?;
             self.replicate().await;
             return Ok(record);
@@ -2566,6 +3132,22 @@ impl Service {
         record.backend = StorageBackend::Replica;
         record = self.volumes.put_record(record)?;
         self.ensure_replicas(&record).await;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
+    pub async fn update_volume(
+        &self,
+        id: VolumeId,
+        req: UpdateVolumeRequest,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.require_quorum()?;
+        let record = if let Some(notes) = req.notes {
+            self.volumes.set_volume_notes(id, Some(notes))?
+        } else {
+            self.volumes.get_volume(id)?
+        };
         self.cluster.bump()?;
         self.replicate().await;
         Ok(record)
@@ -2678,6 +3260,67 @@ impl Service {
         Ok(())
     }
 
+    pub async fn rename_volume(
+        &self,
+        id: VolumeId,
+        req: RenameVolumeRequest,
+    ) -> Result<VolumeRecord, DaemonError> {
+        self.require_quorum()?;
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(StorageError::Message("volume name is required".into()).into());
+        }
+        let current = self.volumes.get_volume(id)?;
+        if current.name == name {
+            return Ok(current);
+        }
+        if current.backend.external() {
+            self.require_volume_idle(id, "rename")?;
+        }
+        let record = if current.backend == StorageBackend::Rbd {
+            if !Rbd::available() {
+                return Err(DaemonError::Peer(
+                    "Ceph RBD rename requested but the rbd CLI was not found".into(),
+                ));
+            }
+            let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
+            rbd.rename_image(&current.name, &name)?;
+            let mut record = current;
+            record.name = name;
+            record.path = PathBuf::from(rbd.image_path(&record.name));
+            self.volumes.put_record(record)?
+        } else if current.backend == StorageBackend::Zfs {
+            if !Zfs::available() {
+                return Err(DaemonError::Peer(
+                    "ZFS rename requested but the zfs CLI was not found".into(),
+                ));
+            }
+            let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+            let dataset = Zfs::dataset_from_path(&current.path)?;
+            zfs.rename_dataset(&dataset, &name)?;
+            let mut record = current;
+            record.name = name;
+            record.path = PathBuf::from(zfs.image_path(&record.name));
+            self.volumes.put_record(record)?
+        } else {
+            self.volumes.rename_volume(id, name)?
+        };
+        if record.backend.external() {
+            for vm_id in self.volume_users(id)? {
+                let _ = self.store.update(vm_id, |vm| {
+                    for disk in &mut vm.spec.disks {
+                        if disk.volume_id == Some(id) {
+                            disk.path = record.path.clone();
+                        }
+                    }
+                });
+            }
+        }
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
     pub async fn resize_volume(
         &self,
         id: VolumeId,
@@ -2758,8 +3401,13 @@ impl Service {
             let name = req.name.clone();
             if req.linked {
                 let snap = rbd_clone_snap(&name);
-                self.volumes
-                    .snapshot(id, SnapshotRequest { name: snap.clone() })?;
+                self.volumes.snapshot(
+                    id,
+                    SnapshotRequest {
+                        name: snap.clone(),
+                        notes: None,
+                    },
+                )?;
                 let _ = rbd.snapshot_protect(&source.name, &snap);
                 rbd.clone_image(&source.name, &snap, &name)?;
             } else {
@@ -2775,6 +3423,7 @@ impl Service {
                 snapshots: vec![],
                 replicas: vec![],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Rbd,
             };
             let record = self.volumes.put_record(record)?;
@@ -2793,8 +3442,13 @@ impl Service {
             let name = req.name.clone();
             if req.linked {
                 let snap = rbd_clone_snap(&name);
-                self.volumes
-                    .snapshot(id, SnapshotRequest { name: snap.clone() })?;
+                self.volumes.snapshot(
+                    id,
+                    SnapshotRequest {
+                        name: snap.clone(),
+                        notes: None,
+                    },
+                )?;
                 zfs.clone_dataset(&dataset, &snap, &name)?;
             } else {
                 zfs.copy_dataset(&dataset, &name)?;
@@ -2809,6 +3463,7 @@ impl Service {
                 snapshots: vec![],
                 replicas: vec![self.cluster.self_id()],
                 replica_count: 1,
+                notes: None,
                 backend: StorageBackend::Zfs,
             };
             let record = self.volumes.put_record(record)?;
@@ -2885,6 +3540,7 @@ impl Service {
         }
         let vol = self.volumes.get_volume(id)?;
         let name = req.name.trim().to_string();
+        let notes = req.notes;
         if name.is_empty() {
             return Err(StorageError::Message("snapshot name is required".into()).into());
         }
@@ -2894,14 +3550,14 @@ impl Service {
         let device = pertisk_vmm::disk_device_id(&vm.spec, id);
         match running_snapshot_plan(vol.backend, vol.format, self.vmm.kind(), device) {
             RunningSnapshot::Storage => {
-                let record = self.volumes.snapshot(id, SnapshotRequest { name })?;
+                let record = self.volumes.snapshot(id, SnapshotRequest { name, notes })?;
                 self.cluster.bump()?;
                 self.replicate().await;
                 Ok(record)
             }
             RunningSnapshot::Qemu { device } => {
                 self.vmm.snapshot_internal(&vm, &device, &name).await?;
-                let record = self.volumes.note_snapshot(id, &name)?;
+                let record = self.volumes.note_snapshot(id, &name, notes)?;
                 self.cluster.bump()?;
                 self.replicate().await;
                 Ok(record)
@@ -2928,12 +3584,21 @@ impl Service {
     }
 
     pub fn import_iso(&self, req: ImportIsoRequest) -> Result<IsoRecord, DaemonError> {
-        Ok(self.volumes.import_iso(&req.path, req.name)?)
+        Ok(self.volumes.import_iso(&req.path, req.name, req.notes)?)
     }
 
     pub fn create_cloudinit_iso(&self, req: CloudInitIsoRequest) -> Result<IsoRecord, DaemonError> {
         crate::guest_ssh::ensure_identity();
         Ok(self.volumes.create_cloudinit_iso(req)?)
+    }
+
+    pub fn update_iso(&self, name: &str, req: UpdateIsoRequest) -> Result<IsoRecord, DaemonError> {
+        let record = if let Some(notes) = req.notes {
+            self.volumes.set_iso_notes(name, Some(notes))?
+        } else {
+            self.volumes.get_iso(name)?
+        };
+        Ok(record)
     }
 
     pub fn delete_iso(&self, name: &str) -> Result<(), DaemonError> {
@@ -3151,6 +3816,22 @@ impl Service {
 
     pub fn create_network(&self, req: CreateNetworkRequest) -> Result<NetworkRecord, DaemonError> {
         Ok(self.networks.create(req)?)
+    }
+
+    pub fn rename_network(
+        &self,
+        id: NetworkId,
+        req: RenameNetworkRequest,
+    ) -> Result<NetworkRecord, DaemonError> {
+        Ok(self.networks.rename(id, req)?)
+    }
+
+    pub fn update_network(
+        &self,
+        id: NetworkId,
+        req: UpdateNetworkRequest,
+    ) -> Result<NetworkRecord, DaemonError> {
+        Ok(self.networks.set_notes(id, req)?)
     }
 
     pub fn delete_network(&self, id: NetworkId) -> Result<(), DaemonError> {
@@ -4805,7 +5486,7 @@ impl Service {
             }
             self.volumes.delete_iso(name)?;
         }
-        self.volumes.import_iso(src, Some(name.to_string()))?;
+        self.volumes.import_iso(src, Some(name.to_string()), None)?;
         Ok(())
     }
 
@@ -5903,8 +6584,10 @@ mod tests {
     use super::*;
     use crate::control::ControlStore;
     use pertisk_types::{
-        AttachNicRequest, CreateNetworkRequest, CreateVolumeRequest, NodeRecord, UpdateVmRequest,
-        VmId, VolumeFormat, parse_size,
+        AttachDiskRequest, AttachNicRequest, CreateNetworkRequest, CreateVmBackupRequest,
+        CreateVmSnapshotRequest, CreateVolumeRequest, NodeRecord, RenameVolumeRequest,
+        UpdateSnapshotRequest, UpdateVmBackupRequest, UpdateVmRequest, UpdateVolumeRequest, VmId,
+        VolumeFormat, parse_size,
     };
     use pertisk_vmm::VmmBackend;
 
@@ -6012,6 +6695,7 @@ mod tests {
             group: None,
             backup: None,
             snapshot: None,
+            notes: None,
         }
     }
 
@@ -6064,6 +6748,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn creates_guest_with_trimmed_notes() {
+        let (svc, _dir) = service();
+        let mut with_notes = spec("noted");
+        with_notes.notes = Some("  staging api  ".into());
+        let vm = svc.create(vm_id(109), with_notes).await.unwrap();
+        assert_eq!(vm.spec.notes.as_deref(), Some("staging api"));
+        let mut blank = spec("blank-notes");
+        blank.notes = Some("   ".into());
+        let cleared = svc.create(vm_id(110), blank).await.unwrap();
+        assert_eq!(cleared.spec.notes, None);
+        let mut too_long = spec("long-notes");
+        too_long.notes = Some("x".repeat(501));
+        let err = svc.create(vm_id(111), too_long).await.unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn create_template_stores_notes() {
+        let (svc, _dir) = service();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "cloud-disk".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let tpl = svc
+            .create_template(CreateTemplateRequest {
+                id: Some(vm_id(112)),
+                name: "alma-cloud".into(),
+                volume_id: vol.id,
+                vcpus: Some(1),
+                memory_mib: Some(512),
+                console_type: None,
+                notes: Some("  alma genericcloud  ".into()),
+            })
+            .await
+            .unwrap();
+        assert!(tpl.template);
+        assert_eq!(tpl.spec.notes.as_deref(), Some("alma genericcloud"));
+        let vol2 = svc
+            .create_volume(CreateVolumeRequest {
+                name: "cloud-disk-2".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let err = svc
+            .create_template(CreateTemplateRequest {
+                id: Some(vm_id(113)),
+                name: "long-tpl".into(),
+                volume_id: vol2.id,
+                vcpus: Some(1),
+                memory_mib: Some(512),
+                console_type: None,
+                notes: Some("x".repeat(501)),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
+
+    #[tokio::test]
     async fn define_template_ignores_host_ram() {
         let (svc, _dir) = service();
         let mut spec = spec("cloud-tpl");
@@ -6096,6 +6851,7 @@ mod tests {
                     autostart_delay: None,
                     autostart_order: None,
                     group: None,
+                    notes: None,
                     network_id: None,
                     ip: None,
                     dual_stack: false,
@@ -6124,6 +6880,7 @@ mod tests {
                 dhcp: true,
                 isolate: true,
                 mode: Default::default(),
+                notes: None,
             })
             .unwrap();
         let tpl = svc.create(vm_id(100), spec("cloud-tpl")).await.unwrap();
@@ -6142,6 +6899,7 @@ mod tests {
                     autostart_delay: None,
                     autostart_order: None,
                     group: None,
+                    notes: None,
                     network_id: None,
                     ip: None,
                     dual_stack: false,
@@ -6154,6 +6912,67 @@ mod tests {
             .unwrap();
         assert_eq!(guest.spec.nets.len(), 1);
         assert_eq!(guest.spec.nets[0].network_id, Some(net.id));
+    }
+
+    #[tokio::test]
+    async fn clone_sets_notes_and_does_not_inherit_source_notes() {
+        let (svc, _dir) = service();
+        let mut tpl_spec = spec("cloud-tpl");
+        tpl_spec.notes = Some("template note".into());
+        let tpl = svc.create(vm_id(100), tpl_spec).await.unwrap();
+        let tpl = svc.convert_to_template(tpl.id).await.unwrap();
+        let without = svc
+            .clone_vm(
+                tpl.id,
+                CloneVmRequest {
+                    id: Some(vm_id(101)),
+                    name: "plain".into(),
+                    linked: false,
+                    vcpus: None,
+                    memory_mib: None,
+                    ha: Some(false),
+                    autostart: Some(false),
+                    autostart_delay: None,
+                    autostart_order: None,
+                    group: None,
+                    notes: None,
+                    network_id: None,
+                    ip: None,
+                    dual_stack: false,
+                    cloud_init: None,
+                    disk_size_bytes: None,
+                    start: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(without.spec.notes, None);
+        let with = svc
+            .clone_vm(
+                tpl.id,
+                CloneVmRequest {
+                    id: Some(vm_id(102)),
+                    name: "noted".into(),
+                    linked: false,
+                    vcpus: None,
+                    memory_mib: None,
+                    ha: Some(false),
+                    autostart: Some(false),
+                    autostart_delay: None,
+                    autostart_order: None,
+                    group: None,
+                    notes: Some("  cloned web  ".into()),
+                    network_id: None,
+                    ip: None,
+                    dual_stack: false,
+                    cloud_init: None,
+                    disk_size_bytes: None,
+                    start: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(with.spec.notes.as_deref(), Some("cloned web"));
     }
 
     #[test]
@@ -6367,12 +7186,75 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 running.id,
                 UpdateVmRequest {
                     ha: Some(true),
+                    notes: Some("  production web  ".into()),
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
         assert!(running.spec.ha);
+        assert_eq!(running.state, VmState::Running);
+        assert_eq!(running.spec.notes.as_deref(), Some("production web"));
+        let cleared = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    notes: Some("   ".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(cleared.spec.notes.is_none());
+        let too_long = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    notes: Some("n".repeat(501)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(too_long, DaemonError::Types(_)));
+        let console_while_running = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    console_type: Some(ConsoleType::Graphics),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            console_while_running,
+            DaemonError::MustBeStopped(_, "change console")
+        ));
+        svc.stop(running.id).await.unwrap();
+        let graphics = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    console_type: Some(ConsoleType::Graphics),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(graphics.spec.console_type, ConsoleType::Graphics);
+        let serial = svc
+            .update(
+                running.id,
+                UpdateVmRequest {
+                    console_type: Some(ConsoleType::Serial),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(serial.spec.console_type, ConsoleType::Serial);
+        assert!(serial.graphics_socket.is_none());
     }
 
     #[test]
@@ -6487,6 +7369,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6501,6 +7384,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         svc.import_iso(ImportIsoRequest {
             path: iso_src,
             name: None,
+            notes: None,
         })
         .unwrap();
         let vm = svc
@@ -6528,6 +7412,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6583,6 +7468,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6635,6 +7521,274 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
     }
 
     #[tokio::test]
+    async fn removes_one_guest_snapshot_and_keeps_the_rest() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(109), spec("snap-rm")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        std::fs::write(&vol.path, b"disk").unwrap();
+        svc.snapshot_volume(
+            vol.id,
+            SnapshotRequest {
+                name: "keep-me".into(),
+                notes: None,
+            },
+        )
+        .await
+        .unwrap();
+        svc.snapshot_volume(
+            vol.id,
+            SnapshotRequest {
+                name: "drop-me".into(),
+                notes: None,
+            },
+        )
+        .await
+        .unwrap();
+        svc.delete_vm_snapshot(vm.id, "drop-me").await.unwrap();
+        let names: Vec<_> = svc
+            .volumes
+            .get_volume(vol.id)
+            .unwrap()
+            .snapshots
+            .into_iter()
+            .map(|snap| snap.name)
+            .collect();
+        assert_eq!(names, vec!["keep-me".to_string()]);
+        let missing = svc.delete_vm_snapshot(vm.id, "drop-me").await.unwrap_err();
+        assert!(matches!(
+            missing,
+            DaemonError::Storage(StorageError::SnapshotNotFound(_))
+        ));
+        let record = svc.delete_volume_snapshot(vol.id, "keep-me").await.unwrap();
+        assert!(record.snapshots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn guest_snapshot_stores_notes_and_rolls_every_disk_back() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(110), spec("snap-notes")).await.unwrap();
+        let root = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let data = svc
+            .create_volume(CreateVolumeRequest {
+                name: "data".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: root.id })
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: data.id })
+            .unwrap();
+        std::fs::write(&root.path, b"root-v1").unwrap();
+        std::fs::write(&data.path, b"data-v1").unwrap();
+        let records = svc
+            .create_vm_snapshot(
+                vm.id,
+                CreateVmSnapshotRequest {
+                    name: "pre".into(),
+                    notes: Some("  Before kernel upgrade  ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        for id in [root.id, data.id] {
+            let snap = &svc.volumes.get_volume(id).unwrap().snapshots[0];
+            assert_eq!(snap.name, "pre");
+            assert_eq!(snap.notes.as_deref(), Some("Before kernel upgrade"));
+        }
+        let too_long = svc
+            .create_vm_snapshot(
+                vm.id,
+                CreateVmSnapshotRequest {
+                    name: "too-long".into(),
+                    notes: Some("x".repeat(501)),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(too_long.to_string().contains("500"));
+        std::fs::write(&root.path, b"root-v2").unwrap();
+        std::fs::write(&data.path, b"data-v2").unwrap();
+        svc.start(vm.id).await.unwrap();
+        let running = svc.restore_vm_snapshot(vm.id, "pre").await.unwrap_err();
+        assert!(matches!(running, DaemonError::MustBeStopped(_, "restore")));
+        svc.stop(vm.id).await.unwrap();
+        svc.restore_vm_snapshot(vm.id, "pre").await.unwrap();
+        assert_eq!(std::fs::read(&root.path).unwrap(), b"root-v1");
+        assert_eq!(std::fs::read(&data.path).unwrap(), b"data-v1");
+        assert_eq!(
+            svc.volumes.get_volume(root.id).unwrap().snapshots[0]
+                .notes
+                .as_deref(),
+            Some("Before kernel upgrade")
+        );
+        let updated = svc
+            .update_vm_snapshot(
+                vm.id,
+                "pre",
+                UpdateSnapshotRequest {
+                    notes: Some("  After fix  ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.len(), 2);
+        for id in [root.id, data.id] {
+            assert_eq!(
+                svc.volumes.get_volume(id).unwrap().snapshots[0]
+                    .notes
+                    .as_deref(),
+                Some("After fix")
+            );
+        }
+        let cleared = svc
+            .update_vm_snapshot(
+                vm.id,
+                "pre",
+                UpdateSnapshotRequest {
+                    notes: Some("   ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared[0].snapshots[0].notes, None);
+        let missing = svc.restore_vm_snapshot(vm.id, "gone").await.unwrap_err();
+        assert!(matches!(
+            missing,
+            DaemonError::Storage(StorageError::SnapshotNotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn clone_from_snapshot_copies_that_point_and_leaves_the_source() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(111), spec("snap-src")).await.unwrap();
+        let root = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let data = svc
+            .create_volume(CreateVolumeRequest {
+                name: "data".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: root.id })
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: data.id })
+            .unwrap();
+        std::fs::write(&root.path, b"root-v1").unwrap();
+        std::fs::write(&data.path, b"data-v1").unwrap();
+        svc.create_vm_snapshot(
+            vm.id,
+            CreateVmSnapshotRequest {
+                name: "pre".into(),
+                notes: Some("Before the change".into()),
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(&root.path, b"root-v2").unwrap();
+        std::fs::write(&data.path, b"data-v2").unwrap();
+        let mut running = svc.get(vm.id).unwrap();
+        running.state = VmState::Running;
+        svc.store.upsert(running).unwrap();
+        let copy = svc
+            .clone_vm_from_snapshot(
+                vm.id,
+                "pre",
+                CloneVmSnapshotRequest {
+                    id: Some(vm_id(112)),
+                    name: "snap-copy".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(copy.id, vm_id(112));
+        assert_eq!(copy.spec.name, "snap-copy");
+        assert_eq!(copy.state, VmState::Created);
+        assert_eq!(svc.get(vm.id).unwrap().state, VmState::Running);
+        assert_eq!(std::fs::read(&root.path).unwrap(), b"root-v2");
+        assert_eq!(std::fs::read(&data.path).unwrap(), b"data-v2");
+        assert_eq!(
+            svc.volumes.get_volume(root.id).unwrap().snapshots[0]
+                .notes
+                .as_deref(),
+            Some("Before the change")
+        );
+        let disks = copy
+            .spec
+            .disks
+            .iter()
+            .filter(|disk| !disk.cdrom)
+            .filter_map(|disk| disk.volume_id)
+            .collect::<Vec<_>>();
+        assert_eq!(disks.len(), 2);
+        let mut bodies = Vec::new();
+        for id in disks {
+            let vol = svc.volumes.get_volume(id).unwrap();
+            assert!(vol.snapshots.is_empty());
+            bodies.push(std::fs::read(&vol.path).unwrap());
+        }
+        bodies.sort();
+        assert_eq!(bodies, vec![b"data-v1".to_vec(), b"root-v1".to_vec()]);
+        let missing = svc
+            .clone_vm_from_snapshot(
+                vm.id,
+                "gone",
+                CloneVmSnapshotRequest {
+                    id: None,
+                    name: "nope".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            missing,
+            DaemonError::Storage(StorageError::Message(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn restores_a_stopped_guest_backup() {
         let (svc, _dir) = service();
         let vm = svc.create(vm_id(106), spec("backup")).await.unwrap();
@@ -6645,6 +7799,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6668,6 +7823,218 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
     }
 
     #[tokio::test]
+    async fn updates_and_clears_backup_notes() {
+        let (svc, _dir) = service();
+        let vm = svc.create(vm_id(108), spec("notes")).await.unwrap();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "root".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        svc.attach_disk(vm.id, AttachDiskRequest { volume_id: vol.id })
+            .unwrap();
+        std::fs::write(&vol.path, b"disk").unwrap();
+        let backup = svc
+            .create_vm_backup(
+                vm.id,
+                CreateVmBackupRequest {
+                    notes: Some("  initial  ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(backup.notes.as_deref(), Some("initial"));
+        let updated = svc
+            .update_vm_backup(
+                vm.id,
+                &backup.id,
+                UpdateVmBackupRequest {
+                    name: Some("  pre-upgrade  ".into()),
+                    notes: Some("  before upgrade  ".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.name, "pre-upgrade");
+        assert_eq!(updated.notes.as_deref(), Some("before upgrade"));
+        assert_eq!(updated.id, backup.id);
+        let cleared = svc
+            .update_vm_backup(
+                vm.id,
+                &backup.id,
+                UpdateVmBackupRequest {
+                    name: None,
+                    notes: Some("   ".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(cleared.notes, None);
+        assert_eq!(cleared.name, "pre-upgrade");
+        let too_long = "x".repeat(501);
+        let err = svc
+            .update_vm_backup(
+                vm.id,
+                &backup.id,
+                UpdateVmBackupRequest {
+                    name: None,
+                    notes: Some(too_long.clone()),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("500"));
+        let create_too_long = svc
+            .create_vm_backup(
+                vm.id,
+                CreateVmBackupRequest {
+                    notes: Some(too_long),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(create_too_long.to_string().contains("500"));
+        let other = svc
+            .create_vm_backup(vm.id, CreateVmBackupRequest { notes: None })
+            .await
+            .unwrap();
+        let taken = svc
+            .update_vm_backup(
+                vm.id,
+                &other.id,
+                UpdateVmBackupRequest {
+                    name: Some("pre-upgrade".into()),
+                    notes: None,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(taken, DaemonError::NameTaken(_)));
+        let blank = svc
+            .update_vm_backup(
+                vm.id,
+                &backup.id,
+                UpdateVmBackupRequest {
+                    name: Some("   ".into()),
+                    notes: None,
+                },
+            )
+            .unwrap_err();
+        assert!(blank.to_string().contains("required"));
+    }
+
+    #[tokio::test]
+    async fn renames_a_local_volume_and_refuses_a_taken_name() {
+        let (svc, _dir) = service();
+        let a = svc
+            .create_volume(CreateVolumeRequest {
+                name: "disk-a".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let b = svc
+            .create_volume(CreateVolumeRequest {
+                name: "disk-b".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: None,
+            })
+            .await
+            .unwrap();
+        let renamed = svc
+            .rename_volume(
+                a.id,
+                RenameVolumeRequest {
+                    name: "  root-disk  ".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.name, "root-disk");
+        assert_eq!(renamed.path, a.path);
+        let taken = svc
+            .rename_volume(
+                b.id,
+                RenameVolumeRequest {
+                    name: "root-disk".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            taken,
+            DaemonError::Storage(StorageError::NameTaken(_))
+        ));
+        let same = svc
+            .rename_volume(
+                a.id,
+                RenameVolumeRequest {
+                    name: "root-disk".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(same.name, "root-disk");
+    }
+
+    #[tokio::test]
+    async fn sets_and_clears_volume_notes() {
+        let (svc, _dir) = service();
+        let vol = svc
+            .create_volume(CreateVolumeRequest {
+                name: "disk-a".into(),
+                size_bytes: parse_size("1M").unwrap(),
+                format: VolumeFormat::Raw,
+                replicas: None,
+                backend: None,
+                notes: Some("  prod data  ".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(vol.notes.as_deref(), Some("prod data"));
+        let updated = svc
+            .update_volume(
+                vol.id,
+                UpdateVolumeRequest {
+                    notes: Some("  staging  ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.notes.as_deref(), Some("staging"));
+        let cleared = svc
+            .update_volume(
+                vol.id,
+                UpdateVolumeRequest {
+                    notes: Some("   ".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.notes, None);
+        let too_long = "x".repeat(501);
+        let err = svc
+            .update_volume(
+                vol.id,
+                UpdateVolumeRequest {
+                    notes: Some(too_long),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
+
+    #[tokio::test]
     async fn destroy_deletes_exclusive_volume() {
         let (svc, _dir) = service();
         let vm = svc.create(vm_id(105), spec("demo")).await.unwrap();
@@ -6678,6 +8045,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6698,6 +8066,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 format: VolumeFormat::Raw,
                 replicas: None,
                 backend: None,
+                notes: None,
             })
             .await
             .unwrap();
@@ -6718,6 +8087,7 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
                 dhcp: true,
                 isolate: true,
                 mode: Default::default(),
+                notes: None,
             })
             .unwrap();
         let vm = svc

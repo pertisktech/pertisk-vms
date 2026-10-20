@@ -7,12 +7,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use pertisk_types::{CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, NetworkRecord, VmId};
+use pertisk_types::{
+    CreateNetworkRequest, NetSpec, NetworkId, NetworkMode, NetworkRecord, RenameNetworkRequest,
+    UpdateNetworkRequest, VmId,
+};
 use serde::{Deserialize, Serialize};
 
 pub use host::{
     delete_tap, disable_tap_offload, ipv4_for_mac, ipv6_for_mac, normalize_mac,
-    probe_bridge_neighbors, probe_ipv4, provision_nic, probe_guest_ipv6_ll,
+    probe_bridge_neighbors, probe_guest_ipv6_ll, probe_ipv4, provision_nic,
 };
 pub use ipam::{Ipv4Net, parse_cidr, parse_ipv4};
 
@@ -35,6 +38,23 @@ pub enum NetError {
 }
 
 pub type Result<T> = std::result::Result<T, NetError>;
+
+fn clean_notes(notes: Option<String>) -> Result<Option<String>> {
+    let Some(notes) = notes else {
+        return Ok(None);
+    };
+    let notes = notes.trim();
+    if notes.chars().count() > 500 {
+        return Err(NetError::Invalid(
+            "notes are limited to 500 characters".into(),
+        ));
+    }
+    Ok(if notes.is_empty() {
+        None
+    } else {
+        Some(notes.to_string())
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct Inventory {
@@ -93,6 +113,7 @@ impl NetworkPool {
         if req.name.trim().is_empty() {
             return Err(NetError::Invalid("network name is required".into()));
         }
+        let notes = clean_notes(req.notes)?;
         {
             let inner = self.inner.lock().expect("net lock");
             if inner.networks.values().any(|n| n.name == req.name) {
@@ -128,6 +149,7 @@ impl NetworkPool {
                 dhcp: req.dhcp,
                 isolate: req.isolate,
                 mode: NetworkMode::Bridge,
+                notes,
             };
             self.upsert(record.clone())?;
             return Ok(record);
@@ -158,6 +180,7 @@ impl NetworkPool {
             dhcp: req.dhcp,
             isolate: req.isolate,
             mode: NetworkMode::Nat,
+            notes,
         };
         if self.apply_host_links {
             let prefix = net.prefix;
@@ -167,6 +190,43 @@ impl NetworkPool {
                 return Err(err);
             }
         }
+        self.upsert(record.clone())?;
+        Ok(record)
+    }
+
+    /// Change the display name. Bridge, CIDR, and guest attachments stay the same.
+    pub fn rename(&self, id: NetworkId, req: RenameNetworkRequest) -> Result<NetworkRecord> {
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(NetError::Invalid("network name is required".into()));
+        }
+        {
+            let inner = self.inner.lock().expect("net lock");
+            if inner
+                .networks
+                .values()
+                .any(|n| n.id != id && n.name == name)
+            {
+                return Err(NetError::NameTaken(name));
+            }
+        }
+        let mut record = self.get(id)?;
+        if record.name == name {
+            return Ok(record);
+        }
+        record.name = name;
+        self.upsert(record.clone())?;
+        Ok(record)
+    }
+
+    /// Set or clear the operator note on a network.
+    pub fn set_notes(&self, id: NetworkId, req: UpdateNetworkRequest) -> Result<NetworkRecord> {
+        let Some(notes) = req.notes else {
+            return self.get(id);
+        };
+        let notes = clean_notes(Some(notes))?;
+        let mut record = self.get(id)?;
+        record.notes = notes;
         self.upsert(record.clone())?;
         Ok(record)
     }
@@ -424,10 +484,13 @@ mod tests {
                 dhcp: true,
                 isolate: true,
                 mode: Default::default(),
+                notes: None,
             })
             .unwrap();
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[], &[]).unwrap();
+        let nic = pool
+            .allocate_nic(net.id, vm, 0, None, &[], &[], &[])
+            .unwrap();
         assert!(nic.tap.unwrap().starts_with('p'));
         assert_eq!(nic.ip.as_deref(), Some("10.88.0.2"));
         let nic2 = pool
@@ -445,6 +508,102 @@ mod tests {
     }
 
     #[test]
+    fn renames_and_refuses_a_taken_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = NetworkPool::open(dir.path(), false).unwrap();
+        let a = pool
+            .create(CreateNetworkRequest {
+                name: "lan".into(),
+                cidr: "10.88.0.0/24".into(),
+                gateway: None,
+                bridge: Some("vmbr0".into()),
+                dhcp: true,
+                isolate: true,
+                mode: Default::default(),
+                notes: None,
+            })
+            .unwrap();
+        let b = pool
+            .create(CreateNetworkRequest {
+                name: "dmz".into(),
+                cidr: "10.89.0.0/24".into(),
+                gateway: None,
+                bridge: Some("vmbr1".into()),
+                dhcp: true,
+                isolate: true,
+                mode: Default::default(),
+                notes: None,
+            })
+            .unwrap();
+        let renamed = pool
+            .rename(
+                a.id,
+                RenameNetworkRequest {
+                    name: "  production  ".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(renamed.name, "production");
+        assert_eq!(renamed.bridge, a.bridge);
+        assert_eq!(renamed.cidr, a.cidr);
+        let taken = pool
+            .rename(
+                b.id,
+                RenameNetworkRequest {
+                    name: "production".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(taken, NetError::NameTaken(_)));
+    }
+
+    #[test]
+    fn stores_and_clears_network_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = NetworkPool::open(dir.path(), false).unwrap();
+        let net = pool
+            .create(CreateNetworkRequest {
+                name: "lan".into(),
+                cidr: "10.88.0.0/24".into(),
+                gateway: None,
+                bridge: Some("vmbr0".into()),
+                dhcp: true,
+                isolate: true,
+                mode: Default::default(),
+                notes: Some("  lab vlan  ".into()),
+            })
+            .unwrap();
+        assert_eq!(net.notes.as_deref(), Some("lab vlan"));
+        let updated = pool
+            .set_notes(
+                net.id,
+                UpdateNetworkRequest {
+                    notes: Some("  before cutover  ".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.notes.as_deref(), Some("before cutover"));
+        let cleared = pool
+            .set_notes(
+                net.id,
+                UpdateNetworkRequest {
+                    notes: Some("   ".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(cleared.notes, None);
+        let too_long = pool
+            .set_notes(
+                net.id,
+                UpdateNetworkRequest {
+                    notes: Some("x".repeat(501)),
+                },
+            )
+            .unwrap_err();
+        assert!(too_long.to_string().contains("500"));
+    }
+
+    #[test]
     fn bridge_mode_allows_lan_cidr() {
         let dir = tempfile::tempdir().unwrap();
         let pool = NetworkPool::open(dir.path(), false).unwrap();
@@ -457,12 +616,15 @@ mod tests {
                 dhcp: false,
                 isolate: false,
                 mode: pertisk_types::NetworkMode::Bridge,
+                notes: None,
             })
             .unwrap();
         assert_eq!(net.mode, pertisk_types::NetworkMode::Bridge);
         assert_eq!(net.bridge, "br0");
         let vm = VmId::new();
-        let nic = pool.allocate_nic(net.id, vm, 0, None, &[], &[], &[]).unwrap();
+        let nic = pool
+            .allocate_nic(net.id, vm, 0, None, &[], &[], &[])
+            .unwrap();
         assert!(nic.ip.is_none());
     }
 
@@ -479,12 +641,15 @@ mod tests {
                 dhcp: false,
                 isolate: false,
                 mode: pertisk_types::NetworkMode::Bridge,
+                notes: None,
             })
             .unwrap();
         let a: VmId = "101".parse().unwrap();
         let b: VmId = "16777317".parse().unwrap();
         assert_eq!(guest_mac(a, 0), guest_mac(b, 0));
-        let nic_a = pool.allocate_nic(net.id, a, 0, None, &[], &[], &[]).unwrap();
+        let nic_a = pool
+            .allocate_nic(net.id, a, 0, None, &[], &[], &[])
+            .unwrap();
         let nic_b = pool
             .allocate_nic(net.id, b, 0, None, &[], &[nic_a.mac.clone().unwrap()], &[])
             .unwrap();
