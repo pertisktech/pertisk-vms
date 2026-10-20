@@ -24,7 +24,8 @@ use pertisk_types::{
     CloneVolumeRequest, CloudInitIsoRequest, ClusterSnapshot, ConsoleInput, CreateNetworkRequest,
     CreateTemplateRequest, CreateVmBackupRequest, CreateVolumeRequest, HeartbeatMessage,
     ImportIsoRequest, JoinClusterRequest, MigrateRequest, NodeId, NodeRecord, ResizeVolumeRequest,
-    SetHaArmedRequest, DrainRequest, SetRepositoryRequest, SnapshotRequest, UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
+    SetHaArmedRequest, DrainRequest, SetRepositoryRequest, SnapshotRequest, StorageBackend,
+    UpdateVmRequest, VERSION, VmId, VmRecord, VolumeFormat,
     VolumeId, VolumeRecord,
 };
 use serde::Deserialize;
@@ -904,6 +905,22 @@ async fn clone_volume(
 struct VolumeImportQuery {
     name: Option<String>,
     format: Option<String>,
+    /// `replica` (local files) or `rbd` (Ceph). Absent uses the host default.
+    backend: Option<String>,
+}
+
+fn parse_storage_backend(raw: Option<&str>) -> Result<Option<StorageBackend>, DaemonError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    match raw {
+        "replica" | "local" => Ok(Some(StorageBackend::Replica)),
+        "rbd" | "ceph" => Ok(Some(StorageBackend::Rbd)),
+        other => Err(pertisk_storage::StorageError::Message(format!(
+            "storage backend must be replica or rbd (got {other})"
+        ))
+        .into()),
+    }
 }
 
 async fn upload_volume_import(
@@ -966,7 +983,10 @@ async fn upload_volume_import(
         return Err(pertisk_storage::StorageError::Message("empty volume upload".into()).into());
     }
     let result = tracked(&service, &user, "volume.import", name.clone(), async {
-        service.import_volume(name, format, tmp.clone()).await
+        let backend = parse_storage_backend(q.backend.as_deref())?;
+        service
+            .import_volume(name, format, tmp.clone(), backend)
+            .await
     })
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
@@ -979,6 +999,7 @@ struct TemplateImportQuery {
     format: Option<String>,
     vcpus: Option<u8>,
     memory_mib: Option<u32>,
+    backend: Option<String>,
 }
 
 async fn import_template(
@@ -1043,7 +1064,10 @@ async fn import_template(
     }
     let vol_name = service.unique_volume_name(&format!("{name}-disk"))?;
     let result = tracked(&service, &user, "template.import", name.clone(), async {
-        let volume = service.import_volume(vol_name, format, tmp.clone()).await?;
+        let backend = parse_storage_backend(q.backend.as_deref())?;
+        let volume = service
+            .import_volume(vol_name, format, tmp.clone(), backend)
+            .await?;
         match service
             .create_template(CreateTemplateRequest {
                 id: None,
