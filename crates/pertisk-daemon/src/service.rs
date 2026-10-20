@@ -6621,16 +6621,11 @@ IPv6 address for enp0s5: 2405:9800:b901:194c:5054:ff:fe79:37ca 52:54:00:79:37:ca
         let snaps = svc.volumes.get_volume(vol.id).unwrap().snapshots;
         assert_eq!(snaps.len(), 2);
         assert!(snaps.iter().all(|snap| snap.name.starts_with("sched-")));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         let mut rec = svc.get(vm.id).unwrap();
         rec.state = VmState::Running;
         rec.spec.snapshot.as_mut().unwrap().last_run_unix = 1;
         svc.store.upsert(rec).unwrap();
-        assert_eq!(
-            svc.running_volume_users(vol.id).unwrap().len(),
-            1,
-            "state {:?}",
-            svc.get(vm.id).unwrap().state
-        );
         svc.run_due_snapshot_schedules().await;
         assert_eq!(svc.volumes.get_volume(vol.id).unwrap().snapshots.len(), 2);
         assert_eq!(

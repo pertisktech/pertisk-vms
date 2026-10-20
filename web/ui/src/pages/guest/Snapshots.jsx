@@ -196,7 +196,9 @@ export default function GuestSnapshots() {
             {schedule?.last_run_unix ? formatUnix(schedule.last_run_unix) : schedule ? 'never' : '—'}
           </dd>
           <dt>Retention</dt>
-          <dd className="mono-inline">{!schedule || !schedule.keep ? 'Keep all' : `Keep ${schedule.keep}`}</dd>
+          <dd className="mono-inline">
+            {!schedule ? '—' : schedule.keep ? `Keep ${schedule.keep}` : 'Keep all'}
+          </dd>
           <dt>Mode</dt>
           <dd className="mono-inline muted">automatic, including while the guest is running</dd>
         </dl>
