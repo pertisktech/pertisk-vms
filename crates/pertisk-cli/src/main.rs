@@ -614,10 +614,11 @@ async fn run() -> Result<()> {
                 println!("data_dir           {}", info.data_dir.display());
                 println!("storage            {}", info.storage_root.display());
                 println!(
-                    "backend            {} replicas={} rbd={}",
+                    "backend            {} replicas={} rbd={} zfs={}",
                     info.storage_backend,
                     info.replica_count,
-                    if info.rbd { "available" } else { "not found" }
+                    if info.rbd { "available" } else { "not found" },
+                    if info.zfs { "available" } else { "not found" }
                 );
                 println!(
                     "qemu-img           {}",
@@ -872,7 +873,7 @@ async fn run() -> Result<()> {
                 )
                 .await?;
                 println!(
-                    "drained {} ({} guests moved; restart migrate, not live)",
+                    "drained {} ({} guests moved; QEMU guests live-migrate, ZFS stays)",
                     result.node_id,
                     result.moved.len()
                 );

@@ -6,6 +6,7 @@ mod iso9660;
 mod iso_boot;
 mod qemu;
 mod rbd;
+mod zfs;
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -28,6 +29,7 @@ pub use disk_boot::prepare_shim_disk_boot;
 pub use inject::{GuestIdentity, inject_guest_identity, operator_ssh_keys, parse_ssh_key_file};
 pub use iso_boot::{LinuxIsoBoot, prepare_linux_iso_boot};
 pub use rbd::Rbd;
+pub use zfs::Zfs;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -232,7 +234,7 @@ impl VolumePool {
     }
 
     pub fn put_record(&self, mut record: VolumeRecord) -> Result<VolumeRecord> {
-        if record.backend != StorageBackend::Rbd {
+        if !record.backend.external() {
             record.path = self.local_path(record.id, record.format);
         }
         self.upsert_volume(record.clone())?;
@@ -243,7 +245,7 @@ impl VolumePool {
         let rewritten: Vec<VolumeRecord> = records
             .into_iter()
             .map(|mut record| {
-                if record.backend != StorageBackend::Rbd {
+                if !record.backend.external() {
                     record.path = self.local_path(record.id, record.format);
                 }
                 record
@@ -260,7 +262,7 @@ impl VolumePool {
     }
 
     pub fn ensure_local(&self, record: &VolumeRecord) -> Result<VolumeRecord> {
-        if record.backend == StorageBackend::Rbd {
+        if record.backend.external() {
             return self.put_record(record.clone());
         }
         let path = self.local_path(record.id, record.format);
@@ -289,10 +291,11 @@ impl VolumePool {
 
     pub fn write_blob(&self, id: VolumeId, bytes: &[u8]) -> Result<VolumeRecord> {
         let mut record = self.get_volume(id)?;
-        if record.backend == StorageBackend::Rbd {
-            return Err(StorageError::Message(
-                "cannot write a blob to an rbd volume".into(),
-            ));
+        if record.backend.external() {
+            return Err(StorageError::Message(format!(
+                "cannot write a blob to a {} volume",
+                record.backend
+            )));
         }
         record.path = self.local_path(record.id, record.format);
         if let Some(parent) = record.path.parent() {
@@ -307,10 +310,11 @@ impl VolumePool {
     /// Copy an on-disk image into the volume path without buffering it in RAM.
     pub fn write_blob_from_path(&self, id: VolumeId, src: &Path) -> Result<VolumeRecord> {
         let mut record = self.get_volume(id)?;
-        if record.backend == StorageBackend::Rbd {
-            return Err(StorageError::Message(
-                "cannot write a blob to an rbd volume".into(),
-            ));
+        if record.backend.external() {
+            return Err(StorageError::Message(format!(
+                "cannot write a blob to a {} volume",
+                record.backend
+            )));
         }
         record.path = self.local_path(record.id, record.format);
         if let Some(parent) = record.path.parent() {
@@ -593,7 +597,23 @@ impl VolumePool {
             return Err(StorageError::SnapshotExists(name.to_string()));
         }
         let created_unix = unix_now();
-        let snap = if record.format == VolumeFormat::Qcow2 && self.qemu.available() {
+        let snap = if record.backend == StorageBackend::Rbd {
+            rbd_client(&record).snapshot_create(&record.name, name)?;
+            VolumeSnapshot {
+                name: name.to_string(),
+                created_unix,
+                path: None,
+            }
+        } else if record.backend == StorageBackend::Zfs {
+            let zfs = Zfs::new(None);
+            let dataset = Zfs::dataset_from_path(&record.path)?;
+            zfs.snapshot_dataset(&dataset, name)?;
+            VolumeSnapshot {
+                name: name.to_string(),
+                created_unix,
+                path: None,
+            }
+        } else if record.format == VolumeFormat::Qcow2 && self.qemu.available() {
             self.qemu.snapshot_create(&record.path, name)?;
             VolumeSnapshot {
                 name: name.to_string(),
@@ -624,6 +644,16 @@ impl VolumePool {
             .find(|snap| snap.name == name)
             .cloned()
             .ok_or_else(|| StorageError::SnapshotNotFound(name.to_string()))?;
+        if record.backend == StorageBackend::Rbd {
+            rbd_client(&record).snapshot_rollback(&record.name, name)?;
+            return Ok(record);
+        }
+        if record.backend == StorageBackend::Zfs {
+            let zfs = Zfs::new(None);
+            let dataset = Zfs::dataset_from_path(&record.path)?;
+            zfs.rollback_dataset(&dataset, name)?;
+            return Ok(record);
+        }
         if let Some(path) = snap.path {
             std::fs::copy(path, &record.path)?;
         } else {
@@ -1177,6 +1207,15 @@ fn cloudinit_user_data(req: &CloudInitIsoRequest) -> String {
     yaml
 }
 
+fn rbd_client(record: &VolumeRecord) -> Rbd {
+    let text = record.path.to_string_lossy();
+    let pool = text
+        .strip_prefix("rbd:")
+        .and_then(|rest| rest.split_once('/'))
+        .map(|(pool, _)| pool.to_string());
+    Rbd::new(pool)
+}
+
 fn iso_name(source: &Path, explicit: Option<String>) -> Result<String> {
     let name = match explicit {
         Some(name) => name,
@@ -1298,6 +1337,83 @@ mod tests {
         pool.delete_volume(clone.id).unwrap();
         pool.delete_volume(vol.id).unwrap();
         assert!(pool.list_volumes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rbd_snapshot_uses_the_rbd_cli() {
+        let (pool, dir) = pool();
+        let vol = pool
+            .put_record(VolumeRecord {
+                id: VolumeId::new(),
+                name: "disk".into(),
+                format: VolumeFormat::Raw,
+                size_bytes: 1024,
+                path: PathBuf::from("rbd:vms/disk"),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![],
+                replica_count: 1,
+                backend: StorageBackend::Rbd,
+            })
+            .unwrap();
+        let err = pool
+            .snapshot(
+                vol.id,
+                SnapshotRequest {
+                    name: "before".into(),
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("rbd"),
+            "expected an rbd client error, got {err}"
+        );
+        assert!(!dir
+            .path()
+            .join("snapshots")
+            .join(vol.id.to_string())
+            .join("before")
+            .exists());
+    }
+
+    #[test]
+    fn zfs_snapshot_uses_the_zfs_cli() {
+        let (pool, dir) = pool();
+        let vol = pool
+            .put_record(VolumeRecord {
+                id: VolumeId::new(),
+                name: "disk".into(),
+                format: VolumeFormat::Raw,
+                size_bytes: 1024,
+                path: PathBuf::from("zfs:tank/pertisk/disk"),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![],
+                replica_count: 1,
+                backend: StorageBackend::Zfs,
+            })
+            .unwrap();
+        assert_eq!(vol.path, PathBuf::from("zfs:tank/pertisk/disk"));
+        let err = pool
+            .snapshot(
+                vol.id,
+                SnapshotRequest {
+                    name: "before".into(),
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("zfs"),
+            "expected a zfs client error, got {err}"
+        );
+        assert!(!dir
+            .path()
+            .join("snapshots")
+            .join(vol.id.to_string())
+            .join("before")
+            .exists());
     }
 
     #[test]

@@ -25,9 +25,9 @@ PERTISK_HOME=/tmp/p3 cargo run -p pertisk-daemon -- --listen 127.0.0.1:7483 --no
 
 Join from a running node: `pertisk --url http://127.0.0.1:7482 cluster join --peer http://127.0.0.1:7481 -u admin -p admin`.
 
-Writes require majority quorum. A node that loses quorum fences itself (stops local VMs) so the majority can HA-restart them, unless HA is **disarmed** for maintenance (`pertisk cluster ha-disarm`). `pertisk vm migrate` and `pertisk cluster drain` **restart** the guest on the destination, then stop it on the source. That is not Cloud Hypervisor live migrate (memory transfer while running).
+Writes require majority quorum. A node that loses quorum fences itself (stops local VMs) so the majority can HA-restart them, unless HA is **disarmed** for maintenance (`pertisk cluster ha-disarm`). `pertisk vm migrate` live-moves a running QEMU guest. Ceph disks are already shared. Local replica disks are mirrored to the destination first, and a library ISO is copied so a CD-ROM can stay attached. A ZFS zvol cannot move. Any other guest is stopped and started on the destination.
 
-**Storage:** default `storage.backend = "replica"` copies sparse files across nodes. Runtime writes stay on the owner and sync on stop / before migrate. **If the owner dies mid-run, unsynced writes can be lost.** Treat replica as lab/single-node. Production HA needs `backend = "rbd"` (Ceph RBD; `rbd` CLI on PATH). The UI warns when HA is enabled on replica.
+**Storage:** default `storage.backend = "replica"` copies sparse files across nodes. Runtime writes stay on the owner and sync on stop / before migrate. **If the owner dies mid-run, unsynced writes can be lost.** Treat replica as lab/single-node. `backend = "zfs"` stores the disk as a local zvol (`zfs` on PATH, `storage.zfs_pool`); that zvol does not move to another node. Production HA needs `backend = "rbd"` (Ceph RBD; `rbd` CLI on PATH). The UI warns when HA is enabled on replica.
 
 Web UI: [http://127.0.0.1:7480/](http://127.0.0.1:7480/)  
 OpenAPI: [http://127.0.0.1:7480/v1/openapi.json](http://127.0.0.1:7480/v1/openapi.json)

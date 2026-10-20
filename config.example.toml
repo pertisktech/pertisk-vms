@@ -25,9 +25,11 @@ root = "storage"
 # qemu_img = "/usr/local/bin/qemu-img"
 # replica = local files on this node (default). Not shared HA.
 # rbd = Ceph RBD. Set this as the host default, or pick Shared when creating a volume.
+# zfs = a local zvol. Requires `zfs` on PATH and an existing parent dataset.
 backend = "replica"
 replica_count = 1
 # rbd_pool = "rbd"
+# zfs_pool = "tank/pertisk"
 
 [network]
 # Linux: create bridges/TAPs with `ip`. macOS stays inventory-only.

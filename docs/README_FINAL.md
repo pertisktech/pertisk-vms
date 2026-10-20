@@ -161,7 +161,7 @@ cargo build --release
 | **Web Dashboard** | ✅ | React UI with graphics console |
 | **REST API** | ✅ | Full OpenAPI schema |
 | **Users & Auth** | ✅ | Tokens, roles, audit log |
-| **Distributed Storage** | 🔄 | Phase 6+ (Ceph RBD planned) |
+| **Distributed Storage** | ✅ | Local replica files, or Ceph RBD (`rbd` CLI) |
 
 ## What You Can Do Now
 
@@ -173,7 +173,7 @@ pertisk vm create --iso debian --graphics --disk-size 30G
 # Monitor cluster health
 pertisk cluster status
 
-# Live migrate running VMs
+# Restart-migrate a guest (stop, then start on the other node)
 pertisk vm migrate <id> --target <node>
 
 # View audit trail
@@ -197,11 +197,10 @@ pertisk user create -u operator -p pass --role operator
 - Unit + integration tests
 - Easy to extend (new VMM drivers, storage backends, etc.)
 
-## What's Missing (Phase 6+)
+## What's still open
 
 ### Not Implemented Yet
-- Distributed storage (Ceph RBD) ← Phase 6
-- Bare-metal installer ISO ← Phase 7
+- Hardware proof of the flashable node image
 - GPU passthrough / sharing
 - Advanced scheduling (DRS-style)
 - Multi-cloud federation
@@ -210,7 +209,7 @@ pertisk user create -u operator -p pass --role operator
 - No arbitrator for 2-node clusters (use 3 or 5 nodes)
 - Graphics console Linux/KVM only (Cloud Hypervisor)
 - Single console type per VM (serial OR graphics)
-- Local storage primary (distributed is phase 6)
+- HA restart needs Ceph RBD disks. Local files stay on the lost node
 
 ## Architecture Decisions Made
 
@@ -251,10 +250,8 @@ pertiskd --node-name "prod-c" &
 - Test ISO installation with graphics console
 - Run 3-node cluster & simulate failures
 
-### Long Term (Phase 6+)
-- Add Ceph RBD backend for distributed storage
-- Build bare-metal installer ISO
-- Implement advanced features
+### Still open
+- Flash a real box from the node image and boot an Alpine guest
 
 ---
 
@@ -268,8 +265,6 @@ pertiskd --node-name "prod-c" &
 ✅ **Production-ready architecture** (Rust, async, well-structured)  
 ✅ **Comprehensive documentation** for ops & development  
 
-**Total Development**: Phases 0-5 complete, graphics console added, full documentation.
-
-**Status**: v1.0 MVP + v2.0 Cluster + Phase 4.5 Graphics ✅
+**Status**: phases 0–7 are in the tree. The hardware flash proof is still open.
 
 Good luck with your deployment! 🚀

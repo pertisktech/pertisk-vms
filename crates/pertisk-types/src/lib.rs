@@ -575,6 +575,7 @@ pub enum StorageBackend {
     #[default]
     Replica,
     Rbd,
+    Zfs,
 }
 
 impl StorageBackend {
@@ -582,10 +583,16 @@ impl StorageBackend {
         match self {
             Self::Replica => "replica",
             Self::Rbd => "rbd",
+            Self::Zfs => "zfs",
         }
     }
 
-    /// Replica files are lab/single-node. HA restart does not protect in-flight writes.
+    /// Bytes live outside the local files directory (Ceph image or ZFS zvol).
+    pub fn external(self) -> bool {
+        matches!(self, Self::Rbd | Self::Zfs)
+    }
+
+    /// Replica files and local zvols are lab/single-node. HA restart requires Ceph RBD.
     pub fn ha_durable(self) -> bool {
         matches!(self, Self::Rbd)
     }
@@ -604,8 +611,9 @@ impl FromStr for StorageBackend {
         match s {
             "replica" | "local" => Ok(Self::Replica),
             "rbd" | "ceph" => Ok(Self::Rbd),
+            "zfs" => Ok(Self::Zfs),
             other => Err(TypesError::InvalidSpec(format!(
-                "unknown storage backend '{other}' (replica | rbd)"
+                "unknown storage backend '{other}' (replica | rbd | zfs)"
             ))),
         }
     }
@@ -654,7 +662,7 @@ pub struct CreateVolumeRequest {
     /// Desired replica count for a local volume. None uses host config (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<u8>,
-    /// `replica` is a local file. `rbd` is one Ceph image. None uses the host default.
+    /// `replica` is a local file. `rbd` is one Ceph image. `zfs` is a local zvol. None uses the host default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<StorageBackend>,
 }
@@ -918,9 +926,23 @@ pub struct DiskSpec {
 /// Heuristic: qcow2/raw larger than a blank volume usually has an installed OS.
 /// Keep this high — a few failed boots allocate far more than 64 MiB without an OS.
 pub fn disk_likely_bootable(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    if text.starts_with("rbd:") || text.starts_with("zfs:") {
+        return true;
+    }
     std::fs::metadata(path)
         .map(|meta| meta.len() > 512 * 1024 * 1024)
         .unwrap_or(false)
+}
+
+/// Block device QEMU or Cloud Hypervisor should open. `zfs:` inventory paths become `/dev/zvol/…`.
+pub fn guest_disk_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(dataset) = text.strip_prefix("zfs:") {
+        let dataset = dataset.trim_start_matches('/');
+        return PathBuf::from(format!("/dev/zvol/{dataset}"));
+    }
+    path.to_path_buf()
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1200,6 +1222,9 @@ pub struct StorageConfig {
     pub replica_count: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rbd_pool: Option<String>,
+    /// Parent dataset for zvols, e.g. `tank/pertisk`. The pool must already exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zfs_pool: Option<String>,
 }
 
 impl Default for StorageConfig {
@@ -1210,6 +1235,7 @@ impl Default for StorageConfig {
             backend: StorageBackend::Replica,
             replica_count: default_replica_count(),
             rbd_pool: None,
+            zfs_pool: None,
         }
     }
 }
@@ -1222,6 +1248,7 @@ impl StorageConfig {
             backend: StorageBackend::Replica,
             replica_count: default_replica_count(),
             rbd_pool: None,
+            zfs_pool: None,
         }
     }
 }
@@ -1426,6 +1453,9 @@ pub struct HostInfo {
     pub replica_count: u8,
     #[serde(default)]
     pub rbd: bool,
+    /// `zfs` CLI is on PATH (zvol backend can be selected).
+    #[serde(default)]
+    pub zfs: bool,
     /// True when this node's storage backend can survive owner crash (Ceph RBD).
     #[serde(default)]
     pub ha_durable: bool,
@@ -1607,6 +1637,7 @@ pub fn probe_host(config: &HostConfig, data_dir: PathBuf) -> HostInfo {
         storage_backend: config.storage.backend,
         replica_count: config.storage.replica_count.max(1),
         rbd: find_in_path("rbd").is_some(),
+        zfs: find_in_path("zfs").is_some(),
         ha_durable: config.storage.backend.ha_durable(),
         version: VERSION.to_string(),
         ssh_authorized_keys: Vec::new(),

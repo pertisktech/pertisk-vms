@@ -74,7 +74,7 @@ provider_installation {
 |---|---|
 | `pertisk_vms_template` | `POST /v1/templates/import`, `POST /v1/templates`, or `POST /v1/vms/{id}/template` |
 | `pertisk_vms_network` | `POST /v1/networks` |
-| `pertisk_vms_volume` | `POST /v1/volumes` (resize via `/resize`). `backend` is `replica` or `rbd`. |
+| `pertisk_vms_volume` | `POST /v1/volumes` (resize via `/resize`). `backend` is `replica`, `rbd`, or `zfs`. |
 | `pertisk_vms_vm` | define + attach, or `POST /v1/vms/{id}/clone` |
 
 ### `pertisk_vms_template`
@@ -114,7 +114,7 @@ resource "pertisk_vms_volume" "data" {
   name    = "data"
   size    = "32G"
   format  = "qcow2"
-  backend = "rbd" # local file: "replica". HA restart needs rbd.
+  backend = "rbd" # local file: "replica". local zvol: "zfs". HA restart needs rbd.
 }
 ```
 
@@ -135,7 +135,7 @@ resource "pertisk_vms_vm" "install" {
 
   disk {
     size    = "16G"
-    backend = "replica" # or "rbd" when the disk must move with HA
+    backend = "replica" # "zfs" for a local zvol, or "rbd" when the disk must move with HA
   }
 }
 ```

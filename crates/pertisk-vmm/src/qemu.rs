@@ -51,6 +51,195 @@ impl QemuDriver {
     }
 
     pub async fn create(&self, id: VmId, spec: &VmSpec) -> Result<CreateResult> {
+        self.spawn(id, spec, None).await
+    }
+
+    /// Paused QEMU waiting for `migrate` from the source. Does not continue the guest.
+    pub async fn create_incoming(
+        &self,
+        id: VmId,
+        spec: &VmSpec,
+        port: u16,
+    ) -> Result<CreateResult> {
+        self.spawn(id, spec, Some(port)).await
+    }
+
+    pub async fn migrate_to(&self, record: &VmRecord, uri: &str) -> Result<()> {
+        let qmp = record
+            .api_socket
+            .as_ref()
+            .ok_or_else(|| VmmError::Message("missing qemu qmp socket".into()))?;
+        qmp_execute_with(
+            qmp,
+            "migrate",
+            Some(serde_json::json!({ "uri": uri })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Export local (non-RBD, non-CD) drives so the source can `drive-mirror` into them.
+    pub async fn nbd_serve(
+        &self,
+        record: &VmRecord,
+        port: u16,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        if exports.is_empty() {
+            return Ok(());
+        }
+        let qmp = qmp_socket(record)?;
+        qmp_ok(
+            qmp,
+            "nbd-server-start",
+            Some(serde_json::json!({
+                "addr": {
+                    "type": "inet",
+                    "data": { "host": "0.0.0.0", "port": port.to_string() }
+                }
+            })),
+        )
+        .await?;
+        for export in exports {
+            qmp_ok(
+                qmp,
+                "nbd-server-add",
+                Some(serde_json::json!({
+                    "device": export.device,
+                    "name": export.device,
+                    "writable": true
+                })),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn nbd_stop(&self, record: &VmRecord) -> Result<()> {
+        let Some(qmp) = record.api_socket.as_deref() else {
+            return Ok(());
+        };
+        if !qmp.exists() {
+            return Ok(());
+        }
+        let _ = qmp_ok(qmp, "nbd-server-stop", None).await;
+        Ok(())
+    }
+
+    pub async fn mirror_start(
+        &self,
+        record: &VmRecord,
+        host: &str,
+        port: u16,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        let qmp = qmp_socket(record)?;
+        for export in exports {
+            qmp_ok(
+                qmp,
+                "drive-mirror",
+                Some(serde_json::json!({
+                    "device": export.device,
+                    "target": nbd_target(host, port, &export.device),
+                    "sync": "full",
+                    "mode": "existing",
+                    "format": export.format
+                })),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn wait_mirrors(
+        &self,
+        record: &VmRecord,
+        exports: &[MirrorExport],
+        timeout: Duration,
+    ) -> Result<()> {
+        if exports.is_empty() {
+            return Ok(());
+        }
+        let qmp = qmp_socket(record)?;
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(VmmError::Message(format!(
+                    "disk mirror timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            let resp = qmp_ok(qmp, "query-block-jobs", None).await?;
+            match mirrors_ready(&resp, exports) {
+                Ok(true) => return Ok(()),
+                Ok(false) => tokio::time::sleep(Duration::from_millis(500)).await,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    pub async fn complete_mirrors(&self, record: &VmRecord, exports: &[MirrorExport]) -> Result<()> {
+        let qmp = qmp_socket(record)?;
+        for export in exports {
+            qmp_ok(
+                qmp,
+                "block-job-complete",
+                Some(serde_json::json!({ "device": export.device })),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn cancel_mirrors(&self, record: &VmRecord, exports: &[MirrorExport]) -> Result<()> {
+        let Some(qmp) = record.api_socket.as_deref() else {
+            return Ok(());
+        };
+        if !qmp.exists() {
+            return Ok(());
+        }
+        for export in exports {
+            let _ = qmp_ok(
+                qmp,
+                "block-job-cancel",
+                Some(serde_json::json!({ "device": export.device })),
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    pub async fn wait_migrated(&self, record: &VmRecord, timeout: Duration) -> Result<()> {
+        let qmp = record
+            .api_socket
+            .as_ref()
+            .ok_or_else(|| VmmError::Message("missing qemu qmp socket".into()))?;
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(VmmError::Message(format!(
+                    "live migration timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            let resp = qmp_execute_with(qmp, "query-migrate", None).await?;
+            let status = migration_status_name(&resp).unwrap_or("unknown");
+            if migration_succeeded(status) {
+                return Ok(());
+            }
+            if migration_failed(status) {
+                return Err(VmmError::Message(format!("live migration {status}")));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn spawn(
+        &self,
+        id: VmId,
+        spec: &VmSpec,
+        incoming: Option<u16>,
+    ) -> Result<CreateResult> {
         if spec.disks.is_empty() && spec.kernel.is_none() {
             return Err(VmmError::Message(
                 "qemu needs a kernel or at least one disk".into(),
@@ -80,7 +269,7 @@ impl QemuDriver {
         // times out. Unlinking the socket and spawning again hits the qcow2
         // write lock. Reuse a live QMP, otherwise reap leftovers first.
         let leftover = qemu_pids_for(id);
-        if !leftover.is_empty() && wait_qmp(&qmp, Duration::from_secs(3)).await.is_ok() {
+        if incoming.is_none() && !leftover.is_empty() && wait_qmp(&qmp, Duration::from_secs(3)).await.is_ok() {
             let pid = leftover.into_iter().next();
             info!(vm = %id, pid = ?pid, "reusing qemu");
             return Ok(CreateResult {
@@ -117,8 +306,12 @@ impl QemuDriver {
             .arg("-nodefaults")
             .arg("-display")
             .arg("none")
-            .arg("-S")
-            .arg("-qmp")
+            .arg("-S");
+        if let Some(port) = incoming {
+            cmd.arg("-incoming")
+                .arg(format!("tcp:0.0.0.0:{port}"));
+        }
+        cmd.arg("-qmp")
             .arg(format!("unix:{},server,nowait", qmp.display()))
             .arg("-serial")
             .arg(format!("unix:{},server,nowait", serial_socket.display()))
@@ -211,9 +404,15 @@ impl QemuDriver {
                     cd_index = cd_index.saturating_add(1);
                 }
             } else {
+                let locking = if disk.path.to_string_lossy().starts_with("rbd:") {
+                    ",file.locking=off"
+                } else {
+                    ""
+                };
+                let file = pertisk_types::guest_disk_path(&disk.path);
                 cmd.arg("-drive").arg(format!(
-                    "file={},if=none,id={drive_id},format={format},cache=writeback,aio=threads,detect-zeroes=off",
-                    disk.path.display()
+                    "file={},if=none,id={drive_id},format={format},cache=writeback,aio=threads,detect-zeroes=off{locking}",
+                    file.display()
                 ));
                 cmd.arg("-device")
                     .arg(format!("virtio-blk-pci,drive={drive_id}{boot}"));
@@ -731,7 +930,116 @@ async fn wait_qmp(path: &Path, timeout: Duration) -> Result<()> {
 }
 
 async fn qmp_execute(path: &Path, execute: &str) -> Result<()> {
-    qmp_query(path, execute).await.map(|_| ())
+    qmp_execute_with(path, execute, None).await.map(|_| ())
+}
+
+async fn qmp_execute_with(
+    path: &Path,
+    execute: &str,
+    arguments: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    qmp_roundtrip(path, execute, arguments).await
+}
+
+/// Local disks the source must mirror. CD-ROMs and Ceph RBD images are skipped.
+/// Device ids match the `disk{n}` drives QEMU is spawned with.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MirrorExport {
+    pub device: String,
+    pub format: String,
+}
+
+pub fn mirror_exports(spec: &VmSpec) -> Vec<MirrorExport> {
+    let mut ordered: Vec<_> = spec.disks.iter().collect();
+    ordered.sort_by_key(|disk| boot_rank(disk));
+    ordered
+        .iter()
+        .enumerate()
+        .filter_map(|(index, disk)| {
+            if disk.cdrom || disk.path.to_string_lossy().starts_with("rbd:") {
+                return None;
+            }
+            Some(MirrorExport {
+                device: format!("disk{index}"),
+                format: drive_format(disk).to_string(),
+            })
+        })
+        .collect()
+}
+
+fn qmp_socket(record: &VmRecord) -> Result<&Path> {
+    record
+        .api_socket
+        .as_deref()
+        .ok_or_else(|| VmmError::Message("missing qemu qmp socket".into()))
+}
+
+fn nbd_target(host: &str, port: u16, device: &str) -> String {
+    if host.contains(':') {
+        format!("nbd:[{host}]:{port}:exportname={device}")
+    } else {
+        format!("nbd:{host}:{port}:exportname={device}")
+    }
+}
+
+async fn qmp_ok(
+    path: &Path,
+    execute: &str,
+    arguments: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let value = qmp_execute_with(path, execute, arguments).await?;
+    if let Some(desc) = value
+        .get("error")
+        .and_then(|err| err.get("desc"))
+        .and_then(|desc| desc.as_str())
+    {
+        return Err(VmmError::Message(format!("qmp {execute}: {desc}")));
+    }
+    if value.get("error").is_some() {
+        return Err(VmmError::Message(format!("qmp {execute} failed")));
+    }
+    Ok(value)
+}
+
+fn mirrors_ready(value: &serde_json::Value, exports: &[MirrorExport]) -> Result<bool> {
+    let jobs = value
+        .get("return")
+        .and_then(|ret| ret.as_array())
+        .ok_or_else(|| VmmError::Message("query-block-jobs returned no list".into()))?;
+    for export in exports {
+        let Some(job) = jobs.iter().find(|job| {
+            let device = job.get("device").and_then(|v| v.as_str());
+            let id = job.get("id").and_then(|v| v.as_str());
+            device == Some(export.device.as_str()) || id == Some(export.device.as_str())
+        }) else {
+            return Ok(false);
+        };
+        if let Some(err) = job.get("error").and_then(|v| v.as_str()) {
+            return Err(VmmError::Message(format!(
+                "disk mirror {} failed: {err}",
+                export.device
+            )));
+        }
+        if job.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) fn migration_status_name(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("return")
+        .and_then(|ret| ret.get("status"))
+        .and_then(|status| status.as_str())
+}
+
+pub(crate) fn migration_succeeded(status: &str) -> bool {
+    status == "completed"
+}
+
+pub(crate) fn migration_failed(status: &str) -> bool {
+    matches!(status, "failed" | "cancelled")
 }
 
 async fn qmp_query_status(path: &Path) -> Result<String> {
@@ -744,6 +1052,14 @@ async fn qmp_query_status(path: &Path) -> Result<String> {
 }
 
 async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
+    qmp_roundtrip(path, execute, None).await
+}
+
+async fn qmp_roundtrip(
+    path: &Path,
+    execute: &str,
+    arguments: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
     let mut stream = tokio::time::timeout(Duration::from_secs(3), UnixStream::connect(path))
         .await
         .map_err(|_| {
@@ -768,7 +1084,10 @@ async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
             VmmError::Message(format!("qmp capabilities {}: {err}", path.display()))
         })?;
     if execute != "qmp_capabilities" {
-        let cmd = serde_json::json!({"execute": execute});
+        let cmd = match arguments {
+            Some(arguments) => serde_json::json!({"execute": execute, "arguments": arguments}),
+            None => serde_json::json!({"execute": execute}),
+        };
         stream.write_all(cmd.to_string().as_bytes()).await?;
         stream.write_all(b"\n").await?;
         let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
@@ -796,7 +1115,38 @@ async fn qmp_query(path: &Path, execute: &str) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pertisk_types::DiskSpec;
+    use pertisk_types::{DiskSpec, VmSpec};
+
+    #[test]
+    fn mirror_exports_skip_cdrom_and_rbd() {
+        let spec: VmSpec = serde_json::from_value(serde_json::json!({
+            "name": "guest",
+            "disks": [
+                {"path": "/iso/alpine.iso", "readonly": true, "cdrom": true, "iso_name": "alpine.iso"},
+                {"path": "/disks/root.qcow2", "readonly": false, "cdrom": false},
+                {"path": "rbd:vms/data", "readonly": false, "cdrom": false}
+            ]
+        }))
+        .unwrap();
+        let exports = mirror_exports(&spec);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].device, "disk1");
+        assert_eq!(exports[0].format, "qcow2");
+        assert_eq!(nbd_target("10.1.1.2", 9000, "disk1"), "nbd:10.1.1.2:9000:exportname=disk1");
+        assert_eq!(
+            nbd_target("fe80::1", 9000, "disk1"),
+            "nbd:[fe80::1]:9000:exportname=disk1"
+        );
+    }
+
+    #[test]
+    fn migration_status_parses() {
+        let completed = serde_json::json!({"return": {"status": "completed"}});
+        assert_eq!(migration_status_name(&completed), Some("completed"));
+        assert!(migration_succeeded("completed"));
+        assert!(migration_failed("failed"));
+        assert!(!migration_failed("active"));
+    }
 
     #[test]
     fn guest_qmp_status_running() {

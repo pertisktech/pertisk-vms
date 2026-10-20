@@ -314,12 +314,13 @@ curl http://localhost:7480/metrics | grep pertisk_cluster
 ### Current
 - No arbitrator for 2-node clusters
 - No automatic node replacement
-- No persistent storage clustering (volumes stored locally)
+- Local replica files are the default. HA restart requires Ceph RBD disks
+- Migrate live-moves a running QEMU guest. Local replica disks are mirrored first, and a library ISO is copied for a CD-ROM. A ZFS zvol cannot move. Anything else is stopped and started on the destination
 
-### Coming (Phase 6)
-- Distributed storage via Ceph RBD
-- Cross-node volume replication
-- Automatic volume sync
+### Storage
+- Replica placement and rebuild copy local files to other nodes
+- Ceph RBD is optional (`storage.backend = "rbd"`, `rbd` on PATH)
+- ZFS zvols are optional and local (`storage.backend = "zfs"`, `zfs` on PATH, `storage.zfs_pool`). They do not migrate or fail over
 
 ## See Also
 - [GRAPHICS_CONSOLE.md](GRAPHICS_CONSOLE.md) - VGA console for ISO installers

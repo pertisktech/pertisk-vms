@@ -319,7 +319,7 @@ impl ChVmConfig {
         let disks: Vec<ChDisk> = ordered
             .into_iter()
             .map(|disk| ChDisk {
-                path: disk.path.display().to_string(),
+                path: pertisk_types::guest_disk_path(&disk.path).display().to_string(),
                 readonly: disk.readonly || disk.cdrom,
                 direct: false,
             })

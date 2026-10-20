@@ -232,7 +232,7 @@ type CreateVolumeRequest struct {
 	SizeBytes uint64 `json:"size_bytes"`
 	Format    string `json:"format,omitempty"`
 	Replicas  *int   `json:"replicas,omitempty"`
-	// replica (local file) or rbd (Ceph). Empty uses the host default.
+	// replica (local file), rbd (Ceph), or zfs (local zvol). Empty uses the host default.
 	Backend string `json:"backend,omitempty"`
 }
 

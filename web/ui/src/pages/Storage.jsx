@@ -197,13 +197,17 @@ export default function Storage() {
                       </td>
                       <td className="mono-inline muted">{v.format}</td>
                       <td className="mono-inline muted">{formatBytes(v.size_bytes)}</td>
-                      <td className="mono-inline muted">{v.backend === 'rbd' ? 'rbd' : 'local'}</td>
+                      <td className="mono-inline muted">
+                        {v.backend === 'rbd' ? 'rbd' : v.backend === 'zfs' ? 'zfs' : 'local'}
+                      </td>
                       <td className="mono-inline muted">
                         {v.backend === 'rbd'
                           ? 'shared'
-                          : reps.length === 0
-                            ? 'this node'
-                            : reps.map((id) => nodeName(id)).join(', ')}
+                          : v.backend === 'zfs'
+                            ? 'this node (zvol)'
+                            : reps.length === 0
+                              ? 'this node'
+                              : reps.map((id) => nodeName(id)).join(', ')}
                       </td>
                       {canWrite && (
                         <td className="col-actions">
@@ -480,6 +484,9 @@ export default function Storage() {
                 <option value="replica">Local (this node)</option>
                 <option value="rbd" disabled={!inv.host?.rbd}>
                   Shared (Ceph RBD){inv.host?.rbd ? '' : ' — rbd CLI not found'}
+                </option>
+                <option value="zfs" disabled={!inv.host?.zfs}>
+                  ZFS zvol{inv.host?.zfs ? '' : ' — zfs CLI not found'}
                 </option>
               </select>
             </div>

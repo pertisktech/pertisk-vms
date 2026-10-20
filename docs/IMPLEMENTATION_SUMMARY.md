@@ -1,8 +1,8 @@
 # Pertisk-VM: Complete Implementation Summary
 
-## Project Status: v1.0 (MVP) + Phase 5 (Cluster) + Graphics Console
+## Project Status: phases 0–7 in tree
 
-This document summarizes the complete implementation of Pertisk Vms as of 2026-08-29.
+This document matches the code as of 2026-10-20. `docs/2-phases.txt` is the checklist.
 
 ## Architecture Overview
 
@@ -83,6 +83,7 @@ This document summarizes the complete implementation of Pertisk Vms as of 2026-0
 - [x] ISO library + CD-ROM attach
 - [x] Qcow2 snapshots + restore
 - [x] Linked clone from template
+- [x] Optional ZFS zvol (`zfs` CLI; stays on the node that created it)
 
 ### ✅ Phase 3: Network & Console
 - [x] Linux bridge (vmbr0)
@@ -107,8 +108,9 @@ This document summarizes the complete implementation of Pertisk Vms as of 2026-0
 - [x] Cluster membership (quorum calculation)
 - [x] Join/leave cluster (HTTP handshake)
 - [x] Quorum + fencing (kill VMs on lost quorum)
-- [x] HA restart (reschedule to healthy node)
-- [ ] Live migration (restart-migrate only today)
+- [x] HA restart (RBD disks only; local disks stay on the lost node)
+- [x] Restart migrate (stop on the source, start on the destination)
+- [x] QEMU live migration. Local replica disks are mirrored; a library ISO is copied with the guest
 - [x] Scheduler (least-loaded, CPU overcommit 8x, volume affinity)
 
 ### ✅ Phase 4.5: Graphics Console (NEW!)
@@ -118,6 +120,18 @@ This document summarizes the complete implementation of Pertisk Vms as of 2026-0
 - [x] CLI --graphics flag
 - [x] Web UI VNC viewer (noVNC-ready)
 - [x] Dual console support in daemon
+
+### Phase 6: Storage
+- [x] Local replica files (default) and optional Ceph RBD
+- [x] Replica placement and rebuild
+- [x] Snapshots: qcow2/raw files, or `rbd snap` for Ceph
+- [x] Clone: full copy, or a thin `rbd clone` when linked
+- [x] QEMU live migration for RBD and local replica disks, including a library CD-ROM. ZFS does not move
+
+### Phase 7: Installer image
+- [x] Debian trixie mkosi raw disk (`scripts/build-iso.sh` → `release/pertisk-node-<version>-<arch>.raw`)
+- [x] `pertisk-install`, KVM check, `scripts/flash.sh`
+- [ ] Proof on real hardware (flash USB, boot an Alpine guest)
 
 ## API Endpoints Summary
 
@@ -276,10 +290,8 @@ pertisk audit
 - **USB device assignment**
 - **VFIO device passthrough** (other than basic PCI hotplug)
 - **Multi-tenant networks** (overlay networks, EVPN)
-- **Distributed storage** (phase 6+)
-- **Snapshots on remote storage**
-- **Cross-node volume migration** (phase 6+)
-- **Advanced scheduling** (affinity rules, anti-affinity)
+- **Live migration of a ZFS zvol** (those disks stay on the node that created them)
+- **Advanced scheduling** (DRS, anti-affinity)
 
 ### Constraints
 - **No arbitrator** for 2-node clusters (can't recover from 50% split)
@@ -320,24 +332,12 @@ pertisk cluster status
 - Monitor quorum: Alert if `quorum = false`
 - Distributed storage (Ceph RBD) backend (Phase 6)
 
-## What's Next (Phase 6+)
+## What's Next
 
-### Phase 6: Distributed Storage
-- Ceph RBD backend support
-- Cross-node volume replication
-- Volume affinity scheduling improvements
-- Persistent snapshots
+- Hardware proof of the flashable node image
+- GPU sharing, DRS-style scheduling
 
-### Phase 7: Bare-Metal Installer ISO
-- Proxmox-style flash image
-- UEFI + Legacy boot support
-- Automated cluster bootstrap
-
-### Phase 8+: Advanced Features
-- GPU sharing
-- Advanced scheduling (DRS-style)
-- Multi-cloud federation
-- [x] Terraform provider (`terraform-provider-pertisk-vms/`, UI: Datacenter → Terraform)
+Terraform provider: `terraform-provider-pertisk-vms/`, UI at Datacenter → Terraform.
 
 ## Building & Testing
 
@@ -389,6 +389,5 @@ See `.instructions.md` in the workspace for development guidelines.
 
 ---
 
-**Status**: MVP + Cluster + Graphics ✅  
-**Last Updated**: 2026-08-29  
-**Version**: v1.0 (phases 0-4) + Phase 5 (cluster) + Phase 4.5 (graphics)
+**Status**: phases 0–4, 4.5, 5 (restart migrate), 6 (RBD + replica), 7 (image built, hardware proof open)  
+**Last Updated**: 2026-10-20

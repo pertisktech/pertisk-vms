@@ -74,7 +74,10 @@ impl Rbd {
     }
 
     pub fn remove_image(&self, name: &str) -> Result<()> {
-        self.run(&["rm", &format!("{}/{}", self.pool, name)])
+        let image = format!("{}/{}", self.pool, name);
+        // Snapshots block `rbd rm`. A clone that still depends on one will fail the rm below.
+        let _ = self.run(&["snap", "purge", &image]);
+        self.run(&["rm", &image])
     }
 
     pub fn snapshot_create(&self, name: &str, snap: &str) -> Result<()> {
@@ -89,6 +92,15 @@ impl Rbd {
         self.run(&[
             "snap",
             "rollback",
+            &format!("{}/{}@{}", self.pool, name, snap),
+        ])
+    }
+
+    /// Older Ceph requires a protected snapshot before `rbd clone`. Newer releases ignore it.
+    pub fn snapshot_protect(&self, name: &str, snap: &str) -> Result<()> {
+        self.run(&[
+            "snap",
+            "protect",
             &format!("{}/{}@{}", self.pool, name, snap),
         ])
     }

@@ -140,7 +140,7 @@ export function inventoryHcl(inv, { endpoint, username } = {}) {
         `name    = ${quote(vol.name)}`,
         `size    = ${quote(tfSize(vol.size_bytes))}`,
         vol.format ? `format  = ${quote(vol.format)}` : null,
-        `backend = ${quote(vol.backend === 'rbd' ? 'rbd' : 'replica')}`,
+        `backend = ${quote(vol.backend === 'rbd' || vol.backend === 'zfs' ? vol.backend : 'replica')}`,
       ]
         .filter(Boolean)
         .join('\n')

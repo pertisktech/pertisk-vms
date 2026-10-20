@@ -21,6 +21,10 @@ func TestVolumeBackend(t *testing.T) {
 	if err != nil || got != "rbd" {
 		t.Fatalf("rbd: %q %v", got, err)
 	}
+	got, err = volumeBackend(types.StringValue("zfs"))
+	if err != nil || got != "zfs" {
+		t.Fatalf("zfs: %q %v", got, err)
+	}
 	if _, err := volumeBackend(types.StringValue("ceph")); err == nil {
 		t.Fatal("aliases are not accepted; use replica or rbd")
 	}

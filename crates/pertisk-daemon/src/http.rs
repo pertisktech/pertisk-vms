@@ -12,7 +12,7 @@ use axum::extract::{
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json};
 use futures_util::{SinkExt, StreamExt};
 use pertisk_api::{
@@ -132,6 +132,9 @@ pub fn router(service: Service) -> Router {
         .route("/v1/peer/shutdown", post(peer_shutdown))
         .route("/v1/peer/restart", post(peer_restart))
         .route("/v1/peer/drop", post(peer_drop))
+        .route("/v1/peer/incoming", post(peer_incoming))
+        .route("/v1/peer/incoming/finish", post(peer_incoming_finish))
+        .route("/v1/peer/incoming/abort", post(peer_incoming_abort))
         .route("/v1/peer/forget", post(peer_forget))
         .route("/v1/peer/volumes/ensure", post(peer_volume_ensure))
         .route(
@@ -139,6 +142,7 @@ pub fn router(service: Service) -> Router {
             axum::routing::delete(peer_volume_delete),
         )
         .route("/v1/peer/volumes/{id}/stat", get(peer_volume_stat))
+        .route("/v1/peer/isos/{name}/stat", get(peer_iso_stat))
         .route_layer(middleware::from_fn_with_state(
             service.clone(),
             auth_middleware,
@@ -150,6 +154,7 @@ pub fn router(service: Service) -> Router {
             "/v1/peer/volumes/{id}/blob",
             get(peer_volume_blob_get).put(peer_volume_blob_put),
         )
+        .route("/v1/peer/isos/{name}", put(peer_iso_put))
         .route_layer(middleware::from_fn_with_state(
             service.clone(),
             auth_middleware,
@@ -905,7 +910,7 @@ async fn clone_volume(
 struct VolumeImportQuery {
     name: Option<String>,
     format: Option<String>,
-    /// `replica` (local files) or `rbd` (Ceph). Absent uses the host default.
+    /// `replica` (local files), `rbd` (Ceph), or `zfs` (local zvol). Absent uses the host default.
     backend: Option<String>,
 }
 
@@ -916,8 +921,9 @@ fn parse_storage_backend(raw: Option<&str>) -> Result<Option<StorageBackend>, Da
     match raw {
         "replica" | "local" => Ok(Some(StorageBackend::Replica)),
         "rbd" | "ceph" => Ok(Some(StorageBackend::Rbd)),
+        "zfs" => Ok(Some(StorageBackend::Zfs)),
         other => Err(pertisk_storage::StorageError::Message(format!(
-            "storage backend must be replica or rbd (got {other})"
+            "storage backend must be replica, rbd, or zfs (got {other})"
         ))
         .into()),
     }
@@ -1669,6 +1675,28 @@ async fn peer_drop(
     Ok(Json(json!({ "ok": true })))
 }
 
+async fn peer_incoming(
+    State(service): State<Service>,
+    Json(record): Json<VmRecord>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.apply_incoming(record).await?))
+}
+
+async fn peer_incoming_finish(
+    State(service): State<Service>,
+    Json(body): Json<crate::service::IncomingFinish>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(service.finish_incoming(body.id).await?))
+}
+
+async fn peer_incoming_abort(
+    State(service): State<Service>,
+    Json(body): Json<crate::service::IncomingFinish>,
+) -> Result<impl IntoResponse, DaemonError> {
+    service.abort_incoming(body.id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 async fn peer_forget(
     State(service): State<Service>,
     Json(id): Json<NodeId>,
@@ -1690,6 +1718,51 @@ async fn peer_volume_delete(
 ) -> Result<impl IntoResponse, DaemonError> {
     service.apply_delete_replica(id)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn peer_iso_stat(
+    State(service): State<Service>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, DaemonError> {
+    let (exists, size) = service.iso_stat(&name);
+    Ok(Json(json!({ "exists": exists, "size": size })))
+}
+
+async fn peer_iso_put(
+    State(service): State<Service>,
+    Path(name): Path<String>,
+    body: Body,
+) -> Result<impl IntoResponse, DaemonError> {
+    if name.contains('/') || name.contains("..") || name.is_empty() {
+        return Err(pertisk_storage::StorageError::Message("invalid iso name".into()).into());
+    }
+    let tmp = service.upload_tmp_path("peer-iso", "iso")?;
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(pertisk_storage::StorageError::Io)?;
+    let mut stream = body.into_data_stream();
+    let write = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| std::io::Error::other(err.to_string()))?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(pertisk_storage::StorageError::Io)?;
+        }
+        file.flush()
+            .await
+            .map_err(pertisk_storage::StorageError::Io)?;
+        Ok::<(), DaemonError>(())
+    }
+    .await;
+    if let Err(err) = write {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(err);
+    }
+    drop(file);
+    let result = service.accept_iso_file(&name, &tmp);
+    let _ = tokio::fs::remove_file(&tmp).await;
+    result?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn peer_volume_stat(

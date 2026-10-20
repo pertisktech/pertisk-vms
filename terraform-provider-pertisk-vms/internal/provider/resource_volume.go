@@ -46,7 +46,7 @@ func (r *volumeResource) Metadata(_ context.Context, req resource.MetadataReques
 
 func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "A disk volume (raw or qcow2). `backend` is `replica` (local file) or `rbd` (Ceph). Growing `size` resizes in place; shrinking is rejected by the API.",
+		MarkdownDescription: "A disk volume (raw or qcow2). `backend` is `replica` (local file), `rbd` (Ceph), or `zfs` (local zvol). Growing `size` resizes in place; shrinking is rejected by the API.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -78,7 +78,7 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"replicas": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "Copy count for a local volume. Unset uses the host default (1). Ignored for `rbd`.",
+				MarkdownDescription: "Copy count for a local file volume. Unset uses the host default (1). Ignored for `rbd` and `zfs`.",
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
@@ -89,7 +89,7 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"backend": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				MarkdownDescription: "`replica` keeps the disk on this node. `rbd` is one Ceph image and is required for HA restart. Unset uses the host default. Changing it replaces the volume.",
+				MarkdownDescription: "`replica` keeps a file on this node. `zfs` is a local zvol and stays on this node. `rbd` is one Ceph image and is required for HA restart. Unset uses the host default. Changing it replaces the volume.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 					stringplanmodifier.UseStateForUnknown(),
@@ -217,10 +217,10 @@ func volumeBackend(v types.String) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(v.ValueString())) {
 	case "":
 		return "", nil
-	case "replica", "rbd":
+	case "replica", "rbd", "zfs":
 		return strings.ToLower(strings.TrimSpace(v.ValueString())), nil
 	default:
-		return "", fmt.Errorf("backend must be \"replica\" (local file) or \"rbd\" (Ceph)")
+		return "", fmt.Errorf("backend must be \"replica\" (local file), \"rbd\" (Ceph), or \"zfs\" (local zvol)")
 	}
 }
 

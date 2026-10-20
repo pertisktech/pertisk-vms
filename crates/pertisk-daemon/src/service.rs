@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use pertisk_net::{NetError, NetworkPool};
-use pertisk_storage::{Rbd, StorageError, VolumePool, allocated_bytes};
+use pertisk_storage::{Rbd, StorageError, VolumePool, Zfs, allocated_bytes};
 use pertisk_types::{
     AddRepositoryRequest, AptActionResult, AptRepository, AttachDiskRequest, AttachIsoRequest,
     AttachNicRequest, CloneVmRequest, CloneVolumeRequest, CloudInitConfig, CloudInitIsoRequest,
@@ -110,6 +110,8 @@ pub struct Service {
     metrics: Arc<MetricsCache>,
     /// Last-known online flag per node (for `node.offline` edge detection).
     node_online: Arc<Mutex<HashMap<NodeId, bool>>>,
+    /// Destination QEMU processes waiting for a live migration to finish.
+    incoming: Arc<Mutex<HashMap<VmId, VmRecord>>>,
 }
 
 impl Service {
@@ -153,6 +155,7 @@ impl Service {
             restore_on_boot: Arc::new(Mutex::new(HashSet::new())),
             metrics: Arc::new(MetricsCache::new()),
             node_online: Arc::new(Mutex::new(HashMap::new())),
+            incoming: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -780,10 +783,11 @@ impl Service {
                 continue;
             };
             let vol = self.volumes.get_volume(volume_id)?;
-            if vol.backend == StorageBackend::Rbd {
-                return Err(pertisk_types::TypesError::InvalidSpec(
-                    "RBD volumes cannot be backed up with the local export path yet".into(),
-                )
+            if vol.backend.external() {
+                return Err(pertisk_types::TypesError::InvalidSpec(format!(
+                    "{} volumes cannot be backed up with the local export path yet",
+                    vol.backend
+                ))
                 .into());
             }
             if !vol.path.is_file() {
@@ -1670,6 +1674,10 @@ impl Service {
             return Ok(record);
         }
         self.ensure_volumes_on_node(&record, dest).await?;
+        if self.can_live_migrate(&record) {
+            self.ensure_isos_on_node(&record, dest).await?;
+            return self.live_migrate(&record, dest).await;
+        }
         let started = self.peer_run(dest, record.clone()).await?;
         if src == self.cluster.self_id() {
             let _ = self.apply_drop(&record).await;
@@ -1682,6 +1690,216 @@ impl Service {
         self.cluster.bump()?;
         self.replicate().await;
         Ok(record)
+    }
+
+    /// Running QEMU guest. Ceph disks are shared. Local replica files are mirrored.
+    /// A CD-ROM is included when it is an ISO in the library. ZFS zvols stay put.
+    fn can_live_migrate(&self, vm: &VmRecord) -> bool {
+        if vm.state != VmState::Running || self.driver() != DriverKind::Qemu {
+            return false;
+        }
+        let mut data_disks = 0u32;
+        for disk in &vm.spec.disks {
+            if disk.cdrom {
+                let Some(name) = disk.iso_name.as_deref() else {
+                    return false;
+                };
+                if self.volumes.get_iso(name).is_err() {
+                    return false;
+                }
+                continue;
+            }
+            data_disks += 1;
+            let Some(id) = disk.volume_id else {
+                return false;
+            };
+            let Ok(vol) = self.volumes.get_volume(id) else {
+                return false;
+            };
+            if !matches!(vol.backend, StorageBackend::Rbd | StorageBackend::Replica) {
+                return false;
+            }
+        }
+        data_disks > 0
+    }
+
+    async fn live_migrate(
+        &self,
+        record: &VmRecord,
+        dest: pertisk_types::NodeId,
+    ) -> Result<VmRecord, DaemonError> {
+        let prepared: IncomingListen = self
+            .peer_json_timeout(dest, "/v1/peer/incoming", record, std::time::Duration::from_secs(45))
+            .await
+            .map_err(|err| DaemonError::Peer(format!("live migration listen: {err}")))?;
+        let url = self
+            .cluster
+            .member_url(dest)
+            .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
+        let host = migrate_host(&url)?;
+        let uri = if host.contains(':') {
+            format!("tcp:[{host}]:{}", prepared.port)
+        } else {
+            format!("tcp:{host}:{}", prepared.port)
+        };
+        let boot_spec = self.prefer_disk_boot_spec(&self.iso_linux_boot_spec(&record.spec)?);
+        let expected = pertisk_vmm::mirror_exports(&boot_spec);
+        if expected != prepared.exports {
+            let _: Result<serde_json::Value, _> = self
+                .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                .await;
+            return Err(DaemonError::Peer(
+                "live migration drive layout does not match the running guest; stop and start it, then migrate again".into(),
+            ));
+        }
+        if let Some(nbd_port) = prepared.nbd_port {
+            tracing::info!(vm = %record.id, nbd_port, drives = expected.len(), "mirroring local disks");
+            if let Err(err) = self
+                .vmm
+                .mirror_start(record, &host, nbd_port, &expected)
+                .await
+            {
+                let _ = self.vmm.cancel_mirrors(record, &expected).await;
+                let _: Result<serde_json::Value, _> = self
+                    .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                    .await;
+                return Err(DaemonError::Peer(format!(
+                    "disk mirror failed; guest is still on the source: {err}"
+                )));
+            }
+            if let Err(err) = self
+                .vmm
+                .wait_mirrors(record, &expected, std::time::Duration::from_secs(600))
+                .await
+            {
+                let _ = self.vmm.cancel_mirrors(record, &expected).await;
+                let _: Result<serde_json::Value, _> = self
+                    .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                    .await;
+                return Err(DaemonError::Peer(format!(
+                    "disk mirror failed; guest is still on the source: {err}"
+                )));
+            }
+        }
+        tracing::info!(vm = %record.id, %uri, "live migration");
+        if let Err(err) = self.vmm.migrate_to(record, &uri).await {
+            let _ = self.vmm.cancel_mirrors(record, &expected).await;
+            let _: Result<serde_json::Value, _> = self
+                .peer_json(dest, "/v1/peer/incoming/abort", &IncomingFinish { id: record.id })
+                .await;
+            return Err(DaemonError::Peer(format!(
+                "live migration failed; guest is still on the source: {err}"
+            )));
+        }
+        if !expected.is_empty()
+            && let Err(err) = self.vmm.complete_mirrors(record, &expected).await
+        {
+            tracing::warn!(vm = %record.id, %err, "block-job-complete after migration");
+        }
+        let mut started: VmRecord = self
+            .peer_json(dest, "/v1/peer/incoming/finish", &IncomingFinish { id: record.id })
+            .await
+            .map_err(|err| DaemonError::Peer(format!("live migration landed but resume failed: {err}")))?;
+        if record.node_id.unwrap_or_else(|| self.cluster.self_id()) == self.cluster.self_id() {
+            let _ = self.apply_drop(record).await;
+        } else if let Some(src) = record.node_id {
+            let _ = self.peer_drop(src, record).await;
+        }
+        started.node_id = Some(dest);
+        started.state = VmState::Running;
+        self.store.upsert(started.clone())?;
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(started)
+    }
+
+    pub async fn apply_incoming(&self, mut record: VmRecord) -> Result<IncomingListen, DaemonError> {
+        if self.driver() != DriverKind::Qemu {
+            return Err(DaemonError::Peer(
+                "live migration requires the qemu driver".into(),
+            ));
+        }
+        self.localize_disks(&mut record)?;
+        for nic in &record.spec.nets {
+            self.networks.ensure_host_links(nic)?;
+        }
+        let port = free_tcp_port()?;
+        let boot_spec = self.prefer_disk_boot_spec(&self.iso_linux_boot_spec(&record.spec)?);
+        let created = self
+            .vmm
+            .create_incoming(record.id, &boot_spec, port)
+            .await?;
+        record.pid = created.pid;
+        record.api_socket = created.api_socket;
+        if created.serial_log.is_some() {
+            record.serial_log = created.serial_log;
+        }
+        if created.console_socket.is_some() {
+            record.console_socket = created.console_socket;
+        }
+        if created.graphics_socket.is_some() {
+            record.graphics_socket = created.graphics_socket;
+        }
+        let exports = pertisk_vmm::mirror_exports(&boot_spec);
+        let nbd_port = if exports.is_empty() {
+            None
+        } else {
+            let nbd_port = free_tcp_port()?;
+            if let Err(err) = self.vmm.nbd_serve(&record, nbd_port, &exports).await {
+                let _ = self.vmm.destroy(&record).await;
+                return Err(DaemonError::Peer(format!("nbd listen: {err}")));
+            }
+            Some(nbd_port)
+        };
+        record.node_id = Some(self.cluster.self_id());
+        self.incoming
+            .lock()
+            .expect("incoming")
+            .insert(record.id, record);
+        Ok(IncomingListen {
+            port,
+            nbd_port,
+            exports,
+        })
+    }
+
+    pub async fn finish_incoming(&self, id: VmId) -> Result<VmRecord, DaemonError> {
+        let record = self
+            .incoming
+            .lock()
+            .expect("incoming")
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| DaemonError::Peer(format!("no incoming migration for {id}")))?;
+        let _ = self.vmm.nbd_stop(&record).await;
+        if let Err(err) = self.vmm.start(&record).await {
+            self.incoming.lock().expect("incoming").remove(&id);
+            let _ = self.vmm.destroy(&record).await;
+            return Err(err.into());
+        }
+        let mut record = self
+            .incoming
+            .lock()
+            .expect("incoming")
+            .remove(&id)
+            .unwrap_or(record);
+        record.state = VmState::Running;
+        record.node_id = Some(self.cluster.self_id());
+        record.last_error = None;
+        self.store.upsert(record.clone())?;
+        self.attach_console(&record).await;
+        self.spawn_exit_watch(&record);
+        self.cluster.bump()?;
+        self.replicate().await;
+        Ok(record)
+    }
+
+    pub async fn abort_incoming(&self, id: VmId) -> Result<(), DaemonError> {
+        let Some(record) = self.incoming.lock().expect("incoming").remove(&id) else {
+            return Ok(());
+        };
+        let _ = self.vmm.destroy(&record).await;
+        Ok(())
     }
 
     pub fn list_volumes(&self) -> Result<Vec<VolumeRecord>, DaemonError> {
@@ -1723,6 +1941,31 @@ impl Service {
             self.replicate().await;
             return Ok(record);
         }
+        if backend == StorageBackend::Zfs {
+            if !Zfs::available() {
+                return Err(DaemonError::Peer(
+                    "ZFS volume requested but the zfs CLI was not found".into(),
+                ));
+            }
+            let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+            zfs.create_zvol(&req.name, req.size_bytes)?;
+            let record = VolumeRecord {
+                id: VolumeId::new(),
+                name: req.name.clone(),
+                format: VolumeFormat::Raw,
+                size_bytes: req.size_bytes,
+                path: zfs.image_path(&req.name).into(),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![self.cluster.self_id()],
+                replica_count: 1,
+                backend: StorageBackend::Zfs,
+            };
+            let record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
         self.require_storage_bytes(0, "create volume")?;
         let mut record = self.volumes.create_volume(req.clone())?;
         let online = self.cluster.online_ids();
@@ -1757,6 +2000,11 @@ impl Service {
                 "Ceph RBD volume requested but the rbd CLI was not found".into(),
             ));
         }
+        if backend == StorageBackend::Zfs && !Zfs::available() {
+            return Err(DaemonError::Peer(
+                "ZFS volume requested but the zfs CLI was not found".into(),
+            ));
+        }
         let need = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
         self.require_storage_bytes(need, "import volume")?;
         let mut record = self.volumes.import_volume(&source, name, format)?;
@@ -1776,6 +2024,28 @@ impl Service {
             record.format = VolumeFormat::Raw;
             record.backend = StorageBackend::Rbd;
             record.replicas.clear();
+            record.replica_count = 1;
+            record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
+        if backend == StorageBackend::Zfs {
+            let (raw, drop_raw) = flatten_for_rbd(&record.path, record.format)?;
+            let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+            let imported = zfs.import_raw(&raw, &record.name, record.size_bytes);
+            if drop_raw {
+                let _ = std::fs::remove_file(&raw);
+            }
+            if let Err(err) = imported {
+                let _ = self.volumes.delete_volume(record.id);
+                return Err(err.into());
+            }
+            let _ = std::fs::remove_file(&record.path);
+            record.path = PathBuf::from(zfs.image_path(&record.name));
+            record.format = VolumeFormat::Raw;
+            record.backend = StorageBackend::Zfs;
+            record.replicas = vec![self.cluster.self_id()];
             record.replica_count = 1;
             record = self.volumes.put_record(record)?;
             self.cluster.bump()?;
@@ -1808,6 +2078,12 @@ impl Service {
         if record.backend == StorageBackend::Rbd && Rbd::available() {
             let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
             let _ = rbd.remove_image(&record.name);
+        }
+        if record.backend == StorageBackend::Zfs && Zfs::available() {
+            if let Ok(dataset) = Zfs::dataset_from_path(&record.path) {
+                let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+                let _ = zfs.destroy_dataset(&dataset);
+            }
         }
         self.volumes.delete_volume(id)?;
         self.cluster.bump()?;
@@ -1846,6 +2122,31 @@ impl Service {
             self.replicate().await;
             return Ok(record);
         }
+        if current.backend == StorageBackend::Zfs {
+            if req.size_bytes < current.size_bytes {
+                return Err(StorageError::CannotShrink {
+                    from: current.size_bytes,
+                    to: req.size_bytes,
+                }
+                .into());
+            }
+            if req.size_bytes > current.size_bytes {
+                if !Zfs::available() {
+                    return Err(DaemonError::Peer(
+                        "ZFS resize requested but the zfs CLI was not found".into(),
+                    ));
+                }
+                let dataset = Zfs::dataset_from_path(&current.path)?;
+                let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+                zfs.resize_dataset(&dataset, req.size_bytes)?;
+            }
+            let mut record = current;
+            record.size_bytes = req.size_bytes;
+            let record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
         let record = self.volumes.resize(id, req)?;
         self.sync_volume_replicas(&record).await;
         self.cluster.bump()?;
@@ -1868,7 +2169,19 @@ impl Service {
             }
             let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
             let name = req.name.clone();
-            rbd.copy_image(&source.name, &name)?;
+            if req.linked {
+                let snap = rbd_clone_snap(&name);
+                self.volumes.snapshot(
+                    id,
+                    SnapshotRequest {
+                        name: snap.clone(),
+                    },
+                )?;
+                let _ = rbd.snapshot_protect(&source.name, &snap);
+                rbd.clone_image(&source.name, &snap, &name)?;
+            } else {
+                rbd.copy_image(&source.name, &name)?;
+            }
             let record = VolumeRecord {
                 id: VolumeId::new(),
                 name,
@@ -1880,6 +2193,44 @@ impl Service {
                 replicas: vec![],
                 replica_count: 1,
                 backend: StorageBackend::Rbd,
+            };
+            let record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
+        if source.backend == StorageBackend::Zfs {
+            if !Zfs::available() {
+                return Err(DaemonError::Peer(
+                    "ZFS clone requested but the zfs CLI was not found".into(),
+                ));
+            }
+            let zfs = Zfs::new(self.config.storage.zfs_pool.clone());
+            let dataset = Zfs::dataset_from_path(&source.path)?;
+            let name = req.name.clone();
+            if req.linked {
+                let snap = rbd_clone_snap(&name);
+                self.volumes.snapshot(
+                    id,
+                    SnapshotRequest {
+                        name: snap.clone(),
+                    },
+                )?;
+                zfs.clone_dataset(&dataset, &snap, &name)?;
+            } else {
+                zfs.copy_dataset(&dataset, &name)?;
+            }
+            let record = VolumeRecord {
+                id: VolumeId::new(),
+                name,
+                format: VolumeFormat::Raw,
+                size_bytes: source.size_bytes,
+                path: PathBuf::from(zfs.image_path(&req.name)),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![self.cluster.self_id()],
+                replica_count: 1,
+                backend: StorageBackend::Zfs,
             };
             let record = self.volumes.put_record(record)?;
             self.cluster.bump()?;
@@ -1970,7 +2321,7 @@ impl Service {
             return Err(DaemonError::VolumeBusy(req.volume_id));
         }
         let volume = self.volumes.get_volume(req.volume_id)?;
-        let path = if volume.backend == StorageBackend::Rbd {
+        let path = if volume.backend.external() {
             volume.path.clone()
         } else {
             self.volumes.local_path(volume.id, volume.format)
@@ -2748,7 +3099,8 @@ impl Service {
                 let Ok(vol) = self.volumes.get_volume(id) else {
                     continue;
                 };
-                if vol.backend == StorageBackend::Rbd {
+                if vol.backend.external() {
+                    disk.path = vol.path;
                     continue;
                 }
                 disk.path = self.volumes.local_path(vol.id, vol.format);
@@ -3464,6 +3816,34 @@ impl Service {
         Ok(())
     }
 
+    async fn peer_json_timeout<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        dest: pertisk_types::NodeId,
+        path: &str,
+        body: &B,
+        timeout: std::time::Duration,
+    ) -> Result<T, DaemonError> {
+        let url = self
+            .cluster
+            .member_url(dest)
+            .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
+        let response = self
+            .http
+            .post(format!("{}{path}", url.trim_end_matches('/')))
+            .timeout(timeout)
+            .header("x-pertisk-peer", self.cluster.secret())
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(DaemonError::Peer(format!("{status}: {text}")));
+        }
+        serde_json::from_str(&text).map_err(|err| DaemonError::Peer(err.to_string()))
+    }
+
     async fn peer_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
         &self,
         dest: pertisk_types::NodeId,
@@ -3557,6 +3937,130 @@ impl Service {
         }
     }
 
+    /// Copy library ISOs the guest still has attached, so a CD-ROM opens on the destination.
+    async fn ensure_isos_on_node(
+        &self,
+        vm: &VmRecord,
+        dest: pertisk_types::NodeId,
+    ) -> Result<(), DaemonError> {
+        if dest == self.cluster.self_id() {
+            return Ok(());
+        }
+        for disk in &vm.spec.disks {
+            if !disk.cdrom {
+                continue;
+            }
+            let Some(name) = disk.iso_name.as_deref() else {
+                continue;
+            };
+            let iso = self.volumes.get_iso(name)?;
+            if !iso.path.is_file() {
+                return Err(DaemonError::Peer(format!("iso {name} is not a local file")));
+            }
+            let remote = self.peer_iso_stat(dest, name).await?;
+            if remote.0 && remote.1 == iso.size_bytes {
+                continue;
+            }
+            self.peer_put_iso(dest, name, &iso.path, iso.size_bytes)
+                .await
+                .map_err(|err| DaemonError::Peer(format!("copy iso {name} to {dest}: {err}")))?;
+        }
+        Ok(())
+    }
+
+    async fn peer_iso_stat(
+        &self,
+        dest: pertisk_types::NodeId,
+        name: &str,
+    ) -> Result<(bool, u64), DaemonError> {
+        let url = self
+            .cluster
+            .member_url(dest)
+            .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
+        let response = self
+            .http
+            .get(format!(
+                "{}/v1/peer/isos/{}/stat",
+                url.trim_end_matches('/'),
+                urlencoding(name)
+            ))
+            .header("x-pertisk-peer", self.cluster.secret())
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(DaemonError::Peer(format!("{}", response.status())));
+        }
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        Ok((
+            value
+                .get("exists")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            value.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+        ))
+    }
+
+    async fn peer_put_iso(
+        &self,
+        dest: pertisk_types::NodeId,
+        name: &str,
+        path: &Path,
+        size: u64,
+    ) -> Result<(), DaemonError> {
+        let file = tokio::fs::File::open(path).await?;
+        let url = self
+            .cluster
+            .member_url(dest)
+            .ok_or_else(|| DaemonError::Peer(format!("unknown node {dest}")))?;
+        let response = self
+            .http
+            .put(format!(
+                "{}/v1/peer/isos/{}",
+                url.trim_end_matches('/'),
+                urlencoding(name)
+            ))
+            .header("x-pertisk-peer", self.cluster.secret())
+            .header("content-type", "application/octet-stream")
+            .header("content-length", size)
+            .body(file)
+            .timeout(std::time::Duration::from_secs(30 * 60))
+            .send()
+            .await
+            .map_err(|err| DaemonError::Peer(err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(DaemonError::Peer(format!(
+                "{}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn iso_stat(&self, name: &str) -> (bool, u64) {
+        match self.volumes.get_iso(name) {
+            Ok(iso) if iso.path.is_file() => (true, iso.size_bytes),
+            _ => (false, 0),
+        }
+    }
+
+    pub fn accept_iso_file(&self, name: &str, src: &Path) -> Result<(), DaemonError> {
+        if let Ok(existing) = self.volumes.get_iso(name) {
+            let size = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+            if existing.size_bytes == size {
+                return Ok(());
+            }
+            self.volumes.delete_iso(name)?;
+        }
+        self.volumes.import_iso(src, Some(name.to_string()))?;
+        Ok(())
+    }
+
     /// Make sure `dest` has disk files before peer start/migrate (even when replica_count=1).
     async fn ensure_volumes_on_node(
         &self,
@@ -3575,6 +4079,12 @@ impl Service {
             };
             if vol.backend == StorageBackend::Rbd {
                 continue;
+            }
+            if vol.backend == StorageBackend::Zfs {
+                return Err(DaemonError::Peer(format!(
+                    "volume {} is a ZFS zvol on this node and cannot move",
+                    vol.name
+                )));
             }
             if !vol.replicas.contains(&dest) {
                 vol.replicas.push(dest);
@@ -3612,7 +4122,7 @@ impl Service {
             let Ok(mut vol) = self.volumes.get_volume(id) else {
                 continue;
             };
-            if vol.backend == StorageBackend::Rbd {
+            if vol.backend.external() {
                 continue;
             }
             if self.volumes.has_local(vol.id, vol.format) {
@@ -3667,7 +4177,7 @@ impl Service {
     }
 
     async fn sync_volume_replicas(&self, record: &VolumeRecord) {
-        if record.backend == StorageBackend::Rbd {
+        if record.backend.external() {
             return;
         }
         if !self.volumes.has_local(record.id, record.format) {
@@ -3716,7 +4226,7 @@ impl Service {
         };
         let online = self.cluster.online_ids();
         for mut vol in vols {
-            if vol.backend == StorageBackend::Rbd {
+            if vol.backend.external() {
                 continue;
             }
             let attached = !self.volume_users(vol.id).unwrap_or_default().is_empty()
@@ -3761,7 +4271,7 @@ impl Service {
         id: VolumeId,
     ) -> Result<(), DaemonError> {
         let rec = self.volumes.get_volume(id)?;
-        if rec.backend == StorageBackend::Rbd {
+        if rec.backend.external() {
             return Ok(());
         }
         let path = rec.path.clone();
@@ -3975,6 +4485,74 @@ pub(crate) async fn write_sparse_chunk(
         off = end;
     }
     Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct IncomingListen {
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nbd_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exports: Vec<pertisk_vmm::MirrorExport>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct IncomingFinish {
+    pub id: VmId,
+}
+
+fn urlencoding(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn free_tcp_port() -> Result<u16, DaemonError> {
+    let listener = std::net::TcpListener::bind("0.0.0.0:0")
+        .map_err(|err| DaemonError::Peer(format!("migration port: {err}")))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|err| DaemonError::Peer(err.to_string()))
+}
+
+fn migrate_host(url: &str) -> Result<String, DaemonError> {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    let host = if let Some(end) = hostport.find(']') {
+        hostport.get(1..end).unwrap_or("").to_string()
+    } else {
+        hostport.split(':').next().unwrap_or("").to_string()
+    };
+    if host.is_empty() {
+        return Err(DaemonError::Peer(format!("no host in peer url {url}")));
+    }
+    Ok(host)
+}
+
+/// Ceph and ZFS snapshot names are a short token. A linked clone keeps this snap.
+fn rbd_clone_snap(dest: &str) -> String {
+    let token: String = dest
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(40)
+        .collect();
+    if token.is_empty() {
+        "clone".into()
+    } else {
+        format!("clone-{token}")
+    }
 }
 
 fn replica_want(online: usize, configured: u8) -> u8 {

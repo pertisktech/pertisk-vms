@@ -12,7 +12,7 @@ use pertisk_types::{DriverKind, VmId, VmRecord, VmSpec, VmState};
 
 pub use cloud_hypervisor::CloudHypervisorDriver;
 pub use mock::MockDriver;
-pub use qemu::QemuDriver;
+pub use qemu::{MirrorExport, QemuDriver, mirror_exports};
 pub use qga::{
     GuestAddrs, addrs_by_mac as qga_addrs_by_mac, ipv4_by_mac as qga_ipv4_by_mac,
     ssh_add_authorized_keys as qga_ssh_add_authorized_keys,
@@ -80,6 +80,106 @@ impl VmmBackend {
                 let binary = qemu_system_binary().ok_or(VmmError::QemuBinaryMissing)?;
                 Ok(Self::Qemu(QemuDriver::new(binary, run_dir)))
             }
+        }
+    }
+
+    pub async fn create_incoming(
+        &self,
+        id: VmId,
+        spec: &VmSpec,
+        port: u16,
+    ) -> Result<CreateResult> {
+        match self {
+            Self::Qemu(driver) => driver.create_incoming(id, spec, port).await,
+            _ => Err(VmmError::Message(
+                "live migration requires the qemu driver".into(),
+            )),
+        }
+    }
+
+    pub async fn nbd_serve(
+        &self,
+        record: &VmRecord,
+        port: u16,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.nbd_serve(record, port, exports).await,
+            _ => Err(VmmError::Message(
+                "live migration requires the qemu driver".into(),
+            )),
+        }
+    }
+
+    pub async fn nbd_stop(&self, record: &VmRecord) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.nbd_stop(record).await,
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn mirror_start(
+        &self,
+        record: &VmRecord,
+        host: &str,
+        port: u16,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.mirror_start(record, host, port, exports).await,
+            _ => Err(VmmError::Message(
+                "live migration requires the qemu driver".into(),
+            )),
+        }
+    }
+
+    pub async fn wait_mirrors(
+        &self,
+        record: &VmRecord,
+        exports: &[MirrorExport],
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.wait_mirrors(record, exports, timeout).await,
+            _ => Err(VmmError::Message(
+                "live migration requires the qemu driver".into(),
+            )),
+        }
+    }
+
+    pub async fn complete_mirrors(
+        &self,
+        record: &VmRecord,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.complete_mirrors(record, exports).await,
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn cancel_mirrors(
+        &self,
+        record: &VmRecord,
+        exports: &[MirrorExport],
+    ) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => driver.cancel_mirrors(record, exports).await,
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn migrate_to(&self, record: &VmRecord, uri: &str) -> Result<()> {
+        match self {
+            Self::Qemu(driver) => {
+                driver.migrate_to(record, uri).await?;
+                driver
+                    .wait_migrated(record, std::time::Duration::from_secs(180))
+                    .await
+            }
+            _ => Err(VmmError::Message(
+                "live migration requires the qemu driver".into(),
+            )),
         }
     }
 

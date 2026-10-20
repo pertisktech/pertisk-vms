@@ -231,7 +231,7 @@ func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *r
 						},
 						"backend": schema.StringAttribute{
 							Optional:            true,
-							MarkdownDescription: "Storage for a disk created from `size`: `replica` (local) or `rbd` (Ceph). Unset uses the host default. Ignored when `volume_id` is set.",
+							MarkdownDescription: "Storage for a disk created from `size`: `replica` (local file), `rbd` (Ceph), or `zfs` (local zvol). Unset uses the host default. Ignored when `volume_id` is set.",
 						},
 					},
 				},
