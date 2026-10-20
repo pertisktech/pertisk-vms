@@ -50,9 +50,10 @@ function Branch({ open, onToggle, icon, label, title, to, status, badge, depth, 
       title={titleText}
     >
       <span
-        className="tree-twisty"
+        className={`tree-twisty${open && !leaf ? ' open' : ''}`}
         role={leaf ? undefined : 'button'}
         aria-label={leaf ? undefined : open ? 'Collapse' : 'Expand'}
+        aria-expanded={leaf ? undefined : open}
         onClick={
           leaf
             ? undefined
@@ -63,7 +64,7 @@ function Branch({ open, onToggle, icon, label, title, to, status, badge, depth, 
               }
         }
       >
-        {!leaf && <Icon name={open ? 'chevron-down' : 'chevron-right'} size={12} />}
+        {!leaf && <Icon name="chevron-right" size={14} />}
       </span>
       <Icon name={icon} size={14} className="tree-icon" />
       <span className="tree-label">{label}</span>
