@@ -36,12 +36,40 @@ impl Rbd {
     }
 
     pub fn create_image(&self, name: &str, size_bytes: u64) -> Result<()> {
-        let mib = size_bytes.div_ceil(1024 * 1024).max(1);
+        let mib = size_mib(size_bytes);
         self.run(&[
             "create",
             &format!("{}/{}", self.pool, name),
             "--size",
-            &mib.to_string(),
+            &mib,
+        ])
+    }
+
+    /// Import a raw file as a new image. The caller converts qcow2 first.
+    pub fn import_file(&self, source: &Path, name: &str) -> Result<()> {
+        self.run(&[
+            "import",
+            &source.display().to_string(),
+            &format!("{}/{}", self.pool, name),
+        ])
+    }
+
+    /// Deep-copy one image to another name in the same pool.
+    pub fn copy_image(&self, src: &str, dest: &str) -> Result<()> {
+        self.run(&[
+            "copy",
+            &format!("{}/{}", self.pool, src),
+            &format!("{}/{}", self.pool, dest),
+        ])
+    }
+
+    pub fn resize(&self, name: &str, size_bytes: u64) -> Result<()> {
+        let mib = size_mib(size_bytes);
+        self.run(&[
+            "resize",
+            &format!("{}/{}", self.pool, name),
+            "--size",
+            &mib,
         ])
     }
 
@@ -89,6 +117,10 @@ impl Rbd {
             )))
         }
     }
+}
+
+fn size_mib(size_bytes: u64) -> String {
+    size_bytes.div_ceil(1024 * 1024).max(1).to_string()
 }
 
 #[cfg(test)]

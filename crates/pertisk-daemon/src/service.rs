@@ -1742,16 +1742,46 @@ impl Service {
     }
 
     /// Streamed qcow2/raw image → inventory volume (template for clone).
+    /// `backend` overrides the host default. `None` keeps the host default.
     pub async fn import_volume(
         &self,
         name: String,
         format: VolumeFormat,
         source: std::path::PathBuf,
+        backend: Option<StorageBackend>,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_quorum()?;
+        let backend = backend.unwrap_or(self.config.storage.backend);
+        if backend == StorageBackend::Rbd && !Rbd::available() {
+            return Err(DaemonError::Peer(
+                "Ceph RBD volume requested but the rbd CLI was not found".into(),
+            ));
+        }
         let need = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
         self.require_storage_bytes(need, "import volume")?;
         let mut record = self.volumes.import_volume(&source, name, format)?;
+        if backend == StorageBackend::Rbd {
+            let (raw, drop_raw) = flatten_for_rbd(&record.path, record.format)?;
+            let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
+            let imported = rbd.import_file(&raw, &record.name);
+            if drop_raw {
+                let _ = std::fs::remove_file(&raw);
+            }
+            if let Err(err) = imported {
+                let _ = self.volumes.delete_volume(record.id);
+                return Err(err.into());
+            }
+            let _ = std::fs::remove_file(&record.path);
+            record.path = PathBuf::from(rbd.image_path(&record.name));
+            record.format = VolumeFormat::Raw;
+            record.backend = StorageBackend::Rbd;
+            record.replicas.clear();
+            record.replica_count = 1;
+            record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
         let online = self.cluster.online_ids();
         let configured = self.config.storage.replica_count.max(1);
         let want = replica_want(online.len(), configured);
@@ -1791,6 +1821,31 @@ impl Service {
         req: ResizeVolumeRequest,
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_volume_idle(id, "resize")?;
+        let current = self.volumes.get_volume(id)?;
+        if current.backend == StorageBackend::Rbd {
+            if req.size_bytes < current.size_bytes {
+                return Err(StorageError::CannotShrink {
+                    from: current.size_bytes,
+                    to: req.size_bytes,
+                }
+                .into());
+            }
+            if req.size_bytes > current.size_bytes {
+                if !Rbd::available() {
+                    return Err(DaemonError::Peer(
+                        "Ceph RBD resize requested but the rbd CLI was not found".into(),
+                    ));
+                }
+                let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
+                rbd.resize(&current.name, req.size_bytes)?;
+            }
+            let mut record = current;
+            record.size_bytes = req.size_bytes;
+            let record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
         let record = self.volumes.resize(id, req)?;
         self.sync_volume_replicas(&record).await;
         self.cluster.bump()?;
@@ -1805,6 +1860,32 @@ impl Service {
     ) -> Result<VolumeRecord, DaemonError> {
         self.require_volume_idle(id, "clone")?;
         let source = self.volumes.get_volume(id)?;
+        if source.backend == StorageBackend::Rbd {
+            if !Rbd::available() {
+                return Err(DaemonError::Peer(
+                    "Ceph RBD clone requested but the rbd CLI was not found".into(),
+                ));
+            }
+            let rbd = Rbd::new(self.config.storage.rbd_pool.clone());
+            let name = req.name.clone();
+            rbd.copy_image(&source.name, &name)?;
+            let record = VolumeRecord {
+                id: VolumeId::new(),
+                name,
+                format: VolumeFormat::Raw,
+                size_bytes: source.size_bytes,
+                path: PathBuf::from(rbd.image_path(&req.name)),
+                backing_id: None,
+                snapshots: vec![],
+                replicas: vec![],
+                replica_count: 1,
+                backend: StorageBackend::Rbd,
+            };
+            let record = self.volumes.put_record(record)?;
+            self.cluster.bump()?;
+            self.replicate().await;
+            return Ok(record);
+        }
         self.require_storage_bytes(allocated_bytes(&source.path), "clone volume")?;
         let volumes = Arc::clone(&self.volumes);
         let req = req.clone();
@@ -3898,6 +3979,38 @@ pub(crate) async fn write_sparse_chunk(
 
 fn replica_want(online: usize, configured: u8) -> u8 {
     configured.max(1).min(online.max(1) as u8)
+}
+
+/// `rbd import` reads a raw file. Convert qcow2 first and tell the caller to delete it.
+fn flatten_for_rbd(source: &Path, format: VolumeFormat) -> Result<(PathBuf, bool), DaemonError> {
+    if format == VolumeFormat::Raw {
+        return Ok((source.to_path_buf(), false));
+    }
+    let dest = source.with_extension("rbd-import.raw");
+    let bin = pertisk_types::find_in_path("qemu-img").ok_or_else(|| {
+        StorageError::Message("qemu-img is required to import a qcow2 image onto RBD".into())
+    })?;
+    let output = std::process::Command::new(bin)
+        .args([
+            "convert",
+            "-f",
+            format.as_str(),
+            "-O",
+            "raw",
+            &source.display().to_string(),
+            &dest.display().to_string(),
+        ])
+        .output()?;
+    if output.status.success() {
+        Ok((dest, true))
+    } else {
+        let _ = std::fs::remove_file(&dest);
+        Err(StorageError::Message(format!(
+            "qemu-img convert failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into())
+    }
 }
 
 /// Copy count is the volume's configured count. HA does not add extra file copies.
